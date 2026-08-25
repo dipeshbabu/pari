@@ -1,0 +1,11 @@
+/target/
+**/*.rs.bk
+.DS_Store
+.idea/
+.vscode/
+.venv/
+__pycache__/
+*.pyc
+/dist/
+/build/
+*.egg-info/
