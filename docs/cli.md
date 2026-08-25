@@ -12,22 +12,35 @@ The binary is written to `target/release/pari` (`pari.exe` on Windows).
 
 ## JSONL record format
 
-`index` and `dedup` consume one record per line:
+`index` and `dedup` consume one record per line. A record may contain raw values:
 
 ```json
 {"key":1,"values":["new york","rust","search"]}
-{"key":2,"values":["new york","python","search"]}
 ```
 
-Each value is fed to Pari's `MinHash32` as UTF-8 bytes. Input is processed line by line. Raw JSONL records are never accumulated as a complete corpus.
+or a precomputed Pari signature:
 
-`search` consumes query records:
+```json
+{"key":2,"signature":[125,992,481,73],"scheme":"pari-affine32-v1"}
+```
+
+Each raw value is fed to Pari's `MinHash32` as UTF-8 bytes. A precomputed signature must contain exactly the configured `--num-perm` values and must explicitly declare `pari-affine32-v1`; the CLI rejects unknown schemes, missing scheme metadata, incorrect widths, and records containing both `values` and `signature`.
+
+Input is processed line by line. Raw JSONL records are never accumulated as a complete corpus.
+
+`search` accepts the same two sketch forms and an optional query ID:
 
 ```json
 {"id":"query-1","values":["new york","rust","search"]}
 ```
 
-`id` is optional and is copied to JSON output for correlation.
+or:
+
+```json
+{"id":"query-2","signature":[125,992,481,73],"scheme":"pari-affine32-v1"}
+```
+
+`id` is copied to JSON output for correlation. Precomputed query signatures must match the opened index's permutation count and use the index seed's affine32 permutation family.
 
 Use `-` as the input or output path for stdin/stdout.
 
