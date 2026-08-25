@@ -219,26 +219,55 @@ mod tests {
         let codec = BytesCodec;
         let value = vec![0, 1, 2, 255];
         assert_eq!(codec.id(), CodecId::Bytes);
-        assert_eq!(codec.decode(&codec.encode(&value).expect("encode")).expect("decode"), value);
+        assert_eq!(
+            codec
+                .decode(&codec.encode(&value).expect("encode"))
+                .expect("decode"),
+            value
+        );
     }
 
     #[test]
     fn utf8_round_trip_and_invalid_utf8() {
         let codec = Utf8Codec;
         let value = String::from("Pari similarity");
-        assert_eq!(codec.decode(&codec.encode(&value).expect("encode")).expect("decode"), value);
+        assert_eq!(
+            codec
+                .decode(&codec.encode(&value).expect("encode"))
+                .expect("decode"),
+            value
+        );
         assert_eq!(codec.decode(&[0xFF]), Err(CodecError::InvalidUtf8));
     }
 
     #[test]
     fn integer_codecs_are_little_endian_and_exact_width() {
         let unsigned = U64Codec;
-        assert_eq!(unsigned.encode(&0x0102_0304_0506_0708).expect("encode"), vec![8, 7, 6, 5, 4, 3, 2, 1]);
-        assert_eq!(unsigned.decode(&[8, 7, 6, 5, 4, 3, 2, 1]).expect("decode"), 0x0102_0304_0506_0708);
-        assert!(matches!(unsigned.decode(&[1, 2]), Err(CodecError::InvalidLength { expected: 8, actual: 2 })));
+        assert_eq!(
+            unsigned.encode(&0x0102_0304_0506_0708).expect("encode"),
+            vec![8, 7, 6, 5, 4, 3, 2, 1]
+        );
+        assert_eq!(
+            unsigned
+                .decode(&[8, 7, 6, 5, 4, 3, 2, 1])
+                .expect("decode"),
+            0x0102_0304_0506_0708
+        );
+        assert!(matches!(
+            unsigned.decode(&[1, 2]),
+            Err(CodecError::InvalidLength {
+                expected: 8,
+                actual: 2
+            })
+        ));
 
         let signed = I64Codec;
-        assert_eq!(signed.decode(&signed.encode(&-42).expect("encode")).expect("decode"), -42);
+        assert_eq!(
+            signed
+                .decode(&signed.encode(&-42).expect("encode"))
+                .expect("decode"),
+            -42
+        );
     }
 
     #[test]
@@ -247,6 +276,9 @@ mod tests {
         let value = json!({"id": 7, "tags": ["near", "duplicate"]});
         let encoded = codec.encode(&value).expect("encode");
         assert_eq!(codec.decode(&encoded).expect("decode"), value);
-        assert!(matches!(codec.decode(b"{"), Err(CodecError::InvalidJson { .. })));
+        assert!(matches!(
+            codec.decode(b"{"),
+            Err(CodecError::InvalidJson { .. })
+        ));
     }
 }
