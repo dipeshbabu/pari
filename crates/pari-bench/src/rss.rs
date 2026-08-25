@@ -8,6 +8,7 @@ use std::{
 };
 
 /// Resident-memory samples around one benchmark phase.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RssSample {
     /// RSS immediately before the sampling thread starts.
