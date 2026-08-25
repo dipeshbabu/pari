@@ -38,6 +38,41 @@ cargo run --release -p pari-bench -- run \
   --output quick.json
 ```
 
+## Persistent storage workload
+
+Run the local persistence and lazy-query workload with the same configuration surface:
+
+```bash
+cargo run --release -p pari-bench -- storage \
+  --items 5000 \
+  --queries 100 \
+  --output pari-storage-benchmark.json
+```
+
+The storage report uses the same versioned flat metric schema as the main benchmark and records:
+
+- `storage.persistent.build_items_per_second`
+- `storage.persistent.build_elapsed_ms`
+- persistent build and reopen RSS metrics where supported
+- `storage.persistent.file_bytes` and `storage.persistent.bytes_per_item`
+- `storage.persistent.reopen_ms`
+- `storage.persistent.committed_buckets`
+- `storage.persistent.mutation_operations_per_second`
+- `storage.persistent.sync_ms`
+- `storage.persistent.mutation_parity`
+- external-builder throughput, RSS, spill count, peak buffered records, bucket count, and output bytes
+- `storage.lazy.reopen_ms`
+- lazy reopen and query RSS metrics where supported
+- `storage.lazy.file_bytes` and `storage.lazy.bytes_per_item`
+- lazy scalar query throughput and p50/p95/p99 latency
+- lazy batch query throughput
+- `storage.candidate_parity`
+- `storage.lazy.reopen_rss_to_file_ratio` when RSS sampling is available
+
+The mutation/sync sub-workload is deliberately bounded to at most 256 deterministic signatures. It measures remove/reinsert and commit behavior without turning a large storage benchmark into a second full build. Candidate parity is checked before sync and again after reopen.
+
+Persistent, lazy scalar, and lazy batch candidates are checked against the in-memory `LshIndex32` reference. A parity failure aborts the benchmark instead of emitting performance numbers for incorrect behavior.
+
 ## Compare two reports
 
 ```bash
@@ -57,6 +92,27 @@ cargo bench --manifest-path benchmarks/criterion/Cargo.toml
 ```
 
 The first microbenchmarks cover SHA-1 input hashing, one 128-permutation MinHash update, an in-memory LSH query, and 100,000 streamed union-find edges. End-to-end reports remain the primary evidence because a faster micro-kernel can be irrelevant if storage, allocation, or candidate volume dominates a real workload.
+
+## Storage layout shootout
+
+The isolated Criterion package also contains the storage-layout evaluation used before selecting Pari's local read path:
+
+```bash
+cargo run --release \
+  --manifest-path benchmarks/criterion/Cargo.toml \
+  --bin storage_layout \
+  -- --items 5000 --queries 200 --output storage-layout-results.json
+```
+
+It builds the same deterministic bucket workload against three candidates:
+
+1. `paged_file`: sorted bucket pages plus an offset directory and bounded reads;
+2. `mmap_read_only`: the same page representation accessed through a read-only memory map;
+3. `redb`: an embedded key-value store.
+
+Each candidate must pass query-result parity before its timing data is accepted. The report records build throughput, reopen latency, file bytes, bytes/item, p50/p95/p99 query latency, batch throughput, and RSS after reopen where available.
+
+Pari selected the explicit paged/segmented file design for the production local format. It keeps the runtime safe Rust path simple, avoids an embedded database dependency and runtime memory-map safety surface, and gives the storage layer direct control over compatibility checks, checksums, and bounded member reads. The shootout remains reproducible evidence rather than a hard-coded wall-clock CI gate.
 
 ## Real public set data: Kosarak
 
@@ -99,16 +155,11 @@ The baseline uses the same deterministic synthetic integer sets, query mutation,
 
 ## Scheduled benchmark workflow
 
-`.github/workflows/benchmark.yml` runs a larger release workload weekly and on manual dispatch. It uploads the JSON report and Criterion output as workflow artifacts. Scheduled results are evidence, not a merge gate.
+`.github/workflows/benchmark.yml` runs larger release workloads weekly and on manual dispatch. It uploads:
 
-## Adding storage metrics
+- `benchmark-results.json`
+- `storage-results.json`
+- `storage-layout-results.json`
+- Criterion output
 
-Issue #5 will add persistent local storage. When it lands, the same report schema should gain stable metrics such as:
-
-- `index.persisted_size_bytes`
-- reopen latency
-- cold/warm query latency where controllable
-- bulk-write throughput
-- bytes per persisted item
-
-Do not create a new report schema merely because a new metric is added; the flat metric namespace is intentionally extensible.
+Scheduled results are review evidence, not a merge gate. Correctness, candidate parity, format validation, Rustfmt, Clippy, and tests remain the CI gates.
