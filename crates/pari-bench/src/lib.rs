@@ -9,6 +9,7 @@
 mod report;
 mod rss;
 mod storage;
+mod storage_mutation;
 mod workload;
 
 use std::{error::Error, fs, path::Path};
@@ -17,8 +18,19 @@ pub use report::{
     compare_reports, BenchmarkConfig, BenchmarkReport, ComparisonReport, Environment, Metric,
     MetricDelta, MetricDirection, REPORT_SCHEMA_VERSION,
 };
-pub use storage::run_storage_benchmark;
 pub use workload::run_benchmark;
+
+/// Run the complete persistent-storage benchmark report.
+///
+/// The main storage workload measures build, reopen, query, file-size, RSS, and
+/// external-builder behavior. A bounded mutation slice then adds remove/reinsert
+/// throughput, sync latency, and parity after reopen without changing the report
+/// schema.
+pub fn run_storage_benchmark(config: &BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn Error>> {
+    let mut report = storage::run_storage_benchmark(config)?;
+    storage_mutation::append_storage_mutation_metrics(config, &mut report)?;
+    Ok(report)
+}
 
 /// Read and validate a benchmark report from JSON.
 pub fn read_report(path: &Path) -> Result<BenchmarkReport, Box<dyn Error>> {

@@ -16,6 +16,8 @@ Owns approximate candidate generation such as MinHash LSH. Batch insertion and b
 
 Owns persistence and backend capabilities. Index algorithms must not hard-code Redis, local-file, or serialization behavior.
 
+The local backend uses explicit committed file generations, lazy on-demand bucket reads, and a mutation overlay. It is a single-writer local format rather than a cross-process database. Durability, recovery, reader visibility, backup, and file-lifetime semantics are documented in [`persistence.md`](persistence.md).
+
 ### `pari-py`
 
 Thin PyO3 bindings plus a small Python usability layer. CPU-heavy work runs in Rust and releases the GIL when it does not need Python objects.
