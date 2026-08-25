@@ -15,8 +15,8 @@ fn quick_end_to_end_benchmark_preserves_correctness() {
     .expect("quick benchmark should run");
 
     assert_eq!(report.engine, "pari");
-    assert_eq!(report.metrics["index.live_items"].value, 64.0);
-    assert_eq!(report.metrics["candidate.recall"].value, 1.0);
+    assert!((report.metrics["index.live_items"].value - 64.0).abs() < f64::EPSILON);
+    assert!((report.metrics["candidate.recall"].value - 1.0).abs() < f64::EPSILON);
     assert!(report.metrics["query.scalar_p99_ms"].value >= 0.0);
     assert!(report.metrics["grouping.stream_edges_per_second"].value > 0.0);
 }
