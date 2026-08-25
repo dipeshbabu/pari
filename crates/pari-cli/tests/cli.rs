@@ -113,7 +113,11 @@ fn index_search_stats_verify_and_dedup_work_end_to_end() {
         .output()
         .expect("dedup command");
     assert_success(&output);
-    let line = output.stdout.split(|byte| *byte == b'\n').next().expect("group line");
+    let line = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .next()
+        .expect("group line");
     let group: serde_json::Value = serde_json::from_slice(line).expect("group JSON");
     assert_eq!(group["members"], serde_json::json!([1, 2]));
 
