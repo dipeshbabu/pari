@@ -8,6 +8,7 @@
 
 mod report;
 mod rss;
+mod storage;
 mod workload;
 
 use std::{error::Error, fs, path::Path};
@@ -16,6 +17,7 @@ pub use report::{
     compare_reports, BenchmarkConfig, BenchmarkReport, ComparisonReport, Environment, Metric,
     MetricDelta, MetricDirection, REPORT_SCHEMA_VERSION,
 };
+pub use storage::run_storage_benchmark;
 pub use workload::run_benchmark;
 
 /// Read and validate a benchmark report from JSON.

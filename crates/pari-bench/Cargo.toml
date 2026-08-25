@@ -11,6 +11,9 @@ publish = false
 [dependencies]
 pari-core = { path = "../pari-core" }
 pari-index = { path = "../pari-index" }
+pari-store = { path = "../pari-store" }
+pari-store-build = { path = "../pari-store-build" }
+pari-store-lazy = { path = "../pari-store-lazy" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 

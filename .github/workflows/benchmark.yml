@@ -29,6 +29,12 @@ jobs:
             --items 10000 \
             --queries 100 \
             --output benchmark-results.json
+      - name: Persistent storage benchmark
+        run: |
+          cargo run --release -p pari-bench -- storage \
+            --items 10000 \
+            --queries 100 \
+            --output storage-results.json
       - name: Storage layout shootout
         run: |
           cargo run --release \
@@ -44,5 +50,6 @@ jobs:
           if-no-files-found: error
           path: |
             benchmark-results.json
+            storage-results.json
             storage-layout-results.json
             benchmarks/criterion/target/criterion

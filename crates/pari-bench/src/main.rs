@@ -1,8 +1,8 @@
 use std::{env, error::Error, path::PathBuf};
 
 use pari_bench::{
-    compare_reports, read_report, run_benchmark, write_comparison, write_report, BenchmarkConfig,
-    MetricDirection,
+    compare_reports, read_report, run_benchmark, run_storage_benchmark, write_comparison,
+    write_report, BenchmarkConfig, MetricDirection,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<String> = arguments.collect();
     match command.as_str() {
         "run" => run_command(&arguments),
+        "storage" => storage_command(&arguments),
         "compare" => compare_command(&arguments),
         "help" | "--help" | "-h" => {
             print_help();
@@ -21,6 +22,35 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn run_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    if has_help(arguments) {
+        print_run_help();
+        return Ok(());
+    }
+    let (config, output) = parse_benchmark_options(arguments, "pari-benchmark.json")?;
+    let report = run_benchmark(config)?;
+    write_report(&output, &report)?;
+    println!("wrote {}", output.display());
+    print_metric_summary(&report);
+    Ok(())
+}
+
+fn storage_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
+    if has_help(arguments) {
+        print_storage_help();
+        return Ok(());
+    }
+    let (config, output) = parse_benchmark_options(arguments, "pari-storage-benchmark.json")?;
+    let report = run_storage_benchmark(&config)?;
+    write_report(&output, &report)?;
+    println!("wrote {}", output.display());
+    print_metric_summary(&report);
+    Ok(())
+}
+
+fn parse_benchmark_options(
+    arguments: &[String],
+    default_output: &str,
+) -> Result<(BenchmarkConfig, PathBuf), Box<dyn Error>> {
     let mut config = BenchmarkConfig {
         items: 5_000,
         queries: 100,
@@ -31,7 +61,7 @@ fn run_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         seed: 7,
         dataset: None,
     };
-    let mut output = PathBuf::from("pari-benchmark.json");
+    let mut output = PathBuf::from(default_output);
 
     let mut index = 0;
     while index < arguments.len() {
@@ -47,19 +77,10 @@ fn run_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             "--seed" => config.seed = parse_value(arguments, &mut index, flag)?,
             "--dataset" => config.dataset = Some(next_string(arguments, &mut index, flag)?),
             "--output" => output = PathBuf::from(next_string(arguments, &mut index, flag)?),
-            "--help" | "-h" => {
-                print_run_help();
-                return Ok(());
-            }
-            other => return Err(format!("unknown run option {other:?}").into()),
+            other => return Err(format!("unknown benchmark option {other:?}").into()),
         }
     }
-
-    let report = run_benchmark(config)?;
-    write_report(&output, &report)?;
-    println!("wrote {}", output.display());
-    print_metric_summary(&report);
-    Ok(())
+    Ok((config, output))
 }
 
 fn compare_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
@@ -99,6 +120,12 @@ fn compare_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         );
     }
     Ok(())
+}
+
+fn has_help(arguments: &[String]) -> bool {
+    arguments
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h"))
 }
 
 fn parse_value<T>(arguments: &[String], index: &mut usize, flag: &str) -> Result<T, Box<dyn Error>>
@@ -141,13 +168,21 @@ fn print_metric_summary(report: &pari_bench::BenchmarkReport) {
 
 fn print_help() {
     println!(
-        "Pari benchmark harness\n\n  pari-bench run [OPTIONS]\n  pari-bench compare BASELINE.json CURRENT.json [OPTIONS]\n\nUse `pari-bench run --help` or `pari-bench compare --help` for details."
+        "Pari benchmark harness\n\n  pari-bench run [OPTIONS]\n  pari-bench storage [OPTIONS]\n  pari-bench compare BASELINE.json CURRENT.json [OPTIONS]\n\nUse a command with --help for details."
     );
 }
 
 fn print_run_help() {
+    print_benchmark_help("run", "pari-benchmark.json");
+}
+
+fn print_storage_help() {
+    print_benchmark_help("storage", "pari-storage-benchmark.json");
+}
+
+fn print_benchmark_help(command: &str, output: &str) {
     println!(
-        "Usage: pari-bench run [OPTIONS]\n\nOptions:\n  --items N          corpus items or real-dataset row limit (default 5000)\n  --queries N        query count (default 100)\n  --set-size N       synthetic features per item (default 100)\n  --overlap N        source features retained per query (default 90)\n  --threshold X      LSH target threshold (default 0.8)\n  --num-perm N       MinHash permutations (default 128)\n  --seed N           deterministic seed (default 7)\n  --dataset PATH     whitespace-separated integer-set dataset\n  --output PATH      report JSON (default pari-benchmark.json)"
+        "Usage: pari-bench {command} [OPTIONS]\n\nOptions:\n  --items N          corpus items or real-dataset row limit (default 5000)\n  --queries N        query count (default 100)\n  --set-size N       synthetic features per item (default 100)\n  --overlap N        source features retained per query (default 90)\n  --threshold X      LSH target threshold (default 0.8)\n  --num-perm N       MinHash permutations (default 128)\n  --seed N           deterministic seed (default 7)\n  --dataset PATH     whitespace-separated integer-set dataset\n  --output PATH      report JSON (default {output})"
     );
 }
 
