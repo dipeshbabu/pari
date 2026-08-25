@@ -188,15 +188,12 @@ mod tests {
             config.clone(),
         );
         append_storage_mutation_metrics(&config, &mut report).expect("mutation benchmark");
-        assert!(
-            report
-                .metrics
-                .contains_key("storage.persistent.mutation_operations_per_second")
-        );
+        assert!(report
+            .metrics
+            .contains_key("storage.persistent.mutation_operations_per_second"));
         assert!(report.metrics.contains_key("storage.persistent.sync_ms"));
         assert!(
-            (report.metrics["storage.persistent.mutation_parity"].value - 1.0).abs()
-                < f64::EPSILON
+            (report.metrics["storage.persistent.mutation_parity"].value - 1.0).abs() < f64::EPSILON
         );
     }
 }
