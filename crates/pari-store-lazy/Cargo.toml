@@ -1,0 +1,19 @@
+[package]
+name = "pari-store-lazy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+crc32fast = "1.5"
+pari-core = { path = "../pari-core" }
+pari-format = { path = "../pari-format" }
+pari-index = { path = "../pari-index" }
+
+[dev-dependencies]
+pari-store = { path = "../pari-store" }
+
+[lints]
+workspace = true
