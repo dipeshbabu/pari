@@ -12,11 +12,13 @@ const MAGIC: [u8; 8] = *b"PARIIDX\0";
 const FORMAT_VERSION: u16 = 1;
 const HEADER_SIZE: usize = 72;
 const HEADER_SIZE_U16: u16 = 72;
+const HEADER_SIZE_U64: u64 = 72;
 const SECTION_HEADER_SIZE: usize = 16;
+const SECTION_HEADER_SIZE_U64: u64 = 16;
 const SECTION_FLAG_REQUIRED: u16 = 1;
 const KNOWN_SECTION_FLAGS: u16 = SECTION_FLAG_REQUIRED;
 const MAX_SECTION_COUNT: usize = 1_024;
-const MAX_IN_MEMORY_SECTION_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_SECTION_BYTES: u64 = 256 * 1024 * 1024;
 const SUPPORTED_FEATURE_FLAGS: u64 = 0;
 
 /// File I/O or structural errors produced by the lazy container reader.
@@ -149,11 +151,11 @@ impl FileLayout {
             .into());
         }
 
-        let mut cursor = u64::try_from(HEADER_SIZE).expect("fixed header size fits u64");
+        let mut cursor = HEADER_SIZE_U64;
         let mut sections = Vec::with_capacity(section_count.min(16));
         for _ in 0..section_count {
             let header_end = cursor
-                .checked_add(u64::try_from(SECTION_HEADER_SIZE).expect("fixed section header fits u64"))
+                .checked_add(SECTION_HEADER_SIZE_U64)
                 .ok_or(FormatError::LengthOverflow)?;
             if header_end > file_length {
                 return Err(FormatError::Truncated {
@@ -171,6 +173,12 @@ impl FileLayout {
             let checksum = read_u32(&section_header, 12)?;
             if flags & !KNOWN_SECTION_FLAGS != 0 {
                 return Err(FormatError::InvalidSectionFlags { flags }.into());
+            }
+            if payload_length > MAX_SECTION_BYTES {
+                return Err(FormatError::SectionTooLarge {
+                    length: payload_length,
+                }
+                .into());
             }
 
             let payload_offset = header_end;
@@ -242,21 +250,11 @@ impl FileLayout {
     }
 
     /// Materialize one complete section and verify its stored checksum.
-    ///
-    /// This convenience API keeps the same 256 MiB bound as `IndexFile`.
-    /// Larger future streaming sections can still be accessed through
-    /// [`Self::read_section_range`] without full materialization.
     pub fn read_section<R: Read + Seek>(
         &self,
         reader: &mut R,
         descriptor: SectionDescriptor,
     ) -> Result<Vec<u8>, LayoutError> {
-        if descriptor.payload_length > MAX_IN_MEMORY_SECTION_BYTES {
-            return Err(FormatError::SectionTooLarge {
-                length: descriptor.payload_length,
-            }
-            .into());
-        }
         let length =
             usize::try_from(descriptor.payload_length).map_err(|_| FormatError::LengthOverflow)?;
         let payload = self.read_section_range(reader, descriptor, 0, length)?;
@@ -293,6 +291,7 @@ impl FileLayout {
                 section_length: descriptor.payload_length,
             });
         }
+
         let absolute = descriptor
             .payload_offset
             .checked_add(offset)
@@ -343,6 +342,7 @@ fn decode_header(header: &[u8; HEADER_SIZE]) -> Result<(IndexMetadata, u32), For
     if header.get(36..40) != Some(&[0, 0, 0, 0]) || header.get(68..72) != Some(&[0, 0, 0, 0]) {
         return Err(FormatError::InvalidReservedBytes);
     }
+
     let expected_checksum = read_u32(header, 64)?;
     let actual_checksum = crc32(header.get(..64).ok_or(FormatError::Truncated {
         context: "header checksum range",
@@ -359,10 +359,8 @@ fn decode_header(header: &[u8; HEADER_SIZE]) -> Result<(IndexMetadata, u32), For
         value: algorithm_raw,
     })?;
     let scheme_raw = read_u16(header, 14)?;
-    let signature_scheme =
-        signature_scheme_from_raw(scheme_raw).ok_or(FormatError::UnsupportedSignatureScheme {
-            value: scheme_raw,
-        })?;
+    let signature_scheme = signature_scheme_from_raw(scheme_raw)
+        .ok_or(FormatError::UnsupportedSignatureScheme { value: scheme_raw })?;
     let signature_width = read_u16(header, 16)?;
     if signature_width != signature_scheme.width_bits() {
         return Err(FormatError::SignatureWidthMismatch {
@@ -371,8 +369,8 @@ fn decode_header(header: &[u8; HEADER_SIZE]) -> Result<(IndexMetadata, u32), For
         });
     }
     let codec_raw = read_u16(header, 18)?;
-    let key_codec = CodecId::from_raw(codec_raw)
-        .ok_or(FormatError::UnsupportedCodec { value: codec_raw })?;
+    let key_codec =
+        CodecId::from_raw(codec_raw).ok_or(FormatError::UnsupportedCodec { value: codec_raw })?;
     let num_perm = read_u32(header, 20)?;
     let bands = read_u32(header, 24)?;
     let rows = read_u32(header, 28)?;
@@ -385,6 +383,7 @@ fn decode_header(header: &[u8; HEADER_SIZE]) -> Result<(IndexMetadata, u32), For
             flags: feature_flags & !SUPPORTED_FEATURE_FLAGS,
         });
     }
+
     let metadata = IndexMetadata::new(
         algorithm,
         signature_scheme,
@@ -449,25 +448,31 @@ fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Fo
 mod tests {
     use std::io::Cursor;
 
-    use super::{FileLayout, LayoutError};
+    use super::{FileLayout, LayoutError, HEADER_SIZE};
     use crate::{FormatError, SectionKind};
 
     const GOLDEN_V1: &[u8] = include_bytes!("../testdata/index_v1.bin");
 
     #[test]
-    fn golden_layout_reads_metadata_without_materializing_payload() {
+    fn golden_layout_reads_metadata_and_payload_on_demand() {
         let mut cursor = Cursor::new(GOLDEN_V1);
         let layout = FileLayout::read_from(&mut cursor).expect("scan golden layout");
-        assert_eq!(layout.file_length(), GOLDEN_V1.len() as u64);
+        assert_eq!(
+            layout.file_length(),
+            u64::try_from(GOLDEN_V1.len()).expect("fixture length fits u64")
+        );
         assert_eq!(layout.metadata().num_perm(), 128);
         assert_eq!(layout.sections().len(), 1);
         let keys = layout.section(SectionKind::Keys).expect("keys descriptor");
         assert_eq!(keys.payload_length(), 8);
-        assert_eq!(layout.read_section(&mut cursor, keys).expect("read keys"), 7_u64.to_le_bytes());
+        assert_eq!(
+            layout.read_section(&mut cursor, keys).expect("read keys"),
+            7_u64.to_le_bytes()
+        );
     }
 
     #[test]
-    fn range_reads_are_bounded_and_do_not_require_full_payload() {
+    fn range_reads_are_bounded() {
         let mut cursor = Cursor::new(GOLDEN_V1);
         let layout = FileLayout::read_from(&mut cursor).expect("scan golden layout");
         let keys = layout.section(SectionKind::Keys).expect("keys descriptor");
@@ -487,7 +492,10 @@ mod tests {
     fn every_truncated_golden_prefix_is_rejected() {
         for end in 0..GOLDEN_V1.len() {
             let mut cursor = Cursor::new(&GOLDEN_V1[..end]);
-            assert!(FileLayout::read_from(&mut cursor).is_err(), "accepted prefix {end}");
+            assert!(
+                FileLayout::read_from(&mut cursor).is_err(),
+                "accepted prefix {end}"
+            );
         }
     }
 
@@ -497,16 +505,18 @@ mod tests {
         let last = bytes.len() - 1;
         bytes[last] ^= 1;
         let mut cursor = Cursor::new(bytes);
-        let layout = FileLayout::read_from(&mut cursor).expect("layout scan does not read payload");
+        let layout = FileLayout::read_from(&mut cursor).expect("scan without payload read");
         let keys = layout.section(SectionKind::Keys).expect("keys descriptor");
         assert!(matches!(
             layout.read_section(&mut cursor, keys),
-            Err(LayoutError::Format(FormatError::SectionChecksumMismatch { .. }))
+            Err(LayoutError::Format(
+                FormatError::SectionChecksumMismatch { .. }
+            ))
         ));
     }
 
     #[test]
-    fn unknown_optional_section_is_skipped_but_unknown_required_is_rejected() {
+    fn unknown_optional_is_skipped_and_unknown_required_is_rejected() {
         let mut optional = GOLDEN_V1.to_vec();
         optional[HEADER_SIZE..HEADER_SIZE + 2].copy_from_slice(&999_u16.to_le_bytes());
         optional[HEADER_SIZE + 2..HEADER_SIZE + 4].copy_from_slice(&0_u16.to_le_bytes());
@@ -519,9 +529,22 @@ mod tests {
         let mut cursor = Cursor::new(required);
         assert!(matches!(
             FileLayout::read_from(&mut cursor),
-            Err(LayoutError::Format(FormatError::UnknownRequiredSection { kind: 999 }))
+            Err(LayoutError::Format(FormatError::UnknownRequiredSection {
+                kind: 999
+            }))
         ));
     }
 
-    const HEADER_SIZE: usize = 72;
+    #[test]
+    fn malicious_section_length_is_rejected_before_payload_read() {
+        let mut bytes = GOLDEN_V1.to_vec();
+        bytes[HEADER_SIZE + 4..HEADER_SIZE + 12].copy_from_slice(&u64::MAX.to_le_bytes());
+        let mut cursor = Cursor::new(bytes);
+        assert!(matches!(
+            FileLayout::read_from(&mut cursor),
+            Err(LayoutError::Format(FormatError::SectionTooLarge {
+                length: u64::MAX
+            }))
+        ));
+    }
 }
