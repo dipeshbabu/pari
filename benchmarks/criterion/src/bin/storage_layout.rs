@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     error::Error,
+    fmt,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -13,9 +14,7 @@ use std::{
 use memmap2::{Mmap, MmapOptions};
 use pari_core::MinHash32;
 use pari_index::{LshIndex32, LshParams};
-use redb::{
-    Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, TableDefinition,
-};
+use redb::{Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::Serialize;
 
 const NUM_PERM: usize = 128;
@@ -77,6 +76,7 @@ struct PageDescriptor {
 struct CandidateReport {
     name: String,
     build_ms: f64,
+    build_items_per_second: f64,
     reopen_ms: f64,
     file_bytes: u64,
     bytes_per_item: f64,
@@ -229,9 +229,7 @@ fn parse_config() -> BenchResult<Config> {
             "--queries" => config.queries = parse_value(&arguments, &mut index, flag)?,
             "--output" => config.output = PathBuf::from(next_value(&arguments, &mut index, flag)?),
             "--help" | "-h" => {
-                println!(
-                    "Usage: storage-layout [--items N] [--queries N] [--output PATH]"
-                );
+                println!("Usage: storage-layout [--items N] [--queries N] [--output PATH]");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument {other:?}").into()),
@@ -267,8 +265,12 @@ fn validate_config(config: &Config) -> BenchResult<()> {
     if config.queries > config.items {
         return Err("queries cannot exceed items".into());
     }
-    u32::try_from(config.items).map_err(|_| "items must fit in u32")?;
-    u32::try_from(config.queries).map_err(|_| "queries must fit in u32")?;
+    if u32::try_from(config.items).is_err() {
+        return Err("items must fit in u32".into());
+    }
+    if u32::try_from(config.queries).is_err() {
+        return Err("queries must fit in u32".into());
+    }
     Ok(())
 }
 
@@ -376,9 +378,17 @@ fn benchmark_page(path: &Path, items: usize, workload: &Workload) -> BenchResult
     let reopen_started = Instant::now();
     let mut store = PageStore::open(path)?;
     let reopen_elapsed = reopen_started.elapsed();
+    let rss_after_reopen = current_rss_bytes();
     verify_store(&mut store, workload)?;
-    let timing = time_store(&mut store, workload)?;
-    report_candidate("paged_file", path, items, build_elapsed, reopen_elapsed, timing)
+    let timing = time_store(&mut store, workload, rss_after_reopen)?;
+    report_candidate(
+        "paged_file",
+        path,
+        items,
+        build_elapsed,
+        reopen_elapsed,
+        timing,
+    )
 }
 
 fn benchmark_mmap(path: &Path, items: usize, workload: &Workload) -> BenchResult<CandidateReport> {
@@ -389,9 +399,17 @@ fn benchmark_mmap(path: &Path, items: usize, workload: &Workload) -> BenchResult
     let reopen_started = Instant::now();
     let mut store = MmapStore::open(path)?;
     let reopen_elapsed = reopen_started.elapsed();
+    let rss_after_reopen = current_rss_bytes();
     verify_store(&mut store, workload)?;
-    let timing = time_store(&mut store, workload)?;
-    report_candidate("mmap_read_only", path, items, build_elapsed, reopen_elapsed, timing)
+    let timing = time_store(&mut store, workload, rss_after_reopen)?;
+    report_candidate(
+        "mmap_read_only",
+        path,
+        items,
+        build_elapsed,
+        reopen_elapsed,
+        timing,
+    )
 }
 
 fn benchmark_redb(path: &Path, items: usize, workload: &Workload) -> BenchResult<CandidateReport> {
@@ -402,8 +420,9 @@ fn benchmark_redb(path: &Path, items: usize, workload: &Workload) -> BenchResult
     let reopen_started = Instant::now();
     let mut store = RedbStore::open(path)?;
     let reopen_elapsed = reopen_started.elapsed();
+    let rss_after_reopen = current_rss_bytes();
     verify_store(&mut store, workload)?;
-    let timing = time_store(&mut store, workload)?;
+    let timing = time_store(&mut store, workload, rss_after_reopen)?;
     report_candidate("redb", path, items, build_elapsed, reopen_elapsed, timing)
 }
 
@@ -416,13 +435,16 @@ struct Timing {
     rss_after_reopen: Option<u64>,
 }
 
-fn time_store(store: &mut impl QueryStore, workload: &Workload) -> BenchResult<Timing> {
-    let rss_after_reopen = current_rss_bytes();
+fn time_store(
+    store: &mut impl QueryStore,
+    workload: &Workload,
+    rss_after_reopen: Option<u64>,
+) -> BenchResult<Timing> {
     let mut latencies = Vec::with_capacity(workload.query_buckets.len());
     for buckets in &workload.query_buckets {
         let started = Instant::now();
         let result = store.query(buckets)?;
-        std::hint::black_box(result);
+        drop(std::hint::black_box(result));
         latencies.push(started.elapsed());
     }
     latencies.sort_unstable();
@@ -430,7 +452,7 @@ fn time_store(store: &mut impl QueryStore, workload: &Workload) -> BenchResult<T
     let batch_started = Instant::now();
     for buckets in &workload.query_buckets {
         let result = store.query(buckets)?;
-        std::hint::black_box(result);
+        drop(std::hint::black_box(result));
     }
     let batch_elapsed = batch_started.elapsed();
 
@@ -438,7 +460,7 @@ fn time_store(store: &mut impl QueryStore, workload: &Workload) -> BenchResult<T
         p50: percentile_duration(&latencies, 50),
         p95: percentile_duration(&latencies, 95),
         p99: percentile_duration(&latencies, 99),
-        batch_qps: queries_per_second(workload.query_buckets.len(), batch_elapsed)?,
+        batch_qps: rate(workload.query_buckets.len(), batch_elapsed)?,
         rss_after_reopen,
     })
 }
@@ -470,13 +492,13 @@ fn report_candidate(
     timing: Timing,
 ) -> BenchResult<CandidateReport> {
     let file_bytes = fs::metadata(path)?.len();
-    let item_count = f64::from(u32::try_from(items)?);
     Ok(CandidateReport {
         name: name.to_owned(),
         build_ms: duration_ms(build_elapsed),
+        build_items_per_second: rate(items, build_elapsed)?,
         reopen_ms: duration_ms(reopen_elapsed),
         file_bytes,
-        bytes_per_item: file_bytes as f64 / item_count,
+        bytes_per_item: bytes_per_item(file_bytes, items)?,
         scalar_p50_ms: duration_ms(timing.p50),
         scalar_p95_ms: duration_ms(timing.p95),
         scalar_p99_ms: duration_ms(timing.p99),
@@ -493,20 +515,21 @@ fn percentile_duration(sorted: &[Duration], percent: usize) -> Duration {
     if sorted.is_empty() {
         return Duration::ZERO;
     }
-    let rank = sorted
-        .len()
-        .saturating_mul(percent)
-        .saturating_add(99)
-        / 100;
+    let rank = sorted.len().saturating_mul(percent).saturating_add(99) / 100;
     sorted[rank.max(1).saturating_sub(1).min(sorted.len() - 1)]
 }
 
-fn queries_per_second(count: usize, elapsed: Duration) -> BenchResult<f64> {
+fn rate(count: usize, elapsed: Duration) -> BenchResult<f64> {
     let seconds = elapsed.as_secs_f64();
     if seconds == 0.0 {
         return Ok(0.0);
     }
     Ok(f64::from(u32::try_from(count)?) / seconds)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn bytes_per_item(file_bytes: u64, items: usize) -> BenchResult<f64> {
+    Ok(file_bytes as f64 / f64::from(u32::try_from(items)?))
 }
 
 fn build_page_file(path: &Path, buckets: &BTreeMap<BucketKey, Vec<u64>>) -> BenchResult<()> {
@@ -534,7 +557,10 @@ fn build_page_file(path: &Path, buckets: &BTreeMap<BucketKey, Vec<u64>>) -> Benc
             .ok_or_else(|| invalid_data("page file offset overflow"))?;
     }
 
-    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)?;
     file.write_all(&PAGE_MAGIC)?;
     file.write_all(&PAGE_VERSION.to_le_bytes())?;
     file.write_all(&page_count.to_le_bytes())?;
@@ -696,6 +722,9 @@ fn parse_page_directory(bytes: &[u8], file_length: u64) -> BenchResult<Vec<PageD
         previous_end = end;
         previous_last = Some(descriptor.last);
         pages.push(descriptor);
+    }
+    if previous_end != file_length {
+        return Err(invalid_data("paged benchmark file has trailing or missing page bytes").into());
     }
     Ok(pages)
 }
