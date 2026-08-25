@@ -616,7 +616,9 @@ mod tests {
             dataset: None,
         };
         let report = run_storage_benchmark(&config).expect("storage benchmark");
-        assert!((report.metrics["storage.candidate_parity"].value - 1.0).abs() < f64::EPSILON);
+        assert!(
+            (report.metrics["storage.candidate_parity"].value - 1.0).abs() < f64::EPSILON
+        );
         for metric in [
             "storage.persistent.reopen_ms",
             "storage.persistent.bytes_per_item",
