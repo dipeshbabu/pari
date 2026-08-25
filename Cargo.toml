@@ -1,5 +1,8 @@
 [workspace]
-members = ["crates/pari-core"]
+members = [
+  "crates/pari-core",
+  "crates/pari-index",
+]
 resolver = "2"
 
 [workspace.package]

@@ -1,0 +1,14 @@
+[package]
+name = "pari-index"
+description = "Batch-first similarity indexes for the Pari engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pari-core = { path = "../pari-core" }
+
+[lints]
+workspace = true
