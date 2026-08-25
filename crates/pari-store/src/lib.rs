@@ -74,7 +74,9 @@ impl fmt::Display for StoreError {
             Self::Layout(error) => write!(formatter, "invalid Pari lazy index layout: {error}"),
             Self::Bucket(error) => error.fmt(formatter),
             Self::Index(error) => write!(formatter, "invalid LSH configuration: {error}"),
-            Self::InvalidSnapshot { reason } => write!(formatter, "invalid local snapshot: {reason}"),
+            Self::InvalidSnapshot { reason } => {
+                write!(formatter, "invalid local snapshot: {reason}")
+            }
             Self::DuplicateKey { key } => {
                 write!(formatter, "key {key} already exists in the index")
             }
@@ -257,10 +259,10 @@ impl PersistentIndex32 {
         validate_store_metadata(layout.metadata())?;
         let num_perm = usize::try_from(layout.metadata().num_perm())
             .map_err(|_| StoreError::LengthOverflow)?;
-        let bands = usize::try_from(layout.metadata().bands())
-            .map_err(|_| StoreError::LengthOverflow)?;
-        let rows = usize::try_from(layout.metadata().rows())
-            .map_err(|_| StoreError::LengthOverflow)?;
+        let bands =
+            usize::try_from(layout.metadata().bands()).map_err(|_| StoreError::LengthOverflow)?;
+        let rows =
+            usize::try_from(layout.metadata().rows()).map_err(|_| StoreError::LengthOverflow)?;
         let threshold = layout.metadata().threshold();
         let seed = layout.metadata().seed();
         let params = LshParams::new(bands, rows);
@@ -275,10 +277,7 @@ impl PersistentIndex32 {
         let mut buckets = Vec::new();
         for descriptor in bucket_descriptors {
             buckets.extend(decode_bucket_segment(
-                &layout,
-                &mut file,
-                descriptor,
-                bands,
+                &layout, &mut file, descriptor, bands,
             )?);
         }
         validate_global_bucket_order(&buckets)?;
@@ -1331,9 +1330,9 @@ mod tests {
         let reopened = PersistentIndex32::open(&path).expect("directory still opens");
         assert!(matches!(
             reopened.query(&query),
-            Err(StoreError::Bucket(BucketError::MemberChecksumMismatch {
-                ..
-            }))
+            Err(StoreError::Bucket(
+                BucketError::MemberChecksumMismatch { .. }
+            ))
         ));
         cleanup(&path);
     }
