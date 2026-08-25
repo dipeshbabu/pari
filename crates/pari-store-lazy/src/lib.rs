@@ -47,7 +47,7 @@ pub enum LazyStoreError {
     LengthOverflow,
     /// The destination already exists and is not overwritten implicitly.
     AlreadyExists(PathBuf),
-    /// A supplied sketch uses a different MinHash seed.
+    /// A supplied sketch uses a different `MinHash` seed.
     IncompatibleSeed { expected: u64, actual: u64 },
     /// A supplied sketch uses a different signature length.
     IncompatiblePermutationCount { expected: usize, actual: usize },
@@ -305,9 +305,7 @@ impl LazyIndex32 {
                 reason: "bucket membership bytes are not u64 aligned",
             });
         }
-        let keys = chunks
-            .map(read_u64_exact)
-            .collect::<Result<Vec<_>, _>>()?;
+        let keys = chunks.map(read_u64_exact).collect::<Result<Vec<_>, _>>()?;
         if keys.len() != expected {
             return Err(LazyStoreError::InvalidSnapshot {
                 reason: "bucket membership length disagrees with its descriptor",
