@@ -483,7 +483,9 @@ fn make_sketch(
             }
             Ok(MinHash32::from_signature(signature.to_vec(), seed)?)
         }
-        (Some(_), Some(_)) => Err("record must contain either values or signature, not both".into()),
+        (Some(_), Some(_)) => {
+            Err("record must contain either values or signature, not both".into())
+        }
         (None, None) => Err("record must contain either values or signature".into()),
     }
 }
