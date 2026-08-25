@@ -6,7 +6,7 @@ fn quick_end_to_end_benchmark_preserves_correctness() {
         items: 64,
         queries: 8,
         set_size: 20,
-        overlap: 18,
+        overlap: 20,
         threshold: 0.8,
         num_perm: 128,
         seed: 7,
