@@ -20,8 +20,7 @@ pub fn sha1_hash32(data: &[u8]) -> u32 {
 pub fn sha1_hash64(data: &[u8]) -> u64 {
     let digest = Sha1::digest(data);
     u64::from_le_bytes([
-        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6],
-        digest[7],
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
     ])
 }
 

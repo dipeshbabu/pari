@@ -2,12 +2,12 @@ use std::{error::Error, fmt};
 
 use crate::hash::{sha1_hash32, sha1_hash64};
 
-/// Stable identifier for Pari's 32-bit affine MinHash scheme.
+/// Stable identifier for Pari's 32-bit affine `MinHash` scheme.
 pub const AFFINE32_SCHEME: &str = "pari-affine32-v1";
-/// Stable identifier for Pari's 64-bit affine MinHash scheme.
+/// Stable identifier for Pari's 64-bit affine `MinHash` scheme.
 pub const AFFINE64_SCHEME: &str = "pari-affine64-v1";
 
-/// Errors returned by MinHash construction and compatibility checks.
+/// Errors returned by `MinHash` construction and compatibility checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MinHashError {
     /// The requested permutation count is zero or cannot be represented by the
@@ -41,12 +41,12 @@ impl fmt::Display for MinHashError {
 
 impl Error for MinHashError {}
 
-/// A 32-bit MinHash using affine permutations modulo `2^32`.
+/// A 32-bit `MinHash` using affine permutations modulo `2^32`.
 ///
 /// The permutation construction is derived from datasketch 2.x's `affine32`
-/// design: inputs are pre-mixed with the MurmurHash3 finalizer, then mapped by
+/// design: inputs are pre-mixed with the `MurmurHash3` finalizer, then mapped by
 /// `a * h + b` with wrapping arithmetic and odd multipliers. Pari deliberately
-/// uses a separately specified SplitMix64 seed mapping, so equal seeds do not
+/// uses a separately specified `SplitMix64` seed mapping, so equal seeds do not
 /// imply byte-identical signatures with datasketch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinHash32 {
@@ -180,7 +180,7 @@ impl MinHash32 {
     }
 }
 
-/// A 64-bit MinHash using affine permutations modulo `2^64`.
+/// A 64-bit `MinHash` using affine permutations modulo `2^64`.
 ///
 /// This is intended for extremely large distinct-element sets where a 32-bit
 /// input hash can itself become the limiting collision domain.
