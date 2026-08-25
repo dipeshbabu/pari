@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
-//! Bounded-memory construction for Pari's paged lazy index format.
+//! Bounded-memory construction for Pari's canonical lazy index format.
 //!
 //! The builder consumes a committed phase-1 `pari-store` snapshot, spills
-//! fixed-width `(band, hash, key)` records into bounded sorted runs, merges the
-//! runs, and streams the final v1 container atomically. Total bucket membership
-//! is never materialized in memory.
+//! fixed-width `(band, hash, key)` records into bounded sorted runs, performs a
+//! k-way external merge, and streams canonical bucket segments without
+//! materializing total bucket membership or the final container in memory.
 
 use std::{
     cmp::Reverse,
@@ -17,10 +17,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crc32fast::{hash as crc32, Hasher};
+use crc32fast::Hasher;
 use pari_format::{
-    Algorithm, CodecId, FileLayout, FormatError, IndexMetadata, LayoutError, SectionDescriptor,
-    SectionKind, SignatureScheme,
+    bucket_record_size, write_bucket_segment, Algorithm, BucketError, BucketKey,
+    BucketWriteRecord, CodecId, FileLayout, FormatError, IndexMetadata, LayoutError,
+    SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
+    BUCKET_SEGMENT_TARGET_BYTES,
 };
 
 const FILE_MAGIC: [u8; 8] = *b"PARIIDX\0";
@@ -29,12 +31,8 @@ const HEADER_BYTES: usize = 72;
 const HEADER_BYTES_U16: u16 = 72;
 const SECTION_HEADER_BYTES: usize = 16;
 const SECTION_REQUIRED: u16 = 1;
-const BUCKET_MAGIC: [u8; 8] = *b"PARIBKT1";
-const BUCKET_HEADER_BYTES: usize = 16;
-const BUCKET_HEADER_BYTES_U64: u64 = 16;
-const BUCKET_RECORD_BYTES: usize = 40;
-const BUCKET_RECORD_BYTES_U64: u64 = 40;
 const SPILL_RECORD_BYTES: usize = 20;
+const DESCRIPTOR_BYTES: usize = 28;
 const U64_BYTES: usize = 8;
 const U64_BYTES_U64: u64 = 8;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
@@ -77,8 +75,10 @@ pub enum BuildError {
     Io(io::Error),
     /// The source layout reader rejected the v1 container.
     Layout(LayoutError),
-    /// Source or output metadata violates the stable format.
+    /// Source or output metadata violates the stable outer format.
     Format(FormatError),
+    /// Canonical bucket-segment encoding failed.
+    Bucket(BucketError),
     /// The source snapshot violates the phase-1 storage contract.
     InvalidSource { reason: &'static str },
     /// Builder configuration is invalid.
@@ -95,6 +95,7 @@ impl fmt::Display for BuildError {
             Self::Io(error) => write!(formatter, "bounded Pari builder I/O failed: {error}"),
             Self::Layout(error) => error.fmt(formatter),
             Self::Format(error) => error.fmt(formatter),
+            Self::Bucket(error) => error.fmt(formatter),
             Self::InvalidSource { reason } => write!(formatter, "invalid phase-1 source: {reason}"),
             Self::InvalidOptions { reason } => write!(formatter, "invalid build options: {reason}"),
             Self::AlreadyExists(path) => write!(
@@ -115,6 +116,7 @@ impl Error for BuildError {
             Self::Io(error) => Some(error),
             Self::Layout(error) => Some(error),
             Self::Format(error) => Some(error),
+            Self::Bucket(error) => Some(error),
             _ => None,
         }
     }
@@ -138,6 +140,12 @@ impl From<FormatError> for BuildError {
     }
 }
 
+impl From<BucketError> for BuildError {
+    fn from(error: BucketError) -> Self {
+        Self::Bucket(error)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct SpillRecord {
     band: u32,
@@ -153,11 +161,16 @@ struct HeapEntry {
 
 #[derive(Debug, Clone, Copy)]
 struct DescriptorDraft {
-    band: u32,
+    key: BucketKey,
     member_count: u32,
-    hash: u64,
     relative_offset: u64,
-    member_bytes: u64,
+    checksum: u32,
+}
+
+#[derive(Debug, Clone)]
+struct SegmentFile {
+    path: PathBuf,
+    bytes: u64,
     checksum: u32,
 }
 
@@ -185,11 +198,11 @@ impl Drop for TemporaryFiles {
     }
 }
 
-/// Build a lazy paged index with bounded spill-buffer memory.
+/// Build a canonical lazy paged index with bounded construction memory.
 ///
-/// The source must be a committed phase-1 snapshot containing `Keys` and
-/// `BandHashes`. The destination is created atomically and is never replaced if
-/// it already exists.
+/// The source must be a committed phase-1 snapshot containing unique required
+/// `Keys` and `BandHashes` sections. The destination is created atomically and
+/// is never replaced if it already exists.
 pub fn build_external(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -209,8 +222,8 @@ pub fn build_external(
     let mut source_file = File::open(source)?;
     let layout = FileLayout::read_from(&mut source_file)?;
     validate_source_metadata(layout.metadata())?;
-    let keys = required_section(&layout, SectionKind::Keys, "missing keys section")?;
-    let band_hashes = required_section(
+    let keys = required_unique_section(&layout, SectionKind::Keys, "missing keys section")?;
+    let band_hashes = required_unique_section(
         &layout,
         SectionKind::BandHashes,
         "missing band-hash section",
@@ -253,19 +266,21 @@ pub fn build_external(
     let descriptors = temporary.track(temp_path(destination, nonce, "descriptors"));
     let memberships = temporary.track(temp_path(destination, nonce, "memberships"));
     let buckets = merge_runs(&run_paths, &descriptors, &memberships)?;
-
-    let bucket_payload = temporary.track(temp_path(destination, nonce, "bucket-payload"));
-    let (bucket_bytes, bucket_checksum) =
-        assemble_bucket_payload(&descriptors, &memberships, buckets, &bucket_payload)?;
+    let segments = assemble_segments(
+        &descriptors,
+        &memberships,
+        destination,
+        nonce,
+        &mut temporary,
+    )?;
 
     let destination_temp = temporary.track(temp_path(destination, nonce, "commit"));
     write_final_container(
         &mut source_file,
         &layout,
         keys,
-        &bucket_payload,
-        bucket_bytes,
-        bucket_checksum,
+        band_hashes,
+        &segments,
         &destination_temp,
     )?;
     fs::rename(&destination_temp, destination)?;
@@ -305,14 +320,30 @@ fn validate_source_metadata(metadata: &IndexMetadata) -> Result<(), BuildError> 
     Ok(())
 }
 
-fn required_section(
+fn required_unique_section(
     layout: &FileLayout,
     kind: SectionKind,
-    reason: &'static str,
+    missing_reason: &'static str,
 ) -> Result<SectionDescriptor, BuildError> {
-    layout
-        .section(kind)
-        .ok_or(BuildError::InvalidSource { reason })
+    let mut matches = layout
+        .sections()
+        .iter()
+        .copied()
+        .filter(|descriptor| descriptor.kind() == kind);
+    let descriptor = matches.next().ok_or(BuildError::InvalidSource {
+        reason: missing_reason,
+    })?;
+    if matches.next().is_some() {
+        return Err(BuildError::InvalidSource {
+            reason: "duplicate source metadata section",
+        });
+    }
+    if !descriptor.required() {
+        return Err(BuildError::InvalidSource {
+            reason: "source metadata section is marked optional",
+        });
+    }
+    Ok(descriptor)
 }
 
 fn validate_source_lengths(
@@ -520,25 +551,22 @@ fn merge_runs(
         }
     }
 
-    let mut current_key: Option<(u32, u64)> = None;
+    let mut current_key: Option<BucketKey> = None;
     let mut current_count = 0_u32;
-    let mut current_bytes = 0_u64;
     let mut current_offset = 0_u64;
     let mut current_hasher = Hasher::new();
     let mut bucket_count = 0_u64;
 
     while let Some(Reverse(entry)) = heap.pop() {
-        let group = (entry.record.band, entry.record.hash);
+        let group = BucketKey::new(entry.record.band, entry.record.hash);
         if current_key != Some(group) {
-            if let Some((band, hash)) = current_key {
+            if let Some(key) = current_key {
                 finish_descriptor(
                     &mut descriptors,
                     DescriptorDraft {
-                        band,
+                        key,
                         member_count: current_count,
-                        hash,
                         relative_offset: current_offset,
-                        member_bytes: current_bytes,
                         checksum: current_hasher.finalize(),
                     },
                 )?;
@@ -546,12 +574,15 @@ fn merge_runs(
                     .checked_add(1)
                     .ok_or(BuildError::LengthOverflow)?;
                 current_offset = current_offset
-                    .checked_add(current_bytes)
+                    .checked_add(
+                        u64::from(current_count)
+                            .checked_mul(U64_BYTES_U64)
+                            .ok_or(BuildError::LengthOverflow)?,
+                    )
                     .ok_or(BuildError::LengthOverflow)?;
             }
             current_key = Some(group);
             current_count = 0;
-            current_bytes = 0;
             current_hasher = Hasher::new();
         }
 
@@ -560,9 +591,6 @@ fn merge_runs(
         current_hasher.update(&key_bytes);
         current_count = current_count
             .checked_add(1)
-            .ok_or(BuildError::LengthOverflow)?;
-        current_bytes = current_bytes
-            .checked_add(U64_BYTES_U64)
             .ok_or(BuildError::LengthOverflow)?;
 
         if let Some(next) = read_spill_record(&mut readers[entry.run])? {
@@ -573,15 +601,13 @@ fn merge_runs(
         }
     }
 
-    if let Some((band, hash)) = current_key {
+    if let Some(key) = current_key {
         finish_descriptor(
             &mut descriptors,
             DescriptorDraft {
-                band,
+                key,
                 member_count: current_count,
-                hash,
                 relative_offset: current_offset,
-                member_bytes: current_bytes,
                 checksum: current_hasher.finalize(),
             },
         )?;
@@ -596,82 +622,157 @@ fn merge_runs(
     Ok(bucket_count)
 }
 
-fn assemble_bucket_payload(
+fn assemble_segments(
     descriptor_path: &Path,
     membership_path: &Path,
-    bucket_count: u64,
-    output_path: &Path,
-) -> Result<(u64, u32), BuildError> {
-    let descriptor_bytes = bucket_count
-        .checked_mul(BUCKET_RECORD_BYTES_U64)
-        .ok_or(BuildError::LengthOverflow)?;
-    let membership_start = BUCKET_HEADER_BYTES_U64
-        .checked_add(descriptor_bytes)
-        .ok_or(BuildError::LengthOverflow)?;
+    destination: &Path,
+    nonce: u128,
+    temporary: &mut TemporaryFiles,
+) -> Result<Vec<SegmentFile>, BuildError> {
     let mut descriptors = BufReader::new(File::open(descriptor_path)?);
     let mut memberships = BufReader::new(File::open(membership_path)?);
-    let output_file = OpenOptions::new()
+    let mut pending = read_descriptor_optional(&mut descriptors)?;
+    let mut segments = Vec::new();
+
+    if pending.is_none() {
+        segments.push(write_one_segment(
+            &[],
+            &mut memberships,
+            destination,
+            nonce,
+            0,
+            temporary,
+        )?);
+        return Ok(segments);
+    }
+
+    while pending.is_some() {
+        let mut group = Vec::new();
+        let mut estimated = BUCKET_SEGMENT_HEADER_BYTES;
+        while let Some(record) = pending.take() {
+            let contribution = bucket_record_size(
+                usize::try_from(record.member_count).map_err(|_| BuildError::LengthOverflow)?,
+            )?;
+            if !group.is_empty()
+                && estimated
+                    .checked_add(contribution)
+                    .ok_or(BuildError::LengthOverflow)?
+                    > BUCKET_SEGMENT_TARGET_BYTES
+            {
+                pending = Some(record);
+                break;
+            }
+            estimated = estimated
+                .checked_add(contribution)
+                .ok_or(BuildError::LengthOverflow)?;
+            group.push(record);
+            pending = read_descriptor_optional(&mut descriptors)?;
+        }
+
+        let first_offset = group
+            .first()
+            .ok_or(BuildError::InvalidSource {
+                reason: "empty bucket segment group",
+            })?
+            .relative_offset;
+        memberships.seek(SeekFrom::Start(first_offset))?;
+        segments.push(write_one_segment(
+            &group,
+            &mut memberships,
+            destination,
+            nonce,
+            segments.len(),
+            temporary,
+        )?);
+    }
+    Ok(segments)
+}
+
+fn write_one_segment(
+    records: &[DescriptorDraft],
+    memberships: &mut impl Read,
+    destination: &Path,
+    nonce: u128,
+    index: usize,
+    temporary: &mut TemporaryFiles,
+) -> Result<SegmentFile, BuildError> {
+    let path = temporary.track(temp_path(destination, nonce, &format!("bucket-{index}")));
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(output_path)?;
-    let mut output = BufWriter::new(output_file);
-    let mut hasher = Hasher::new();
-
-    let mut bucket_header = [0_u8; BUCKET_HEADER_BYTES];
-    bucket_header[..8].copy_from_slice(&BUCKET_MAGIC);
-    bucket_header[8..].copy_from_slice(&bucket_count.to_le_bytes());
-    write_hashed(&mut output, &mut hasher, &bucket_header)?;
-    for _ in 0..bucket_count {
-        let draft = read_descriptor_draft(&mut descriptors)?;
-        let member_offset = membership_start
-            .checked_add(draft.relative_offset)
-            .ok_or(BuildError::LengthOverflow)?;
-        let record = encode_bucket_descriptor(draft, member_offset);
-        write_hashed(&mut output, &mut hasher, &record)?;
-    }
-    copy_hashed(&mut memberships, &mut output, &mut hasher)?;
-    output.flush()?;
-    output.get_ref().sync_all()?;
-    let bytes = output.get_ref().metadata()?.len();
-    Ok((bytes, hasher.finalize()))
+        .open(&path)?;
+    let mut writer = BufWriter::new(file);
+    let write_records: Vec<_> = records
+        .iter()
+        .map(|record| BucketWriteRecord::new(record.key, record.member_count, record.checksum))
+        .collect();
+    let result = write_bucket_segment(&mut writer, &write_records, memberships)?;
+    writer.flush()?;
+    writer.get_ref().sync_all()?;
+    Ok(SegmentFile {
+        path,
+        bytes: result.bytes,
+        checksum: result.checksum,
+    })
 }
 
 fn write_final_container(
     source: &mut File,
     layout: &FileLayout,
     keys: SectionDescriptor,
-    bucket_payload: &Path,
-    bucket_bytes: u64,
-    bucket_checksum: u32,
+    band_hashes: SectionDescriptor,
+    segments: &[SegmentFile],
     destination_temp: &Path,
 ) -> Result<(), BuildError> {
+    let section_count = 2_usize
+        .checked_add(segments.len())
+        .ok_or(BuildError::LengthOverflow)?;
+    let section_count = u32::try_from(section_count).map_err(|_| BuildError::LengthOverflow)?;
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination_temp)?;
     let mut output = BufWriter::new(file);
-    output.write_all(&encode_header(layout.metadata(), 2))?;
-    output.write_all(&encode_section_header(
-        SectionKind::Keys,
-        keys.payload_length(),
-        keys.checksum(),
-    ))?;
-    copy_file_range(
+    output.write_all(&encode_header(layout.metadata(), section_count))?;
+
+    copy_framed_source_section(source, &mut output, SectionKind::Keys, keys)?;
+    copy_framed_source_section(
         source,
-        keys.payload_offset(),
-        keys.payload_length(),
         &mut output,
+        SectionKind::BandHashes,
+        band_hashes,
     )?;
-    output.write_all(&encode_section_header(
-        SectionKind::Buckets,
-        bucket_bytes,
-        bucket_checksum,
-    ))?;
-    let mut buckets = BufReader::new(File::open(bucket_payload)?);
-    io::copy(&mut buckets, &mut output)?;
+    for segment in segments {
+        output.write_all(&encode_section_header(
+            SectionKind::Buckets,
+            segment.bytes,
+            segment.checksum,
+        ))?;
+        let mut payload = BufReader::new(File::open(&segment.path)?);
+        io::copy(&mut payload, &mut output)?;
+    }
     output.flush()?;
     output.get_ref().sync_all()?;
     Ok(())
+}
+
+fn copy_framed_source_section(
+    source: &mut File,
+    output: &mut impl Write,
+    kind: SectionKind,
+    descriptor: SectionDescriptor,
+) -> Result<(), BuildError> {
+    output.write_all(&encode_section_header(
+        kind,
+        descriptor.payload_length(),
+        descriptor.checksum(),
+    ))?;
+    copy_file_range(
+        source,
+        descriptor.payload_offset(),
+        descriptor.payload_length(),
+        output,
+    )
 }
 
 fn encode_header(metadata: &IndexMetadata, section_count: u32) -> [u8; HEADER_BYTES] {
@@ -690,7 +791,7 @@ fn encode_header(metadata: &IndexMetadata, section_count: u32) -> [u8; HEADER_BY
     header[40..48].copy_from_slice(&metadata.seed().to_le_bytes());
     header[48..56].copy_from_slice(&metadata.threshold().to_le_bytes());
     header[56..64].copy_from_slice(&metadata.feature_flags().to_le_bytes());
-    let checksum = crc32(&header[..64]);
+    let checksum = crc32fast::hash(&header[..64]);
     header[64..68].copy_from_slice(&checksum.to_le_bytes());
     header
 }
@@ -708,20 +809,20 @@ fn encode_section_header(
     header
 }
 
-fn algorithm_raw(algorithm: Algorithm) -> u16 {
+const fn algorithm_raw(algorithm: Algorithm) -> u16 {
     match algorithm {
         Algorithm::MinHashLsh => 1,
     }
 }
 
-fn scheme_raw(scheme: SignatureScheme) -> u16 {
+const fn scheme_raw(scheme: SignatureScheme) -> u16 {
     match scheme {
         SignatureScheme::PariAffine32V1 => 1,
         SignatureScheme::PariAffine64V1 => 2,
     }
 }
 
-fn codec_raw(codec: CodecId) -> u16 {
+const fn codec_raw(codec: CodecId) -> u16 {
     match codec {
         CodecId::Bytes => 1,
         CodecId::Utf8 => 2,
@@ -731,7 +832,7 @@ fn codec_raw(codec: CodecId) -> u16 {
     }
 }
 
-fn section_kind_raw(kind: SectionKind) -> u16 {
+const fn section_kind_raw(kind: SectionKind) -> u16 {
     match kind {
         SectionKind::Keys => 1,
         SectionKind::BandHashes => 2,
@@ -781,42 +882,43 @@ fn read_spill_record(reader: &mut impl Read) -> Result<Option<SpillRecord>, Buil
 }
 
 fn finish_descriptor(writer: &mut impl Write, draft: DescriptorDraft) -> Result<(), BuildError> {
-    writer.write_all(&draft.band.to_le_bytes())?;
+    writer.write_all(&draft.key.band().to_le_bytes())?;
     writer.write_all(&draft.member_count.to_le_bytes())?;
-    writer.write_all(&draft.hash.to_le_bytes())?;
+    writer.write_all(&draft.key.hash().to_le_bytes())?;
     writer.write_all(&draft.relative_offset.to_le_bytes())?;
-    writer.write_all(&draft.member_bytes.to_le_bytes())?;
     writer.write_all(&draft.checksum.to_le_bytes())?;
-    writer.write_all(&0_u32.to_le_bytes())?;
     Ok(())
 }
 
-fn read_descriptor_draft(reader: &mut impl Read) -> Result<DescriptorDraft, BuildError> {
-    let mut raw = [0_u8; BUCKET_RECORD_BYTES];
-    reader.read_exact(&mut raw)?;
-    if u32::from_le_bytes(
-        raw[36..40]
-            .try_into()
-            .map_err(|_| BuildError::LengthOverflow)?,
-    ) != 0
-    {
-        return Err(BuildError::InvalidSource {
-            reason: "temporary descriptor reserved bytes are nonzero",
-        });
+fn read_descriptor_optional(reader: &mut impl Read) -> Result<Option<DescriptorDraft>, BuildError> {
+    let mut raw = [0_u8; DESCRIPTOR_BYTES];
+    let mut read = 0;
+    while read < raw.len() {
+        match reader.read(&mut raw[read..])? {
+            0 if read == 0 => return Ok(None),
+            0 => {
+                return Err(BuildError::InvalidSource {
+                    reason: "truncated temporary descriptor",
+                });
+            }
+            count => read += count,
+        }
     }
-    Ok(DescriptorDraft {
-        band: u32::from_le_bytes(
-            raw[0..4]
-                .try_into()
-                .map_err(|_| BuildError::LengthOverflow)?,
+    Ok(Some(DescriptorDraft {
+        key: BucketKey::new(
+            u32::from_le_bytes(
+                raw[0..4]
+                    .try_into()
+                    .map_err(|_| BuildError::LengthOverflow)?,
+            ),
+            u64::from_le_bytes(
+                raw[8..16]
+                    .try_into()
+                    .map_err(|_| BuildError::LengthOverflow)?,
+            ),
         ),
         member_count: u32::from_le_bytes(
             raw[4..8]
-                .try_into()
-                .map_err(|_| BuildError::LengthOverflow)?,
-        ),
-        hash: u64::from_le_bytes(
-            raw[8..16]
                 .try_into()
                 .map_err(|_| BuildError::LengthOverflow)?,
         ),
@@ -825,58 +927,12 @@ fn read_descriptor_draft(reader: &mut impl Read) -> Result<DescriptorDraft, Buil
                 .try_into()
                 .map_err(|_| BuildError::LengthOverflow)?,
         ),
-        member_bytes: u64::from_le_bytes(
-            raw[24..32]
-                .try_into()
-                .map_err(|_| BuildError::LengthOverflow)?,
-        ),
         checksum: u32::from_le_bytes(
-            raw[32..36]
+            raw[24..28]
                 .try_into()
                 .map_err(|_| BuildError::LengthOverflow)?,
         ),
-    })
-}
-
-fn encode_bucket_descriptor(
-    draft: DescriptorDraft,
-    member_offset: u64,
-) -> [u8; BUCKET_RECORD_BYTES] {
-    let mut output = [0_u8; BUCKET_RECORD_BYTES];
-    output[0..4].copy_from_slice(&draft.band.to_le_bytes());
-    output[4..8].copy_from_slice(&draft.member_count.to_le_bytes());
-    output[8..16].copy_from_slice(&draft.hash.to_le_bytes());
-    output[16..24].copy_from_slice(&member_offset.to_le_bytes());
-    output[24..32].copy_from_slice(&draft.member_bytes.to_le_bytes());
-    output[32..36].copy_from_slice(&draft.checksum.to_le_bytes());
-    output
-}
-
-fn write_hashed(
-    writer: &mut impl Write,
-    hasher: &mut Hasher,
-    bytes: &[u8],
-) -> Result<(), BuildError> {
-    writer.write_all(bytes)?;
-    hasher.update(bytes);
-    Ok(())
-}
-
-fn copy_hashed(
-    reader: &mut impl Read,
-    writer: &mut impl Write,
-    hasher: &mut Hasher,
-) -> Result<(), BuildError> {
-    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        writer.write_all(&buffer[..count])?;
-        hasher.update(&buffer[..count]);
-    }
-    Ok(())
+    }))
 }
 
 fn copy_file_range(
@@ -899,12 +955,11 @@ fn copy_file_range(
 }
 
 fn build_nonce() -> Result<u128, BuildError> {
-    let duration =
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| BuildError::InvalidSource {
-                reason: "system clock is before UNIX epoch",
-            })?;
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| BuildError::InvalidSource {
+            reason: "system clock is before UNIX epoch",
+        })?;
     Ok(duration.as_nanos() ^ u128::from(std::process::id()))
 }
 
