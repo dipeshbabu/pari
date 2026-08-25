@@ -55,7 +55,7 @@ pub(crate) fn append_storage_mutation_metrics(
         reference.insert(key, signature)?;
     }
     let mutation_elapsed = mutation_started.elapsed();
-    let operations = item_count.checked_mul(2).ok_or("mutation operation count overflowed")?;
+    let operations = item_count * 2;
     let mutation_seconds = mutation_elapsed.as_secs_f64();
     let operations_per_second = if mutation_seconds > 0.0 {
         operations as f64 / mutation_seconds
@@ -118,12 +118,12 @@ fn build_signature(
     feature_count: usize,
     num_perm: usize,
     seed: u64,
-) -> Result<MinHash32, pari_core::MinHashError> {
-    let item = u64::try_from(item).unwrap_or(u64::MAX);
+) -> Result<MinHash32, Box<dyn Error>> {
+    let item = u64::try_from(item)?;
     let mut sketch = MinHash32::new(num_perm, seed)?;
     let base = item.wrapping_mul(1_000_003);
     for offset in 0..feature_count {
-        let offset = u64::try_from(offset).unwrap_or(u64::MAX);
+        let offset = u64::try_from(offset)?;
         sketch.update(&base.wrapping_add(offset).to_le_bytes());
     }
     Ok(sketch)
@@ -194,9 +194,9 @@ mod tests {
                 .contains_key("storage.persistent.mutation_operations_per_second")
         );
         assert!(report.metrics.contains_key("storage.persistent.sync_ms"));
-        assert_eq!(
-            report.metrics["storage.persistent.mutation_parity"].value,
-            1.0
+        assert!(
+            (report.metrics["storage.persistent.mutation_parity"].value - 1.0).abs()
+                < f64::EPSILON
         );
     }
 }
