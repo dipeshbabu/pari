@@ -50,14 +50,15 @@ fn bench_lsh_query(criterion: &mut Criterion) {
 
 fn bench_grouping(criterion: &mut Criterion) {
     criterion.bench_function("group_pairs_100k_chain_edges", |bencher| {
-        bencher.iter(|| {
-            black_box(group_pairs(
-                (0_u64..100_000).map(|key| (key, key + 1)),
-                2,
-            ))
-        })
+        bencher.iter(|| black_box(group_pairs((0_u64..100_000).map(|key| (key, key + 1)), 2)))
     });
 }
 
-criterion_group!(benches, bench_hashing, bench_minhash_update, bench_lsh_query, bench_grouping);
+criterion_group!(
+    benches,
+    bench_hashing,
+    bench_minhash_update,
+    bench_lsh_query,
+    bench_grouping
+);
 criterion_main!(benches);
