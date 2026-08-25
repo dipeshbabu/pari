@@ -44,26 +44,25 @@ impl BindingError {
     fn kind(&self) -> BindingErrorKind {
         match self {
             Self::Closed => BindingErrorKind::Closed,
-            Self::Poisoned => BindingErrorKind::Storage,
             Self::MinHash(MinHashError::InvalidPermutationCount { .. }) => {
                 BindingErrorKind::Configuration
             }
             Self::MinHash(
                 MinHashError::IncompatibleSeed { .. }
                 | MinHashError::IncompatiblePermutationCount { .. },
-            ) => BindingErrorKind::Compatibility,
-            Self::Store(StoreError::DuplicateKey { .. }) => BindingErrorKind::DuplicateKey,
-            Self::Store(
+            )
+            | Self::Store(
                 StoreError::IncompatibleSeed { .. }
                 | StoreError::IncompatiblePermutationCount { .. },
             ) => BindingErrorKind::Compatibility,
+            Self::Store(StoreError::DuplicateKey { .. }) => BindingErrorKind::DuplicateKey,
             Self::Store(StoreError::Index(
                 LshError::InvalidThreshold { .. }
                 | LshError::InvalidPermutationCount { .. }
                 | LshError::AutomaticTuningTooLarge { .. }
                 | LshError::InvalidParams { .. },
             )) => BindingErrorKind::Configuration,
-            Self::Store(_) => BindingErrorKind::Storage,
+            Self::Poisoned | Self::Store(_) => BindingErrorKind::Storage,
         }
     }
 
