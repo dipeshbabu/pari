@@ -19,10 +19,9 @@ use std::{
 
 use crc32fast::Hasher;
 use pari_format::{
-    bucket_record_size, write_bucket_segment, Algorithm, BucketError, BucketKey,
-    BucketWriteRecord, CodecId, FileLayout, FormatError, IndexMetadata, LayoutError,
-    SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
-    BUCKET_SEGMENT_TARGET_BYTES,
+    bucket_record_size, write_bucket_segment, Algorithm, BucketError, BucketKey, BucketWriteRecord,
+    CodecId, FileLayout, FormatError, IndexMetadata, LayoutError, SectionDescriptor, SectionKind,
+    SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES, BUCKET_SEGMENT_TARGET_BYTES,
 };
 
 const FILE_MAGIC: [u8; 8] = *b"PARIIDX\0";
@@ -736,12 +735,7 @@ fn write_final_container(
     output.write_all(&encode_header(layout.metadata(), section_count))?;
 
     copy_framed_source_section(source, &mut output, SectionKind::Keys, keys)?;
-    copy_framed_source_section(
-        source,
-        &mut output,
-        SectionKind::BandHashes,
-        band_hashes,
-    )?;
+    copy_framed_source_section(source, &mut output, SectionKind::BandHashes, band_hashes)?;
     for segment in segments {
         output.write_all(&encode_section_header(
             SectionKind::Buckets,
@@ -955,11 +949,12 @@ fn copy_file_range(
 }
 
 fn build_nonce() -> Result<u128, BuildError> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| BuildError::InvalidSource {
-            reason: "system clock is before UNIX epoch",
-        })?;
+    let duration =
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| BuildError::InvalidSource {
+                reason: "system clock is before UNIX epoch",
+            })?;
     Ok(duration.as_nanos() ^ u128::from(std::process::id()))
 }
 
