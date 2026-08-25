@@ -124,7 +124,10 @@ fn next_string(
 }
 
 fn print_metric_summary(report: &pari_bench::BenchmarkReport) {
-    println!("engine={} git={}", report.engine, report.environment.git_sha);
+    println!(
+        "engine={} git={}",
+        report.engine, report.environment.git_sha
+    );
     for (name, metric) in &report.metrics {
         let direction = match metric.direction {
             MetricDirection::Higher => "higher",
