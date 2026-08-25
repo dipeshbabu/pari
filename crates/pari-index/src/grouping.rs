@@ -146,11 +146,7 @@ where
     I: IntoIterator<Item = (u64, u64)>,
 {
     let (mut union_find, keys) = union_stream(pairs);
-    collect_default_groups(
-        &mut union_find,
-        keys.into_iter().enumerate().map(|(id, key)| (id, key)),
-        min_size,
-    )
+    collect_default_groups(&mut union_find, keys.into_iter().enumerate(), min_size)
 }
 
 /// Group a stream of key pairs and choose a representative from each component.
@@ -169,7 +165,7 @@ where
     let (mut union_find, keys) = union_stream(pairs);
     collect_selected_groups(
         &mut union_find,
-        keys.into_iter().enumerate().map(|(id, key)| (id, key)),
+        keys.into_iter().enumerate(),
         min_size,
         representative,
     )
@@ -375,11 +371,7 @@ where
     Ok(groups)
 }
 
-fn collect_components<I>(
-    union_find: &mut UnionFind,
-    members: I,
-    min_size: usize,
-) -> Vec<Vec<u64>>
+fn collect_components<I>(union_find: &mut UnionFind, members: I, min_size: usize) -> Vec<Vec<u64>>
 where
     I: IntoIterator<Item = (usize, u64)>,
 {
@@ -493,7 +485,10 @@ mod tests {
     }
 
     fn member_lists(groups: &[DuplicateGroup]) -> Vec<Vec<u64>> {
-        groups.iter().map(|group| group.members().to_vec()).collect()
+        groups
+            .iter()
+            .map(|group| group.members().to_vec())
+            .collect()
     }
 
     #[test]
@@ -576,7 +571,7 @@ mod tests {
             state = splitmix(state);
             let right = usize::try_from(state % node_count as u64).expect("small test node");
             edges.push((left as u64, right as u64));
-            if state & 3 == 0 {
+            if state.trailing_zeros() >= 2 {
                 edges.push((left as u64, right as u64));
             }
         }
