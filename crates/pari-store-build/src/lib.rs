@@ -617,8 +617,10 @@ fn assemble_bucket_payload(
     let mut output = BufWriter::new(output_file);
     let mut hasher = Hasher::new();
 
-    write_hashed(&mut output, &mut hasher, &BUCKET_MAGIC)?;
-    write_hashed(&mut output, &mut hasher, &bucket_count.to_le_bytes())?;
+    let mut bucket_header = [0_u8; BUCKET_HEADER_BYTES];
+    bucket_header[..8].copy_from_slice(&BUCKET_MAGIC);
+    bucket_header[8..].copy_from_slice(&bucket_count.to_le_bytes());
+    write_hashed(&mut output, &mut hasher, &bucket_header)?;
     for _ in 0..bucket_count {
         let draft = read_descriptor_draft(&mut descriptors)?;
         let member_offset = membership_start
