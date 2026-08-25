@@ -269,11 +269,9 @@ impl LazyIndex32 {
                 .directory
                 .binary_search_by_key(&key, |location| location.key())
             {
-                for member in read_bucket_members(
-                    &self.layout,
-                    &mut self.file,
-                    self.directory[index],
-                )? {
+                for member in
+                    read_bucket_members(&self.layout, &mut self.file, self.directory[index])?
+                {
                     output.insert(member);
                 }
             }
@@ -754,12 +752,10 @@ mod tests {
         let layout = FileLayout::read_from(&mut file).expect("layout");
         assert!(layout.section(SectionKind::Keys).is_some());
         assert!(layout.section(SectionKind::BandHashes).is_some());
-        assert!(
-            layout
-                .sections()
-                .iter()
-                .any(|section| section.kind() == SectionKind::Buckets)
-        );
+        assert!(layout
+            .sections()
+            .iter()
+            .any(|section| section.kind() == SectionKind::Buckets));
         cleanup(&source);
         cleanup(&lazy_path);
     }
