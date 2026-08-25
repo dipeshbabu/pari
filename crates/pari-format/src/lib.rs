@@ -7,6 +7,7 @@
 
 mod codec;
 mod format;
+mod layout;
 
 pub use codec::{
     BytesCodec, CodecError, CodecId, I64Codec, JsonValueCodec, KeyCodec, U64Codec, Utf8Codec,
@@ -14,3 +15,4 @@ pub use codec::{
 pub use format::{
     Algorithm, FormatError, IndexFile, IndexMetadata, Section, SectionKind, SignatureScheme,
 };
+pub use layout::{FileLayout, LayoutError, SectionDescriptor};
