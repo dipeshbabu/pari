@@ -8,9 +8,10 @@ use pari_bench::{
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args().skip(1);
     let command = arguments.next().unwrap_or_else(|| "help".into());
+    let arguments: Vec<String> = arguments.collect();
     match command.as_str() {
-        "run" => run_command(arguments.collect()),
-        "compare" => compare_command(arguments.collect()),
+        "run" => run_command(&arguments),
+        "compare" => compare_command(&arguments),
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
@@ -19,7 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn run_command(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
+fn run_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     let mut config = BenchmarkConfig {
         items: 5_000,
         queries: 100,
@@ -37,15 +38,15 @@ fn run_command(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
         let flag = &arguments[index];
         index += 1;
         match flag.as_str() {
-            "--items" => config.items = parse_value(&arguments, &mut index, flag)?,
-            "--queries" => config.queries = parse_value(&arguments, &mut index, flag)?,
-            "--set-size" => config.set_size = parse_value(&arguments, &mut index, flag)?,
-            "--overlap" => config.overlap = parse_value(&arguments, &mut index, flag)?,
-            "--threshold" => config.threshold = parse_value(&arguments, &mut index, flag)?,
-            "--num-perm" => config.num_perm = parse_value(&arguments, &mut index, flag)?,
-            "--seed" => config.seed = parse_value(&arguments, &mut index, flag)?,
-            "--dataset" => config.dataset = Some(next_string(&arguments, &mut index, flag)?),
-            "--output" => output = PathBuf::from(next_string(&arguments, &mut index, flag)?),
+            "--items" => config.items = parse_value(arguments, &mut index, flag)?,
+            "--queries" => config.queries = parse_value(arguments, &mut index, flag)?,
+            "--set-size" => config.set_size = parse_value(arguments, &mut index, flag)?,
+            "--overlap" => config.overlap = parse_value(arguments, &mut index, flag)?,
+            "--threshold" => config.threshold = parse_value(arguments, &mut index, flag)?,
+            "--num-perm" => config.num_perm = parse_value(arguments, &mut index, flag)?,
+            "--seed" => config.seed = parse_value(arguments, &mut index, flag)?,
+            "--dataset" => config.dataset = Some(next_string(arguments, &mut index, flag)?),
+            "--output" => output = PathBuf::from(next_string(arguments, &mut index, flag)?),
             "--help" | "-h" => {
                 print_run_help();
                 return Ok(());
@@ -61,7 +62,7 @@ fn run_command(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn compare_command(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
+fn compare_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     if arguments.len() < 2 {
         return Err("usage: pari-bench compare BASELINE.json CURRENT.json [--output PATH]".into());
     }
@@ -74,7 +75,7 @@ fn compare_command(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
         let flag = &arguments[index];
         index += 1;
         match flag.as_str() {
-            "--output" => output = PathBuf::from(next_string(&arguments, &mut index, flag)?),
+            "--output" => output = PathBuf::from(next_string(arguments, &mut index, flag)?),
             "--help" | "-h" => {
                 print_compare_help();
                 return Ok(());
