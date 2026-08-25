@@ -1,8 +1,8 @@
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 
 use crc32fast::{hash as crc32, Hasher};
 
-use crate::{BucketError, BucketKey, BUCKET_SEGMENT_HEADER_BYTES};
+use crate::{BucketError, BucketKey, LayoutError, BUCKET_SEGMENT_HEADER_BYTES};
 
 const BUCKET_SEGMENT_MAGIC: [u8; 8] = *b"PARIBKT\0";
 const BUCKET_SEGMENT_VERSION: u16 = 1;
@@ -10,6 +10,7 @@ const BUCKET_SEGMENT_HEADER_BYTES_U16: u16 = 40;
 const BUCKET_DIRECTORY_ENTRY_BYTES: usize = 32;
 const U64_BYTES_U64: u64 = 8;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
+const COPY_BUFFER_BYTES_U64: u64 = 64 * 1024;
 
 /// Metadata for one bucket whose encoded members are supplied by a sequential
 /// reader to [`write_bucket_segment`].
@@ -77,8 +78,7 @@ pub fn write_bucket_segment<W: Write, R: Read>(
     let member_start = BUCKET_SEGMENT_HEADER_BYTES
         .checked_add(directory_bytes)
         .ok_or(BucketError::LengthOverflow)?;
-    let mut member_offset =
-        u64::try_from(member_start).map_err(|_| BucketError::LengthOverflow)?;
+    let mut member_offset = u64::try_from(member_start).map_err(|_| BucketError::LengthOverflow)?;
     let mut directory = Vec::with_capacity(directory_bytes);
     let mut total_member_bytes = 0_u64;
 
@@ -115,7 +115,8 @@ pub fn write_bucket_segment<W: Write, R: Read>(
             .to_le_bytes(),
     );
     header[28..32].copy_from_slice(&crc32(&directory).to_le_bytes());
-    header[32..36].copy_from_slice(&crc32(&header[..32]).to_le_bytes());
+    let header_checksum = crc32(&header[..32]);
+    header[32..36].copy_from_slice(&header_checksum.to_le_bytes());
 
     let mut outer = Hasher::new();
     write_hashed(writer, &mut outer, &header)?;
@@ -128,7 +129,7 @@ pub fn write_bucket_segment<W: Write, R: Read>(
             .ok_or(BucketError::LengthOverflow)?;
         let mut bucket = Hasher::new();
         while remaining > 0 {
-            let count = usize::try_from(remaining.min(COPY_BUFFER_BYTES as u64))
+            let count = usize::try_from(remaining.min(COPY_BUFFER_BYTES_U64))
                 .map_err(|_| BucketError::LengthOverflow)?;
             members.read_exact(&mut buffer[..count]).map_err(io_error)?;
             writer.write_all(&buffer[..count]).map_err(io_error)?;
@@ -176,13 +177,8 @@ fn write_hashed(
     Ok(())
 }
 
-fn io_error(error: io::Error) -> BucketError {
-    BucketError::Invalid {
-        reason: match error.kind() {
-            io::ErrorKind::UnexpectedEof => "bucket member stream ended early",
-            _ => "bucket segment I/O failed",
-        },
-    }
+fn io_error(error: std::io::Error) -> BucketError {
+    BucketError::Layout(LayoutError::Io(error))
 }
 
 #[cfg(test)]
@@ -222,14 +218,13 @@ mod tests {
             ),
         ];
         let mut output = Vec::new();
-        let result = write_bucket_segment(
-            &mut output,
-            &records,
-            &mut Cursor::new(member_bytes),
-        )
-        .expect("stream");
+        let result = write_bucket_segment(&mut output, &records, &mut Cursor::new(member_bytes))
+            .expect("stream");
         assert_eq!(output, reference);
-        assert_eq!(result.bytes, u64::try_from(reference.len()).expect("length"));
+        assert_eq!(
+            result.bytes,
+            u64::try_from(reference.len()).expect("length")
+        );
         assert_eq!(result.checksum, crc32(&reference));
     }
 }
