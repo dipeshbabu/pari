@@ -26,9 +26,7 @@ pub use workload::run_benchmark;
 /// external-builder behavior. A bounded mutation slice then adds remove/reinsert
 /// throughput, sync latency, and parity after reopen without changing the report
 /// schema.
-pub fn run_storage_benchmark(
-    config: &BenchmarkConfig,
-) -> Result<BenchmarkReport, Box<dyn Error>> {
+pub fn run_storage_benchmark(config: &BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn Error>> {
     let mut report = storage::run_storage_benchmark(config)?;
     storage_mutation::append_storage_mutation_metrics(config, &mut report)?;
     Ok(report)
