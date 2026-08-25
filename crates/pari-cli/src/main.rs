@@ -3,8 +3,8 @@
 use std::{
     error::Error,
     fs::File,
-    io::{self, BufRead, BufReader, BufWriter, Read, Seek, Write},
-    path::{Path, PathBuf},
+    io::{self, BufRead, BufReader, BufWriter, Write},
+    path::PathBuf,
     process::ExitCode,
 };
 
@@ -20,7 +20,11 @@ use pari_store::PersistentIndex32;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Parser)]
-#[command(name = "pari", version, about = "Similarity indexing and deduplication for large datasets")]
+#[command(
+    name = "pari",
+    version,
+    about = "Similarity indexing and deduplication for large datasets"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -67,7 +71,7 @@ struct IndexArgs {
 #[derive(Debug, clap::Args)]
 struct SearchArgs {
     /// Existing `.pari` index file.
-    #[arg(short, long)]
+    #[arg(long)]
     index: PathBuf,
     /// JSONL query path, or '-' for stdin.
     #[arg(short, long, default_value = "-")]
@@ -192,7 +196,8 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    match &cli.command {
         Commands::Index(args) => index(args),
         Commands::Search(args) => search(args),
         Commands::Dedup(args) => dedup(args),
@@ -207,26 +212,24 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn index(args: IndexArgs) -> Result<(), Box<dyn Error>> {
+fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
     if args.batch_size == 0 {
         return Err("--batch-size must be positive".into());
     }
-    let mut store = PersistentIndex32::create(
-        &args.output,
-        args.threshold,
-        args.num_perm,
-        args.seed,
-    )?;
+    let mut store =
+        PersistentIndex32::create(&args.output, args.threshold, args.num_perm, args.seed)?;
     let reader = open_reader(&args.input)?;
     let mut batch = Vec::with_capacity(args.batch_size);
-    for_json_lines(reader, |line, record: Record| {
-        batch.push((record.key, make_sketch(&record.values, args.num_perm, args.seed)?));
+    for_json_lines(reader, |_line, record: Record| {
+        batch.push((
+            record.key,
+            make_sketch(&record.values, args.num_perm, args.seed)?,
+        ));
         if batch.len() == args.batch_size {
             insert_batch(&mut store, &batch)?;
             store.sync()?;
             batch.clear();
         }
-        let _ = line;
         Ok(())
     })?;
     if !batch.is_empty() {
@@ -255,12 +258,15 @@ fn index(args: IndexArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn insert_batch(store: &mut PersistentIndex32, batch: &[(u64, MinHash32)]) -> Result<(), Box<dyn Error>> {
+fn insert_batch(
+    store: &mut PersistentIndex32,
+    batch: &[(u64, MinHash32)],
+) -> Result<(), Box<dyn Error>> {
     store.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
     Ok(())
 }
 
-fn search(args: SearchArgs) -> Result<(), Box<dyn Error>> {
+fn search(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
     let store = PersistentIndex32::open(&args.index)?;
     let reader = open_reader(&args.input)?;
     let mut writer = BufWriter::new(io::stdout().lock());
@@ -280,11 +286,7 @@ fn search(args: SearchArgs) -> Result<(), Box<dyn Error>> {
             writeln!(writer)?;
         } else {
             let id = query.id.as_deref().unwrap_or("-");
-            writeln!(
-                writer,
-                "{query_index}\t{id}\t{}",
-                join_u64(&candidates)
-            )?;
+            writeln!(writer, "{query_index}\t{id}\t{}", join_u64(&candidates))?;
         }
         query_index += 1;
         Ok(())
@@ -293,7 +295,7 @@ fn search(args: SearchArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn dedup(args: DedupArgs) -> Result<(), Box<dyn Error>> {
+fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     if args.min_size == 0 {
         return Err("--min-size must be positive".into());
     }
@@ -343,7 +345,7 @@ fn dedup(args: DedupArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
+fn stats(args: &StatsArgs) -> Result<(), Box<dyn Error>> {
     let store = PersistentIndex32::open(&args.index)?;
     let current = store.stats()?;
     if args.json {
@@ -377,18 +379,19 @@ fn stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn verify(args: VerifyArgs) -> Result<(), Box<dyn Error>> {
+fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
     let mut file = File::open(&args.index)?;
     let layout = FileLayout::read_from(&mut file)?;
     let bands = usize::try_from(layout.metadata().bands())?;
     let mut locations = Vec::new();
     let mut bucket_sections = 0_usize;
     for descriptor in layout.sections().iter().copied() {
-        // Verify the outer CRC for every section first.
         let _ = layout.read_section(&mut file, descriptor)?;
         if descriptor.kind() == SectionKind::Buckets {
             bucket_sections += 1;
-            locations.extend(decode_bucket_segment(&layout, &mut file, descriptor, bands)?);
+            locations.extend(decode_bucket_segment(
+                &layout, &mut file, descriptor, bands,
+            )?);
         }
     }
     validate_global_bucket_order(&locations)?;
@@ -425,7 +428,10 @@ fn make_sketch(values: &[String], num_perm: usize, seed: u64) -> Result<MinHash3
     Ok(sketch)
 }
 
-fn for_json_lines<T, F>(mut reader: Box<dyn BufRead>, mut operation: F) -> Result<(), Box<dyn Error>>
+fn for_json_lines<T, F>(
+    mut reader: Box<dyn BufRead>,
+    mut operation: F,
+) -> Result<(), Box<dyn Error>>
 where
     T: for<'de> Deserialize<'de>,
     F: FnMut(usize, T) -> Result<(), Box<dyn Error>>,
@@ -445,8 +451,7 @@ where
         }
         let value = serde_json::from_str::<T>(trimmed)
             .map_err(|error| format!("invalid JSON on line {line_number}: {error}"))?;
-        operation(line_number, value)
-            .map_err(|error| format!("line {line_number}: {error}"))?;
+        operation(line_number, value).map_err(|error| format!("line {line_number}: {error}"))?;
     }
     Ok(())
 }
@@ -474,6 +479,3 @@ fn join_u64(values: &[u64]) -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
-
-#[allow(dead_code)]
-fn _assert_read_seek<R: Read + Seek>(_reader: &mut R, _path: &Path) {}
