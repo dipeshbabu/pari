@@ -76,7 +76,10 @@ fn fsynced_new_generation_before_rename_is_not_committed() {
     assert!(reopened.contains(10));
     assert!(!reopened.contains(20));
     assert_eq!(reopened.len(), 1);
-    assert_eq!(fs::read(&target).expect("reread committed target"), committed_bytes);
+    assert_eq!(
+        fs::read(&target).expect("reread committed target"),
+        committed_bytes
+    );
     drop(reopened);
 
     cleanup(&target);
