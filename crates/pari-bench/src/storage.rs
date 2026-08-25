@@ -27,9 +27,7 @@ use crate::{
 
 /// Run a deterministic end-to-end storage benchmark across Pari's in-memory,
 /// mutable persistent, bounded builder, and read-only lazy paths.
-pub fn run_storage_benchmark(
-    config: &BenchmarkConfig,
-) -> Result<BenchmarkReport, Box<dyn Error>> {
+pub fn run_storage_benchmark(config: &BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn Error>> {
     validate_config(config)?;
     let corpus = match &config.dataset {
         Some(path) => load_set_dataset(Path::new(path), config.items)?,
@@ -436,10 +434,7 @@ fn insert_throughput(report: &mut BenchmarkReport, name: &str, count: usize, ela
     } else {
         0.0
     };
-    report.insert_metric(
-        name,
-        Metric::new(value, "items/s", MetricDirection::Higher),
-    );
+    report.insert_metric(name, Metric::new(value, "items/s", MetricDirection::Higher));
 }
 
 fn insert_elapsed(report: &mut BenchmarkReport, name: &str, elapsed: Duration) {
@@ -616,9 +611,7 @@ mod tests {
             dataset: None,
         };
         let report = run_storage_benchmark(&config).expect("storage benchmark");
-        assert!(
-            (report.metrics["storage.candidate_parity"].value - 1.0).abs() < f64::EPSILON
-        );
+        assert!((report.metrics["storage.candidate_parity"].value - 1.0).abs() < f64::EPSILON);
         for metric in [
             "storage.persistent.reopen_ms",
             "storage.persistent.bytes_per_item",
