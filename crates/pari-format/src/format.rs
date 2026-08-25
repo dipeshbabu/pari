@@ -543,9 +543,7 @@ fn decode_header(bytes: &[u8]) -> Result<(IndexMetadata, u32), FormatError> {
     if usize::from(header_size) != HEADER_SIZE {
         return Err(FormatError::InvalidHeaderSize { found: header_size });
     }
-    if header.get(36..40) != Some(&[0, 0, 0, 0])
-        || header.get(68..72) != Some(&[0, 0, 0, 0])
-    {
+    if header.get(36..40) != Some(&[0, 0, 0, 0]) || header.get(68..72) != Some(&[0, 0, 0, 0]) {
         return Err(FormatError::InvalidReservedBytes);
     }
     let expected_checksum = read_u32(header, 64)?;
