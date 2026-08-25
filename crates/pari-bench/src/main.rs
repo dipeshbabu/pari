@@ -40,7 +40,7 @@ fn storage_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let (config, output) = parse_benchmark_options(arguments, "pari-storage-benchmark.json")?;
-    let report = run_storage_benchmark(config)?;
+    let report = run_storage_benchmark(&config)?;
     write_report(&output, &report)?;
     println!("wrote {}", output.display());
     print_metric_summary(&report);
@@ -123,7 +123,9 @@ fn compare_command(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 fn has_help(arguments: &[String]) -> bool {
-    arguments.iter().any(|argument| matches!(argument.as_str(), "--help" | "-h"))
+    arguments
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--help" | "-h"))
 }
 
 fn parse_value<T>(arguments: &[String], index: &mut usize, flag: &str) -> Result<T, Box<dyn Error>>
