@@ -248,9 +248,7 @@ mod tests {
             vec![8, 7, 6, 5, 4, 3, 2, 1]
         );
         assert_eq!(
-            unsigned
-                .decode(&[8, 7, 6, 5, 4, 3, 2, 1])
-                .expect("decode"),
+            unsigned.decode(&[8, 7, 6, 5, 4, 3, 2, 1]).expect("decode"),
             0x0102_0304_0506_0708
         );
         assert!(matches!(
