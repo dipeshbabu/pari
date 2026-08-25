@@ -14,6 +14,12 @@ use std::{
 
 use pari_core::MinHash32;
 
+mod grouping;
+
+pub use grouping::{
+    group_pairs, group_pairs_with_representative, CandidatePairs, DuplicateGroup, GroupError,
+};
+
 const AUTO_TUNE_INTEGRATION_SEGMENTS: u32 = 64;
 const MAX_AUTO_TUNE_PERMUTATIONS: usize = 4_096;
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
