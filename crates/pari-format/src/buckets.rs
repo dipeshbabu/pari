@@ -208,8 +208,7 @@ pub fn encode_bucket_segment(records: &[BucketRecord<'_>]) -> Result<Vec<u8>, Bu
         .ok_or(BucketError::LengthOverflow)?;
     let mut directory = Vec::with_capacity(directory_bytes);
     let mut members_payload = Vec::with_capacity(member_bytes);
-    let mut member_offset =
-        u64::try_from(member_start).map_err(|_| BucketError::LengthOverflow)?;
+    let mut member_offset = u64::try_from(member_start).map_err(|_| BucketError::LengthOverflow)?;
 
     for record in records {
         let start = members_payload.len();
@@ -248,7 +247,8 @@ pub fn encode_bucket_segment(records: &[BucketRecord<'_>]) -> Result<Vec<u8>, Bu
             .to_le_bytes(),
     );
     header[28..32].copy_from_slice(&crc32(&directory).to_le_bytes());
-    header[32..36].copy_from_slice(&crc32(&header[..32]).to_le_bytes());
+    let header_checksum = crc32(&header[..32]);
+    header[32..36].copy_from_slice(&header_checksum.to_le_bytes());
 
     let mut output = Vec::with_capacity(total);
     output.extend_from_slice(&header);
@@ -275,12 +275,7 @@ pub fn decode_bucket_segment<R: Read + Seek>(
         });
     }
 
-    let header = layout.read_section_range(
-        reader,
-        descriptor,
-        0,
-        BUCKET_SEGMENT_HEADER_BYTES,
-    )?;
+    let header = layout.read_section_range(reader, descriptor, 0, BUCKET_SEGMENT_HEADER_BYTES)?;
     validate_header_fixed_fields(&header)?;
     let expected_header_checksum = read_u32_at(&header, 32)?;
     let actual_header_checksum = crc32(&header[..32]);
@@ -291,10 +286,10 @@ pub fn decode_bucket_segment<R: Read + Seek>(
         });
     }
 
-    let count = usize::try_from(read_u64_at(&header, 12)?)
-        .map_err(|_| BucketError::LengthOverflow)?;
-    let directory_bytes = usize::try_from(read_u64_at(&header, 20)?)
-        .map_err(|_| BucketError::LengthOverflow)?;
+    let count =
+        usize::try_from(read_u64_at(&header, 12)?).map_err(|_| BucketError::LengthOverflow)?;
+    let directory_bytes =
+        usize::try_from(read_u64_at(&header, 20)?).map_err(|_| BucketError::LengthOverflow)?;
     let expected_directory_bytes = count
         .checked_mul(BUCKET_DIRECTORY_ENTRY_BYTES)
         .ok_or(BucketError::LengthOverflow)?;
@@ -306,8 +301,7 @@ pub fn decode_bucket_segment<R: Read + Seek>(
     let member_start = BUCKET_SEGMENT_HEADER_BYTES
         .checked_add(directory_bytes)
         .ok_or(BucketError::LengthOverflow)?;
-    let member_start_u64 =
-        u64::try_from(member_start).map_err(|_| BucketError::LengthOverflow)?;
+    let member_start_u64 = u64::try_from(member_start).map_err(|_| BucketError::LengthOverflow)?;
     if member_start_u64 > descriptor.payload_length() {
         return Err(BucketError::Invalid {
             reason: "bucket directory extends past the section payload",
@@ -355,10 +349,7 @@ pub fn read_bucket_members<R: Read + Seek>(
             actual,
         });
     }
-    bytes
-        .chunks_exact(U64_BYTES)
-        .map(read_u64)
-        .collect()
+    bytes.chunks_exact(U64_BYTES).map(read_u64).collect()
 }
 
 /// Ensure locations from multiple bucket sections remain globally sorted and
@@ -591,11 +582,8 @@ mod tests {
     #[test]
     fn member_corruption_is_detected_on_read() {
         let members = [5_u64, 6];
-        let payload = encode_bucket_segment(&[BucketRecord::new(
-            BucketKey::new(0, 11),
-            &members,
-        )])
-        .expect("encode");
+        let payload = encode_bucket_segment(&[BucketRecord::new(BucketKey::new(0, 11), &members)])
+            .expect("encode");
         let mut bytes = IndexFile::new(
             metadata(),
             vec![Section::new(SectionKind::Buckets, true, payload).expect("section")],
