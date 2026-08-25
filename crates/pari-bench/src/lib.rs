@@ -40,10 +40,7 @@ pub fn write_report(path: &Path, report: &BenchmarkReport) -> Result<(), Box<dyn
 }
 
 /// Write a comparison report as deterministic pretty-printed JSON.
-pub fn write_comparison(
-    path: &Path,
-    comparison: &ComparisonReport,
-) -> Result<(), Box<dyn Error>> {
+pub fn write_comparison(path: &Path, comparison: &ComparisonReport) -> Result<(), Box<dyn Error>> {
     let contents = serde_json::to_string_pretty(comparison)?;
     fs::write(path, format!("{contents}\n"))?;
     Ok(())
