@@ -14,7 +14,7 @@ use std::{
 use memmap2::{Mmap, MmapOptions};
 use pari_core::MinHash32;
 use pari_index::{LshIndex32, LshParams};
-use redb::{Database, ReadOnlyDatabase, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadOnlyDatabase, ReadableDatabase, TableDefinition};
 use serde::Serialize;
 
 const NUM_PERM: usize = 128;
@@ -426,7 +426,7 @@ fn benchmark_redb(path: &Path, items: usize, workload: &Workload) -> BenchResult
     report_candidate("redb", path, items, build_elapsed, reopen_elapsed, timing)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Timing {
     p50: Duration,
     p95: Duration,
@@ -557,10 +557,7 @@ fn build_page_file(path: &Path, buckets: &BTreeMap<BucketKey, Vec<u64>>) -> Benc
             .ok_or_else(|| invalid_data("page file offset overflow"))?;
     }
 
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)?;
+    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
     file.write_all(&PAGE_MAGIC)?;
     file.write_all(&PAGE_VERSION.to_le_bytes())?;
     file.write_all(&page_count.to_le_bytes())?;
