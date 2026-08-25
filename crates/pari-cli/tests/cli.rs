@@ -5,6 +5,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use pari_core::{MinHash32, AFFINE32_SCHEME};
+
 fn pari() -> Command {
     Command::new(env!("CARGO_BIN_EXE_pari"))
 }
@@ -29,25 +31,40 @@ fn assert_success(output: &Output) {
     );
 }
 
+fn signature(values: &[&str]) -> Vec<u32> {
+    let mut sketch = MinHash32::new(128, 1).expect("valid fixture sketch");
+    for value in values {
+        sketch.update(value.as_bytes());
+    }
+    sketch.signature().to_vec()
+}
+
 #[test]
 fn index_search_stats_verify_and_dedup_work_end_to_end() {
     let records = temp_path("records", "jsonl");
     let queries = temp_path("queries", "jsonl");
     let index = temp_path("index", "pari");
-    fs::write(
-        &records,
-        concat!(
-            "{\"key\":1,\"values\":[\"new york\",\"rust\",\"search\"]}\n",
-            "{\"key\":2,\"values\":[\"new york\",\"rust\",\"search\"]}\n",
-            "{\"key\":3,\"values\":[\"biology\",\"protein\",\"cell\"]}\n"
-        ),
-    )
-    .expect("records");
-    fs::write(
-        &queries,
-        "{\"id\":\"q1\",\"values\":[\"new york\",\"rust\",\"search\"]}\n",
-    )
-    .expect("queries");
+    let duplicate_signature = signature(&["new york", "rust", "search"]);
+    let records_text = format!(
+        "{}\n{}\n{}\n",
+        serde_json::json!({"key": 1, "values": ["new york", "rust", "search"]}),
+        serde_json::json!({
+            "key": 2,
+            "signature": duplicate_signature,
+            "scheme": AFFINE32_SCHEME,
+        }),
+        serde_json::json!({"key": 3, "values": ["biology", "protein", "cell"]}),
+    );
+    fs::write(&records, records_text).expect("records");
+    let queries_text = format!(
+        "{}\n",
+        serde_json::json!({
+            "id": "q1",
+            "signature": signature(&["new york", "rust", "search"]),
+            "scheme": AFFINE32_SCHEME,
+        })
+    );
+    fs::write(&queries, queries_text).expect("queries");
 
     let output = pari()
         .args([
@@ -143,6 +160,33 @@ fn invalid_json_returns_nonzero_with_line_context() {
         .expect("command");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("line 1"));
+    let _ = fs::remove_file(records);
+    let _ = fs::remove_file(index);
+}
+
+#[test]
+fn invalid_signature_metadata_is_rejected_with_line_context() {
+    let records = temp_path("invalid-signature", "jsonl");
+    let index = temp_path("invalid-signature-index", "pari");
+    fs::write(
+        &records,
+        "{\"key\":1,\"signature\":[1,2,3],\"scheme\":\"other\"}\n",
+    )
+    .expect("fixture");
+    let output = pari()
+        .args([
+            "index",
+            "--input",
+            records.to_str().expect("path"),
+            "--output",
+            index.to_str().expect("path"),
+        ])
+        .output()
+        .expect("command");
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("line 1"));
+    assert!(error.contains("signature scheme"));
     let _ = fs::remove_file(records);
     let _ = fs::remove_file(index);
 }
