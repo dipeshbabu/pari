@@ -10,7 +10,6 @@ use pari_core::{MinHash32, MinHashError};
 use pari_index::LshError;
 use pari_store::{PersistentIndex32, StoreError, StoreStats};
 use pyo3::{
-    buffer::PyBuffer,
     create_exception,
     exceptions::PyException,
     prelude::*,
@@ -45,30 +44,28 @@ impl From<StoreError> for BindingError {
 }
 
 fn binding_error(error: BindingError) -> PyErr {
+    let message = error_text(&error);
     match error {
-        BindingError::Closed => ClosedIndexError::new_err("index is closed"),
-        BindingError::Poisoned => StorageError::new_err("index state lock is poisoned"),
+        BindingError::Closed => ClosedIndexError::new_err(message),
+        BindingError::Poisoned => StorageError::new_err(message),
         BindingError::MinHash(MinHashError::InvalidPermutationCount { .. }) => {
-            ConfigurationError::new_err(error_text(&error))
+            ConfigurationError::new_err(message)
         }
         BindingError::MinHash(
             MinHashError::IncompatibleSeed { .. }
             | MinHashError::IncompatiblePermutationCount { .. },
-        ) => CompatibilityError::new_err(error_text(&error)),
-        BindingError::Store(StoreError::DuplicateKey { .. }) => {
-            DuplicateKeyError::new_err(error_text(&error))
-        }
+        ) => CompatibilityError::new_err(message),
+        BindingError::Store(StoreError::DuplicateKey { .. }) => DuplicateKeyError::new_err(message),
         BindingError::Store(
-            StoreError::IncompatibleSeed { .. }
-            | StoreError::IncompatiblePermutationCount { .. },
-        ) => CompatibilityError::new_err(error_text(&error)),
+            StoreError::IncompatibleSeed { .. } | StoreError::IncompatiblePermutationCount { .. },
+        ) => CompatibilityError::new_err(message),
         BindingError::Store(StoreError::Index(
             LshError::InvalidThreshold { .. }
             | LshError::InvalidPermutationCount { .. }
             | LshError::AutomaticTuningTooLarge { .. }
             | LshError::InvalidParams { .. },
-        )) => ConfigurationError::new_err(error_text(&error)),
-        BindingError::Store(_) => StorageError::new_err(error_text(&error)),
+        )) => ConfigurationError::new_err(message),
+        BindingError::Store(_) => StorageError::new_err(message),
     }
 }
 
@@ -88,7 +85,14 @@ fn owned_bytes(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(bytes) = value.extract::<Vec<u8>>() {
         return Ok(bytes);
     }
-    PyBuffer::<u8>::get(value)?.to_vec(py)
+
+    // PyO3's low-level buffer module is not exposed by abi3-py310. A Python
+    // memoryview still validates the generic buffer protocol through the stable
+    // ABI, and `tobytes` gives Rust owned memory before detached work starts.
+    let builtins = py.import("builtins")?;
+    let view = builtins.getattr("memoryview")?.call1((value,))?;
+    let bytes = view.call_method0("tobytes")?;
+    Ok(bytes.cast::<PyBytes>()?.as_bytes().to_vec())
 }
 
 fn collect_byte_values(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<u8>>> {
@@ -99,7 +103,11 @@ fn collect_byte_values(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Ve
 }
 
 /// Pari's 32-bit affine MinHash sketch.
-#[pyclass(module = "pari._native", name = "MinHash")]
+#[pyclass(
+    module = "pari._native",
+    name = "MinHash",
+    skip_from_py_object
+)]
 #[derive(Debug, Clone)]
 struct PyMinHash {
     inner: MinHash32,
@@ -130,9 +138,7 @@ impl PyMinHash {
             sketch.update_many(values);
             Ok::<_, BindingError>(sketch)
         });
-        result
-            .map(|inner| Self { inner })
-            .map_err(binding_error)
+        result.map(|inner| Self { inner }).map_err(binding_error)
     }
 
     /// Update from one bytes or byte-buffer value.
@@ -217,7 +223,12 @@ impl PyMinHash {
 }
 
 /// Stable snapshot of local-index statistics.
-#[pyclass(frozen, module = "pari._native", name = "IndexStats")]
+#[pyclass(
+    frozen,
+    module = "pari._native",
+    name = "IndexStats",
+    skip_from_py_object
+)]
 #[derive(Debug, Clone)]
 struct PyIndexStats {
     #[pyo3(get)]
@@ -266,7 +277,7 @@ impl PyIndexStats {
 type SharedIndex = Arc<Mutex<Option<PersistentIndex32>>>;
 
 /// High-level persistent MinHash LSH index.
-#[pyclass(module = "pari._native", name = "Index")]
+#[pyclass(module = "pari._native", name = "Index", skip_from_py_object)]
 #[derive(Debug, Clone)]
 struct PyIndex {
     inner: SharedIndex,
@@ -342,11 +353,7 @@ impl PyIndex {
     }
 
     /// Insert a batch atomically after Rust-side validation.
-    fn add_many(
-        &self,
-        py: Python<'_>,
-        items: Vec<(u64, Py<PyMinHash>)>,
-    ) -> PyResult<()> {
+    fn add_many(&self, py: Python<'_>, items: Vec<(u64, Py<PyMinHash>)>) -> PyResult<()> {
         let items = items
             .into_iter()
             .map(|(key, sketch)| (key, sketch.borrow(py).inner.clone()))
@@ -367,11 +374,7 @@ impl PyIndex {
     }
 
     /// Batch query while releasing the GIL for all Rust storage and LSH work.
-    fn search_many(
-        &self,
-        py: Python<'_>,
-        sketches: Vec<Py<PyMinHash>>,
-    ) -> PyResult<Vec<Vec<u64>>> {
+    fn search_many(&self, py: Python<'_>, sketches: Vec<Py<PyMinHash>>) -> PyResult<Vec<Vec<u64>>> {
         let sketches = sketches
             .into_iter()
             .map(|sketch| sketch.borrow(py).inner.clone())
