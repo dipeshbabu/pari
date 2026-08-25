@@ -276,17 +276,17 @@ pub fn run_storage_benchmark(
         Metric::new(1.0, "ratio", MetricDirection::Neutral),
     );
 
-    if lazy_stats.file_bytes > 0
-        && let Some(delta) = rss_delta(lazy_reopen_rss)
-    {
-        report.insert_metric(
-            "storage.lazy.reopen_rss_to_file_ratio",
-            Metric::new(
-                delta as f64 / lazy_stats.file_bytes as f64,
-                "ratio",
-                MetricDirection::Lower,
-            ),
-        );
+    if lazy_stats.file_bytes > 0 {
+        if let Some(delta) = rss_delta(lazy_reopen_rss) {
+            report.insert_metric(
+                "storage.lazy.reopen_rss_to_file_ratio",
+                Metric::new(
+                    delta as f64 / lazy_stats.file_bytes as f64,
+                    "ratio",
+                    MetricDirection::Lower,
+                ),
+            );
+        }
     }
 
     Ok(report)
