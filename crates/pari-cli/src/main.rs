@@ -135,7 +135,8 @@ struct CompletionArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SketchFields {
+struct Record {
+    key: u64,
     #[serde(default)]
     values: Option<Vec<String>>,
     #[serde(default)]
@@ -146,19 +147,15 @@ struct SketchFields {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Record {
-    key: u64,
-    #[serde(flatten)]
-    sketch: SketchFields,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct QueryRecord {
     #[serde(default)]
     id: Option<String>,
-    #[serde(flatten)]
-    sketch: SketchFields,
+    #[serde(default)]
+    values: Option<Vec<String>>,
+    #[serde(default)]
+    signature: Option<Vec<u32>>,
+    #[serde(default)]
+    scheme: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -236,7 +233,13 @@ fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
     for_json_lines(reader, |_line, record: Record| {
         batch.push((
             record.key,
-            make_sketch(&record.sketch, args.num_perm, args.seed)?,
+            make_sketch(
+                record.values.as_deref(),
+                record.signature.as_deref(),
+                record.scheme.as_deref(),
+                args.num_perm,
+                args.seed,
+            )?,
         ));
         if batch.len() == args.batch_size {
             insert_batch(&mut store, &batch)?;
@@ -285,7 +288,13 @@ fn search(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
     let mut writer = BufWriter::new(io::stdout().lock());
     let mut query_index = 0_usize;
     for_json_lines(reader, |_line, query: QueryRecord| {
-        let sketch = make_sketch(&query.sketch, store.num_perm(), store.seed())?;
+        let sketch = make_sketch(
+            query.values.as_deref(),
+            query.signature.as_deref(),
+            query.scheme.as_deref(),
+            store.num_perm(),
+            store.seed(),
+        )?;
         let candidates = store.query(&sketch)?;
         if args.json {
             serde_json::to_writer(
@@ -315,7 +324,13 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     let mut index = LshIndex32::new(args.threshold, args.num_perm, args.seed)?;
     let reader = open_reader(&args.input)?;
     for_json_lines(reader, |_line, record: Record| {
-        let sketch = make_sketch(&record.sketch, args.num_perm, args.seed)?;
+        let sketch = make_sketch(
+            record.values.as_deref(),
+            record.signature.as_deref(),
+            record.scheme.as_deref(),
+            args.num_perm,
+            args.seed,
+        )?;
         index.insert(record.key, &sketch)?;
         Ok(())
     })?;
@@ -434,13 +449,15 @@ fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn make_sketch(
-    fields: &SketchFields,
+    values: Option<&[String]>,
+    signature: Option<&[u32]>,
+    scheme: Option<&str>,
     num_perm: usize,
     seed: u64,
 ) -> Result<MinHash32, Box<dyn Error>> {
-    match (&fields.values, &fields.signature) {
+    match (values, signature) {
         (Some(values), None) => {
-            if fields.scheme.is_some() {
+            if scheme.is_some() {
                 return Err("scheme is only valid with a precomputed signature".into());
             }
             let mut sketch = MinHash32::new(num_perm, seed)?;
@@ -450,10 +467,7 @@ fn make_sketch(
             Ok(sketch)
         }
         (None, Some(signature)) => {
-            let scheme = fields
-                .scheme
-                .as_deref()
-                .ok_or("precomputed signatures require a scheme field")?;
+            let scheme = scheme.ok_or("precomputed signatures require a scheme field")?;
             if scheme != AFFINE32_SCHEME {
                 return Err(format!(
                     "unsupported signature scheme {scheme:?}; expected {AFFINE32_SCHEME:?}"
@@ -467,7 +481,7 @@ fn make_sketch(
                 )
                 .into());
             }
-            Ok(MinHash32::from_signature(signature.clone(), seed)?)
+            Ok(MinHash32::from_signature(signature.to_vec(), seed)?)
         }
         (Some(_), Some(_)) => Err("record must contain either values or signature, not both".into()),
         (None, None) => Err("record must contain either values or signature".into()),
