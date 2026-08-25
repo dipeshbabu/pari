@@ -1,0 +1,18 @@
+[package]
+name = "pari-criterion"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+pari-core = { path = "../../crates/pari-core" }
+pari-index = { path = "../../crates/pari-index" }
+
+[dev-dependencies]
+criterion = "0.5.1"
+
+[[bench]]
+name = "core"
+harness = false

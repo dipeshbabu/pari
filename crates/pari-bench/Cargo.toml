@@ -1,0 +1,18 @@
+[package]
+name = "pari-bench"
+description = "Reproducible end-to-end benchmark harness for Pari"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+pari-core = { path = "../pari-core" }
+pari-index = { path = "../pari-index" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[lints]
+workspace = true

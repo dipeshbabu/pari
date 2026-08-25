@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/pari-bench",
   "crates/pari-core",
   "crates/pari-format",
   "crates/pari-index",
