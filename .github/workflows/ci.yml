@@ -22,6 +22,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt
       - run: cargo fmt --all -- --check
+      - run: cargo fmt --manifest-path benchmarks/criterion/Cargo.toml --all -- --check
 
   clippy:
     name: Clippy
@@ -33,6 +34,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --manifest-path benchmarks/criterion/Cargo.toml --all-targets -- -D warnings
 
   test:
     name: Tests
@@ -43,3 +45,18 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo test --workspace --all-targets --all-features
+      - run: cargo test --manifest-path benchmarks/criterion/Cargo.toml --all-targets
+
+  storage-layout-smoke:
+    name: Storage layout smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - run: |
+          cargo run --release \
+            --manifest-path benchmarks/criterion/Cargo.toml \
+            --bin storage_layout \
+            -- --items 256 --queries 32 --output storage-layout-smoke.json

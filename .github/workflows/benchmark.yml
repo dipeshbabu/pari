@@ -29,6 +29,12 @@ jobs:
             --items 10000 \
             --queries 100 \
             --output benchmark-results.json
+      - name: Storage layout shootout
+        run: |
+          cargo run --release \
+            --manifest-path benchmarks/criterion/Cargo.toml \
+            --bin storage_layout \
+            -- --items 5000 --queries 200 --output storage-layout-results.json
       - name: Criterion microbenchmarks
         run: cargo bench --manifest-path benchmarks/criterion/Cargo.toml
       - name: Upload benchmark artifacts
@@ -38,4 +44,5 @@ jobs:
           if-no-files-found: error
           path: |
             benchmark-results.json
+            storage-layout-results.json
             benchmarks/criterion/target/criterion
