@@ -68,7 +68,7 @@ pub struct BenchmarkConfig {
     pub overlap: usize,
     /// LSH target threshold.
     pub threshold: f64,
-    /// MinHash signature length.
+    /// `MinHash` signature length.
     pub num_perm: usize,
     /// Deterministic workload and signature seed.
     pub seed: u64,
@@ -247,7 +247,10 @@ mod tests {
             comparison.metrics["throughput"].improvement_percent,
             Some(25.0)
         );
-        assert_eq!(comparison.metrics["latency"].improvement_percent, Some(20.0));
+        assert_eq!(
+            comparison.metrics["latency"].improvement_percent,
+            Some(20.0)
+        );
     }
 
     #[test]
