@@ -80,6 +80,19 @@ impl MinHash32 {
         })
     }
 
+    /// Reconstruct a sketch from an already computed Pari affine32 signature.
+    ///
+    /// The supplied `seed` recreates the deterministic permutation metadata so
+    /// the returned sketch remains safe to update or merge after loading. The
+    /// signature length defines `num_perm` and must satisfy the same bounds as
+    /// [`Self::new`]. Callers are responsible for ensuring the values were
+    /// produced by Pari's [`AFFINE32_SCHEME`] with the same seed.
+    pub fn from_signature(signature: Vec<u32>, seed: u64) -> Result<Self, MinHashError> {
+        let mut sketch = Self::new(signature.len(), seed)?;
+        sketch.hashvalues = signature;
+        Ok(sketch)
+    }
+
     /// Update the sketch with one byte string using Pari's default SHA-1 input
     /// hash and 32-bit affine permutation family.
     pub fn update(&mut self, value: &[u8]) {
@@ -391,6 +404,10 @@ mod tests {
             MinHash64::new(0, 1),
             Err(MinHashError::InvalidPermutationCount { requested: 0 })
         );
+        assert_eq!(
+            MinHash32::from_signature(Vec::new(), 1),
+            Err(MinHashError::InvalidPermutationCount { requested: 0 })
+        );
     }
 
     #[test]
@@ -399,6 +416,23 @@ mod tests {
         let minhash64 = MinHash64::new(8, 42).expect("valid sketch");
         assert_eq!(minhash32.scheme(), AFFINE32_SCHEME);
         assert_eq!(minhash64.scheme(), AFFINE64_SCHEME);
+    }
+
+    #[test]
+    fn precomputed_affine32_signature_round_trips_and_remains_updatable() {
+        let mut original = MinHash32::new(32, 42).expect("valid sketch");
+        original.update_many([&b"alpha"[..], &b"beta"[..]]);
+        let signature = original.signature().to_vec();
+
+        let mut reconstructed =
+            MinHash32::from_signature(signature.clone(), 42).expect("valid signature");
+        assert_eq!(reconstructed.signature(), signature);
+        assert_eq!(reconstructed.seed(), original.seed());
+        assert_eq!(reconstructed.num_perm(), original.num_perm());
+
+        original.update(b"gamma");
+        reconstructed.update(b"gamma");
+        assert_eq!(reconstructed, original);
     }
 
     #[test]
