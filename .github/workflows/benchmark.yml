@@ -1,0 +1,36 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Release benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PARI_GIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: End-to-end benchmark
+        run: |
+          cargo run --release -p pari-bench -- run \
+            --items 10000 \
+            --queries 100 \
+            --output benchmark-results.json
+      - name: Criterion microbenchmarks
+        run: cargo bench --manifest-path benchmarks/criterion/Cargo.toml
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pari-benchmarks-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            benchmark-results.json
+            benchmarks/criterion/target/criterion
