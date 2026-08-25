@@ -14,7 +14,10 @@ fn test_path(name: &str) -> PathBuf {
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {
-    let compact: String = input.chars().filter(|character| !character.is_whitespace()).collect();
+    let compact: String = input
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
     assert_eq!(compact.len() % 2, 0, "fixture hex must contain whole bytes");
     compact
         .as_bytes()
@@ -45,7 +48,7 @@ fn stable_v1_empty_fixture_opens_with_expected_metadata() {
     let stats = store.stats().expect("fixture stats");
     assert_eq!(store.num_perm(), 128);
     assert_eq!(store.seed(), 7);
-    assert_eq!(store.threshold(), 0.8);
+    assert!((store.threshold() - 0.8).abs() < f64::EPSILON);
     assert_eq!(store.params(), LshParams::new(32, 4));
     assert_eq!(stats.items, 0);
     assert_eq!(stats.bands, 32);
@@ -60,14 +63,8 @@ fn stable_v1_empty_fixture_opens_with_expected_metadata() {
 fn current_writer_reproduces_stable_v1_empty_fixture_exactly() {
     let path = test_path("writer");
     cleanup(&path);
-    let store = PersistentIndex32::create_with_params(
-        &path,
-        0.8,
-        128,
-        7,
-        LshParams::new(32, 4),
-    )
-    .expect("create explicit v1 fixture");
+    let store = PersistentIndex32::create_with_params(&path, 0.8, 128, 7, LshParams::new(32, 4))
+        .expect("create explicit v1 fixture");
     store.close().expect("sync and close fixture");
 
     let actual = fs::read(&path).expect("read generated fixture");
