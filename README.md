@@ -31,6 +31,36 @@ with Index.create("documents.pari", threshold=0.8, num_perm=128, seed=7) as inde
 
 `Index.search` returns approximate LSH candidates, not exact duplicate decisions. See [docs/python.md](docs/python.md) for the full typed API and [docs/persistence.md](docs/persistence.md) for durability semantics.
 
+## CLI quick start
+
+Build the command-line binary:
+
+```bash
+cargo build --release -p pari-cli
+```
+
+Given JSONL records such as:
+
+```json
+{"key":1,"values":["new york","rust","search"]}
+{"key":2,"values":["new york","python","search"]}
+```
+
+build and verify a persistent index:
+
+```bash
+pari index --input documents.jsonl --output documents.pari --json
+pari verify --index documents.pari --json
+```
+
+Run native duplicate grouping without sending candidate edges through Python:
+
+```bash
+pari dedup --input documents.jsonl --emit groups --json
+```
+
+See [docs/cli.md](docs/cli.md) for indexing, search, deduplication, inspection, JSONL output, verification, and shell completion.
+
 ## Design goals
 
 - Batch-first compute, insert, and query paths.
