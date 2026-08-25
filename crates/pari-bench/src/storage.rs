@@ -28,9 +28,9 @@ use crate::{
 /// Run a deterministic end-to-end storage benchmark across Pari's in-memory,
 /// mutable persistent, bounded builder, and read-only lazy paths.
 pub fn run_storage_benchmark(
-    config: BenchmarkConfig,
+    config: &BenchmarkConfig,
 ) -> Result<BenchmarkReport, Box<dyn Error>> {
-    validate_config(&config)?;
+    validate_config(config)?;
     let corpus = match &config.dataset {
         Some(path) => load_set_dataset(Path::new(path), config.items)?,
         None => synthetic_corpus(config.items, config.set_size, config.seed),
@@ -47,6 +47,11 @@ pub fn run_storage_benchmark(
         .iter()
         .map(|features| build_signature(features, config.num_perm, config.seed))
         .collect::<Result<Vec<_>, _>>()?;
+    let indexed_signatures = signatures
+        .iter()
+        .enumerate()
+        .map(|(key, signature)| Ok((u64::try_from(key)?, signature)))
+        .collect::<Result<Vec<_>, std::num::TryFromIntError>>()?;
 
     let generated_unix_seconds = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let mut report = BenchmarkReport::new(
@@ -57,12 +62,7 @@ pub fn run_storage_benchmark(
     );
 
     let mut reference = LshIndex32::new(config.threshold, config.num_perm, config.seed)?;
-    reference.insert_many(signatures.iter().enumerate().map(|(key, signature)| {
-        (
-            u64::try_from(key).expect("validated item count fits u64"),
-            signature,
-        )
-    }))?;
+    reference.insert_many(indexed_signatures.iter().copied())?;
     let reference_results = reference.query_many(query_signatures.iter())?;
     drop(reference);
 
@@ -78,12 +78,7 @@ pub fn run_storage_benchmark(
         config.num_perm,
         config.seed,
     )?;
-    persistent.insert_many(signatures.iter().enumerate().map(|(key, signature)| {
-        (
-            u64::try_from(key).expect("validated item count fits u64"),
-            signature,
-        )
-    }))?;
+    persistent.insert_many(indexed_signatures.iter().copied())?;
     persistent.sync()?;
     let persistent_build_elapsed = persistent_build_started.elapsed();
     let persistent_build_rss = persistent_build_rss.finish();
@@ -130,11 +125,7 @@ pub fn run_storage_benchmark(
         signatures.len(),
     );
     let persistent_results = persistent.query_many(query_signatures.iter())?;
-    ensure_candidate_parity(
-        "PersistentIndex32",
-        &reference_results,
-        &persistent_results,
-    )?;
+    ensure_candidate_parity("PersistentIndex32", &reference_results, &persistent_results)?;
     let persistent_stats = persistent.stats()?;
     report.insert_metric(
         "storage.persistent.committed_buckets",
@@ -148,11 +139,7 @@ pub fn run_storage_benchmark(
 
     let builder_rss = RssSampler::start();
     let builder_started = Instant::now();
-    let builder_stats = build_external(
-        &persistent_path,
-        &lazy_path,
-        BuildOptions::default(),
-    )?;
+    let builder_stats = build_external(&persistent_path, &lazy_path, BuildOptions::default())?;
     let builder_elapsed = builder_started.elapsed();
     let builder_rss = builder_rss.finish();
     insert_throughput(
@@ -274,11 +261,7 @@ pub fn run_storage_benchmark(
     let batch_started = Instant::now();
     let lazy_batch_results = lazy.query_many(query_signatures.iter())?;
     let batch_elapsed = batch_started.elapsed();
-    ensure_candidate_parity(
-        "LazyIndex32 batch",
-        &reference_results,
-        &lazy_batch_results,
-    )?;
+    ensure_candidate_parity("LazyIndex32 batch", &reference_results, &lazy_batch_results)?;
     if lazy_batch_results != lazy_scalar_results {
         return Err("lazy scalar and batch candidate results diverged".into());
     }
@@ -293,10 +276,9 @@ pub fn run_storage_benchmark(
         Metric::new(1.0, "ratio", MetricDirection::Neutral),
     );
 
-    if let (Some(delta), true) = (
-        rss_delta(lazy_reopen_rss),
-        lazy_stats.file_bytes > 0,
-    ) {
+    if lazy_stats.file_bytes > 0
+        && let Some(delta) = rss_delta(lazy_reopen_rss)
+    {
         report.insert_metric(
             "storage.lazy.reopen_rss_to_file_ratio",
             Metric::new(
@@ -447,19 +429,17 @@ fn load_set_dataset(path: &Path, limit: usize) -> Result<Vec<Vec<u64>>, Box<dyn 
     Ok(rows)
 }
 
-fn insert_throughput(
-    report: &mut BenchmarkReport,
-    name: &str,
-    count: usize,
-    elapsed: Duration,
-) {
+fn insert_throughput(report: &mut BenchmarkReport, name: &str, count: usize, elapsed: Duration) {
     let seconds = elapsed.as_secs_f64();
     let value = if seconds > 0.0 {
         count as f64 / seconds
     } else {
         0.0
     };
-    report.insert_metric(name, Metric::new(value, "items/s", MetricDirection::Higher));
+    report.insert_metric(
+        name,
+        Metric::new(value, "items/s", MetricDirection::Higher),
+    );
 }
 
 fn insert_elapsed(report: &mut BenchmarkReport, name: &str, elapsed: Duration) {
@@ -473,11 +453,7 @@ fn insert_elapsed(report: &mut BenchmarkReport, name: &str, elapsed: Duration) {
     );
 }
 
-fn insert_latency_percentiles(
-    report: &mut BenchmarkReport,
-    prefix: &str,
-    latencies: &[Duration],
-) {
+fn insert_latency_percentiles(report: &mut BenchmarkReport, prefix: &str, latencies: &[Duration]) {
     let mut milliseconds: Vec<_> = latencies
         .iter()
         .map(|duration| duration.as_secs_f64() * 1_000.0)
@@ -519,12 +495,7 @@ fn insert_file_metrics(report: &mut BenchmarkReport, prefix: &str, bytes: u64, i
     );
 }
 
-fn insert_storage_rss(
-    report: &mut BenchmarkReport,
-    prefix: &str,
-    sample: RssSample,
-    items: usize,
-) {
+fn insert_storage_rss(report: &mut BenchmarkReport, prefix: &str, sample: RssSample, items: usize) {
     if let Some(peak) = sample.peak_bytes {
         report.insert_metric(
             format!("{prefix}.peak_rss_bytes"),
@@ -596,10 +567,8 @@ impl TemporaryArtifacts {
     fn new() -> Result<Self, Box<dyn Error>> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         Ok(Self {
-            prefix: std::env::temp_dir().join(format!(
-                "pari-storage-bench-{}-{nonce}",
-                std::process::id()
-            )),
+            prefix: std::env::temp_dir()
+                .join(format!("pari-storage-bench-{}-{nonce}", std::process::id())),
         })
     }
 
@@ -636,7 +605,7 @@ mod tests {
 
     #[test]
     fn storage_smoke_reports_parity_and_stable_metrics() {
-        let report = run_storage_benchmark(BenchmarkConfig {
+        let config = BenchmarkConfig {
             items: 24,
             queries: 4,
             set_size: 20,
@@ -645,9 +614,9 @@ mod tests {
             num_perm: 32,
             seed: 7,
             dataset: None,
-        })
-        .expect("storage benchmark");
-        assert_eq!(report.metrics["storage.candidate_parity"].value, 1.0);
+        };
+        let report = run_storage_benchmark(&config).expect("storage benchmark");
+        assert!((report.metrics["storage.candidate_parity"].value - 1.0).abs() < f64::EPSILON);
         for metric in [
             "storage.persistent.reopen_ms",
             "storage.persistent.bytes_per_item",
