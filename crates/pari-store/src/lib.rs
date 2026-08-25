@@ -415,13 +415,15 @@ impl PersistentIndex32 {
 
     /// Commit dirty state to an atomic snapshot.
     ///
-    /// The snapshot file itself is synced before rename. Use [`Self::sync`] when
-    /// the caller also requires the containing directory entry to be synced.
+    /// The snapshot file itself is synced before rename. Use [`Self::sync`] for
+    /// the strongest post-rename durability step the current platform supports.
     pub fn flush(&mut self) -> Result<(), StoreError> {
         self.commit(false)
     }
 
-    /// Commit dirty state and sync the containing directory after rename.
+    /// Commit dirty state and apply the platform-supported post-rename
+    /// durability step. Unix-like platforms sync the containing directory;
+    /// Windows has no portable directory `fsync` equivalent in `std`.
     pub fn sync(&mut self) -> Result<(), StoreError> {
         self.commit(true)
     }
@@ -994,12 +996,20 @@ fn temporary_path(path: &Path) -> Result<PathBuf, StoreError> {
 }
 
 fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    File::open(parent)?.sync_all()?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        let _ = path;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    }
 }
 
 fn hash_band(values: &[u32]) -> u64 {
