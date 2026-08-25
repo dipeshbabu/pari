@@ -1,0 +1,41 @@
+[build-system]
+requires = ["maturin>=1.14,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pari-similarity"
+dynamic = ["version"]
+description = "Fast, persistent approximate similarity search powered by Rust"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "Dipesh Babu" },
+]
+keywords = ["minhash", "lsh", "similarity", "deduplication", "rust"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
+  "Programming Language :: Rust",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/dipeshbabu/pari"
+Issues = "https://github.com/dipeshbabu/pari/issues"
+
+[tool.maturin]
+manifest-path = "crates/pari-py/Cargo.toml"
+module-name = "pari._native"
+python-source = "python"
+bindings = "pyo3"
+strip = true
