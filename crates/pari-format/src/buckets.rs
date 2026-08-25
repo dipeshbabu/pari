@@ -10,7 +10,8 @@ use crate::{FileLayout, LayoutError, SectionDescriptor, SectionKind};
 
 const BUCKET_SEGMENT_MAGIC: [u8; 8] = *b"PARIBKT\0";
 const BUCKET_SEGMENT_VERSION: u16 = 1;
-const BUCKET_SEGMENT_HEADER_BYTES: usize = 40;
+/// Fixed byte width of a version-1 bucket-segment header.
+pub const BUCKET_SEGMENT_HEADER_BYTES: usize = 40;
 const BUCKET_SEGMENT_HEADER_BYTES_U16: u16 = 40;
 const BUCKET_SEGMENT_HEADER_BYTES_U64: u64 = 40;
 const BUCKET_DIRECTORY_ENTRY_BYTES: usize = 32;
