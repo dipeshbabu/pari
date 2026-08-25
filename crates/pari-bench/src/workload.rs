@@ -1,3 +1,12 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::missing_panics_doc,
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines
+)]
+
 use std::{
     collections::HashSet,
     error::Error,
@@ -28,11 +37,10 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
     }
     let queries = build_queries(&corpus, config.queries, config.overlap, config.seed);
 
-    let generated_unix_seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_secs();
+    let generated_unix_seconds = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let environment = collect_environment();
-    let mut report = BenchmarkReport::new("pari", generated_unix_seconds, environment, config.clone());
+    let mut report =
+        BenchmarkReport::new("pari", generated_unix_seconds, environment, config.clone());
 
     let signature_sampler = RssSampler::start();
     let signature_started = Instant::now();
@@ -67,12 +75,12 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
     let mut index = LshIndex32::new(config.threshold, config.num_perm, config.seed)?;
     let build_sampler = RssSampler::start();
     let build_started = Instant::now();
-    index.insert_many(
-        signatures
-            .iter()
-            .enumerate()
-            .map(|(key, signature)| (u64::try_from(key).expect("validated item count fits u64"), signature)),
-    )?;
+    index.insert_many(signatures.iter().enumerate().map(|(key, signature)| {
+        (
+            u64::try_from(key).expect("validated item count fits u64"),
+            signature,
+        )
+    }))?;
     let build_elapsed = build_started.elapsed();
     let build_rss = build_sampler.finish();
     insert_throughput(
@@ -132,11 +140,19 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
     );
     report.insert_metric(
         "candidate.average_candidates",
-        Metric::new(correctness.average_candidates, "items", MetricDirection::Lower),
+        Metric::new(
+            correctness.average_candidates,
+            "items",
+            MetricDirection::Lower,
+        ),
     );
     report.insert_metric(
         "candidate.exact_matches",
-        Metric::new(correctness.exact_matches as f64, "pairs", MetricDirection::Neutral),
+        Metric::new(
+            correctness.exact_matches as f64,
+            "pairs",
+            MetricDirection::Neutral,
+        ),
     );
     insert_elapsed(
         &mut report,
@@ -152,13 +168,14 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
             return Err(format!("failed to remove benchmark key {key}").into());
         }
     }
-    index.insert_many(
-        signatures
-            .iter()
-            .take(mutation_count)
-            .enumerate()
-            .map(|(key, signature)| (u64::try_from(key).expect("mutation key fits u64"), signature)),
-    )?;
+    index.insert_many(signatures.iter().take(mutation_count).enumerate().map(
+        |(key, signature)| {
+            (
+                u64::try_from(key).expect("mutation key fits u64"),
+                signature,
+            )
+        },
+    ))?;
     let mutation_elapsed = mutation_started.elapsed();
     insert_throughput(
         &mut report,
@@ -260,7 +277,12 @@ fn synthetic_corpus(items: usize, set_size: usize, seed: u64) -> Vec<Vec<u64>> {
         .collect()
 }
 
-fn build_queries(corpus: &[Vec<u64>], query_count: usize, overlap: usize, seed: u64) -> Vec<Vec<u64>> {
+fn build_queries(
+    corpus: &[Vec<u64>],
+    query_count: usize,
+    overlap: usize,
+    seed: u64,
+) -> Vec<Vec<u64>> {
     (0..query_count)
         .map(|query_index| {
             let source = &corpus[query_index % corpus.len()];
@@ -416,10 +438,7 @@ fn insert_throughput(report: &mut BenchmarkReport, name: &str, count: usize, ela
     } else {
         0.0
     };
-    report.insert_metric(
-        name,
-        Metric::new(value, "items/s", MetricDirection::Higher),
-    );
+    report.insert_metric(name, Metric::new(value, "items/s", MetricDirection::Higher));
 }
 
 fn insert_elapsed(report: &mut BenchmarkReport, name: &str, elapsed: Duration) {
@@ -449,7 +468,11 @@ fn insert_rss_metrics(report: &mut BenchmarkReport, prefix: &str, rss: RssSample
         if items > 0 {
             report.insert_metric(
                 format!("memory.{prefix}_rss_delta_bytes_per_item"),
-                Metric::new(delta as f64 / items as f64, "bytes/item", MetricDirection::Lower),
+                Metric::new(
+                    delta as f64 / items as f64,
+                    "bytes/item",
+                    MetricDirection::Lower,
+                ),
             );
         }
     }
@@ -498,6 +521,7 @@ fn mix64(mut value: u64) -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::{
         build_queries, exact_jaccard, load_set_dataset, percentile_value, synthetic_corpus,
