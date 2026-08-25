@@ -134,7 +134,7 @@ impl LshIndex32 {
     ///
     /// Automatic tuning numerically minimizes equal-weight false-positive and
     /// false-negative probability area, following the same objective used by
-    /// datasketch's MinHash LSH optimizer without requiring SciPy at runtime.
+    /// datasketch's `MinHash` LSH optimizer without requiring `SciPy` at runtime.
     pub fn new(threshold: f64, num_perm: usize, seed: u64) -> Result<Self, LshError> {
         validate_threshold(threshold)?;
         validate_num_perm(num_perm)?;
@@ -232,14 +232,20 @@ impl LshIndex32 {
 
     /// Remove a key if it exists, returning whether anything changed.
     pub fn remove(&mut self, key: u64) -> bool {
-        let Some(id) = self.key_to_id.remove(&key) else {
+        let Some(&id) = self.key_to_id.get(&key) else {
             return false;
         };
-        let index = usize::try_from(id).expect("u32 identifier always fits usize on supported targets");
-        let hashes = self.band_hashes[index]
-            .take()
-            .expect("live key must retain its band hashes");
+        let Ok(index) = usize::try_from(id) else {
+            return false;
+        };
+        if self.id_to_key.get(index).and_then(|slot| *slot) != Some(key) {
+            return false;
+        }
+        let Some(hashes) = self.band_hashes.get_mut(index).and_then(Option::take) else {
+            return false;
+        };
 
+        self.key_to_id.remove(&key);
         for (table, hash) in self.buckets.iter_mut().zip(hashes) {
             let remove_bucket = if let Some(ids) = table.get_mut(&hash) {
                 ids.retain(|candidate| *candidate != id);
@@ -251,7 +257,9 @@ impl LshIndex32 {
                 table.remove(&hash);
             }
         }
-        self.id_to_key[index] = None;
+        if let Some(slot) = self.id_to_key.get_mut(index) {
+            *slot = None;
+        }
         true
     }
 
@@ -362,7 +370,8 @@ impl LshIndex32 {
     fn keys_for_candidates(&self, candidates: &HashSet<u32>) -> Vec<u64> {
         let mut keys = Vec::with_capacity(candidates.len());
         for id in candidates {
-            let index = usize::try_from(*id).expect("u32 identifier fits usize on supported targets");
+            let index =
+                usize::try_from(*id).expect("u32 identifier fits usize on supported targets");
             if let Some(Some(key)) = self.id_to_key.get(index) {
                 keys.push(*key);
             }
@@ -521,7 +530,9 @@ mod tests {
         let distant = sketch(1_000..1_100, 128, 7);
         let mut index =
             LshIndex32::with_params(0.8, 128, 7, LshParams::new(32, 4)).expect("valid index");
-        index.insert_many([(20, &similar), (30, &distant)]).expect("valid batch");
+        index
+            .insert_many([(20, &similar), (30, &distant)])
+            .expect("valid batch");
 
         assert_eq!(index.query(&query).expect("compatible query"), vec![20]);
     }
@@ -537,7 +548,10 @@ mod tests {
 
         assert!(index.remove(7));
         assert!(!index.contains(7));
-        assert!(index.query(&signature).expect("compatible query").is_empty());
+        assert!(index
+            .query(&signature)
+            .expect("compatible query")
+            .is_empty());
         assert!(!index.remove(7));
         assert!(index.is_empty());
     }
@@ -644,7 +658,10 @@ mod tests {
                 handles.push(scope.spawn(move || index_ref.query(query_ref).expect("valid query")));
             }
             for handle in handles {
-                assert_eq!(handle.join().expect("query thread should not panic"), vec![42]);
+                assert_eq!(
+                    handle.join().expect("query thread should not panic"),
+                    vec![42]
+                );
             }
         });
     }
