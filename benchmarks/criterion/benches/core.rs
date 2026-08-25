@@ -5,7 +5,7 @@ use pari_index::{group_pairs, LshIndex32, LshParams};
 fn bench_hashing(criterion: &mut Criterion) {
     let payload = b"pari-benchmark-feature";
     criterion.bench_function("sha1_hash32_22_bytes", |bencher| {
-        bencher.iter(|| black_box(sha1_hash32(black_box(payload))))
+        bencher.iter(|| black_box(sha1_hash32(black_box(payload))));
     });
 }
 
@@ -44,13 +44,13 @@ fn bench_lsh_query(criterion: &mut Criterion) {
     let query = &signatures[500];
 
     criterion.bench_function("lsh32_query_1000_items", |bencher| {
-        bencher.iter(|| black_box(index.query(black_box(query)).expect("valid query")))
+        bencher.iter(|| black_box(index.query(black_box(query)).expect("valid query")));
     });
 }
 
 fn bench_grouping(criterion: &mut Criterion) {
     criterion.bench_function("group_pairs_100k_chain_edges", |bencher| {
-        bencher.iter(|| black_box(group_pairs((0_u64..100_000).map(|key| (key, key + 1)), 2)))
+        bencher.iter(|| black_box(group_pairs((0_u64..100_000).map(|key| (key, key + 1)), 2)));
     });
 }
 
