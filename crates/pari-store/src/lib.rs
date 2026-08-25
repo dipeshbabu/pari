@@ -64,7 +64,9 @@ impl fmt::Display for StoreError {
             Self::InvalidSnapshot { reason } => {
                 write!(formatter, "invalid phase-1 local snapshot: {reason}")
             }
-            Self::DuplicateKey { key } => write!(formatter, "key {key} already exists in the index"),
+            Self::DuplicateKey { key } => {
+                write!(formatter, "key {key} already exists in the index")
+            }
             Self::IncompatibleSeed { expected, actual } => write!(
                 formatter,
                 "incompatible MinHash seed: expected {expected}, got {actual}"
@@ -73,7 +75,9 @@ impl fmt::Display for StoreError {
                 formatter,
                 "incompatible MinHash permutation count: expected {expected}, got {actual}"
             ),
-            Self::LengthOverflow => formatter.write_str("persistent index length arithmetic overflowed"),
+            Self::LengthOverflow => {
+                formatter.write_str("persistent index length arithmetic overflowed")
+            }
             Self::InvalidPath => formatter.write_str("persistent index path must identify a file"),
         }
     }
@@ -174,7 +178,7 @@ impl PersistentIndex32 {
         let path = path.as_ref().to_path_buf();
         let bytes = fs::read(&path)?;
         let file = IndexFile::decode(&bytes)?;
-        Self::from_snapshot(path, file)
+        Self::from_snapshot(path, &file)
     }
 
     /// Insert one external key and signature.
@@ -346,7 +350,7 @@ impl PersistentIndex32 {
         }
     }
 
-    fn from_snapshot(path: PathBuf, file: IndexFile) -> Result<Self, StoreError> {
+    fn from_snapshot(path: PathBuf, file: &IndexFile) -> Result<Self, StoreError> {
         let metadata = file.metadata();
         if metadata.algorithm() != Algorithm::MinHashLsh {
             return Err(StoreError::InvalidSnapshot {
@@ -369,7 +373,8 @@ impl PersistentIndex32 {
             });
         }
 
-        let num_perm = usize::try_from(metadata.num_perm()).map_err(|_| StoreError::LengthOverflow)?;
+        let num_perm =
+            usize::try_from(metadata.num_perm()).map_err(|_| StoreError::LengthOverflow)?;
         let bands = usize::try_from(metadata.bands()).map_err(|_| StoreError::LengthOverflow)?;
         let rows = usize::try_from(metadata.rows()).map_err(|_| StoreError::LengthOverflow)?;
         let params = LshParams::new(bands, rows);
@@ -379,7 +384,9 @@ impl PersistentIndex32 {
         let mut hashes_payload = None;
         for section in file.sections() {
             match section.kind() {
-                SectionKind::Keys => set_unique_section(&mut keys_payload, section.payload(), "keys")?,
+                SectionKind::Keys => {
+                    set_unique_section(&mut keys_payload, section.payload(), "keys")?
+                }
                 SectionKind::BandHashes => {
                     set_unique_section(&mut hashes_payload, section.payload(), "band hashes")?;
                 }
@@ -407,7 +414,13 @@ impl PersistentIndex32 {
             });
         }
 
-        let mut store = Self::empty(path, metadata.threshold(), num_perm, metadata.seed(), params);
+        let mut store = Self::empty(
+            path,
+            metadata.threshold(),
+            num_perm,
+            metadata.seed(),
+            params,
+        );
         store.dirty = false;
         for (key, hashes) in keys.into_iter().zip(rows_by_key) {
             if store.key_hashes.contains_key(&key) {
@@ -470,7 +483,11 @@ impl PersistentIndex32 {
 
         let snapshot = self.encode_snapshot()?;
         let temporary = temporary_path(&self.path)?;
-        if let Some(parent) = self.path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        if let Some(parent) = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             fs::create_dir_all(parent)?;
         }
 
@@ -544,7 +561,11 @@ fn set_unique_section<'a>(
 fn encode_keys(keys: impl ExactSizeIterator<Item = u64>) -> Result<Vec<u8>, StoreError> {
     let count = u64::try_from(keys.len()).map_err(|_| StoreError::LengthOverflow)?;
     let capacity = COUNT_BYTES
-        .checked_add(keys.len().checked_mul(U64_BYTES).ok_or(StoreError::LengthOverflow)?)
+        .checked_add(
+            keys.len()
+                .checked_mul(U64_BYTES)
+                .ok_or(StoreError::LengthOverflow)?,
+        )
         .ok_or(StoreError::LengthOverflow)?;
     let mut output = Vec::with_capacity(capacity);
     output.extend_from_slice(&count.to_le_bytes());
@@ -557,7 +578,11 @@ fn encode_keys(keys: impl ExactSizeIterator<Item = u64>) -> Result<Vec<u8>, Stor
 fn decode_keys(payload: &[u8]) -> Result<Vec<u64>, StoreError> {
     let count = read_count(payload)?;
     let expected = COUNT_BYTES
-        .checked_add(count.checked_mul(U64_BYTES).ok_or(StoreError::LengthOverflow)?)
+        .checked_add(
+            count
+                .checked_mul(U64_BYTES)
+                .ok_or(StoreError::LengthOverflow)?,
+        )
         .ok_or(StoreError::LengthOverflow)?;
     if payload.len() != expected {
         return Err(StoreError::InvalidSnapshot {
@@ -575,9 +600,16 @@ fn encode_band_hashes<'a>(
     bands: usize,
 ) -> Result<Vec<u8>, StoreError> {
     let count = u64::try_from(rows.len()).map_err(|_| StoreError::LengthOverflow)?;
-    let values = rows.len().checked_mul(bands).ok_or(StoreError::LengthOverflow)?;
+    let values = rows
+        .len()
+        .checked_mul(bands)
+        .ok_or(StoreError::LengthOverflow)?;
     let capacity = COUNT_BYTES
-        .checked_add(values.checked_mul(U64_BYTES).ok_or(StoreError::LengthOverflow)?)
+        .checked_add(
+            values
+                .checked_mul(U64_BYTES)
+                .ok_or(StoreError::LengthOverflow)?,
+        )
         .ok_or(StoreError::LengthOverflow)?;
     let mut output = Vec::with_capacity(capacity);
     output.extend_from_slice(&count.to_le_bytes());
@@ -596,9 +628,15 @@ fn encode_band_hashes<'a>(
 
 fn decode_band_hashes(payload: &[u8], bands: usize) -> Result<Vec<Vec<u64>>, StoreError> {
     let count = read_count(payload)?;
-    let row_bytes = bands.checked_mul(U64_BYTES).ok_or(StoreError::LengthOverflow)?;
+    let row_bytes = bands
+        .checked_mul(U64_BYTES)
+        .ok_or(StoreError::LengthOverflow)?;
     let expected = COUNT_BYTES
-        .checked_add(count.checked_mul(row_bytes).ok_or(StoreError::LengthOverflow)?)
+        .checked_add(
+            count
+                .checked_mul(row_bytes)
+                .ok_or(StoreError::LengthOverflow)?,
+        )
         .ok_or(StoreError::LengthOverflow)?;
     if payload.len() != expected {
         return Err(StoreError::InvalidSnapshot {
@@ -607,24 +645,31 @@ fn decode_band_hashes(payload: &[u8], bands: usize) -> Result<Vec<Vec<u64>>, Sto
     }
     let mut rows = Vec::with_capacity(count);
     for row in payload[COUNT_BYTES..].chunks_exact(row_bytes) {
-        let hashes = row.chunks_exact(U64_BYTES).map(read_u64).collect::<Result<_, _>>()?;
+        let hashes = row
+            .chunks_exact(U64_BYTES)
+            .map(read_u64)
+            .collect::<Result<_, _>>()?;
         rows.push(hashes);
     }
     Ok(rows)
 }
 
 fn read_count(payload: &[u8]) -> Result<usize, StoreError> {
-    let raw = payload.get(..COUNT_BYTES).ok_or(StoreError::InvalidSnapshot {
-        reason: "section is missing its record count",
-    })?;
+    let raw = payload
+        .get(..COUNT_BYTES)
+        .ok_or(StoreError::InvalidSnapshot {
+            reason: "section is missing its record count",
+        })?;
     let count = read_u64(raw)?;
     usize::try_from(count).map_err(|_| StoreError::LengthOverflow)
 }
 
 fn read_u64(bytes: &[u8]) -> Result<u64, StoreError> {
-    let raw: [u8; U64_BYTES] = bytes.try_into().map_err(|_| StoreError::InvalidSnapshot {
-        reason: "fixed-width u64 field is truncated",
-    })?;
+    let raw: [u8; U64_BYTES] = bytes
+        .try_into()
+        .map_err(|_| StoreError::InvalidSnapshot {
+            reason: "fixed-width u64 field is truncated",
+        })?;
     Ok(u64::from_le_bytes(raw))
 }
 
@@ -755,7 +800,10 @@ mod tests {
         *last ^= 0xFF;
         fs::write(&path, bytes).expect("write corruption");
 
-        assert!(matches!(PersistentIndex32::open(&path), Err(StoreError::Format(_))));
+        assert!(matches!(
+            PersistentIndex32::open(&path),
+            Err(StoreError::Format(_))
+        ));
         cleanup(&path);
     }
 
@@ -763,7 +811,12 @@ mod tests {
     fn candidates_match_in_memory_reference_index() {
         let path = test_path("parity");
         cleanup(&path);
-        let sketches = [sketch(0..40), sketch(0..35), sketch(100..140), sketch(0..30)];
+        let sketches = [
+            sketch(0..40),
+            sketch(0..35),
+            sketch(100..140),
+            sketch(0..30),
+        ];
         let mut persistent =
             PersistentIndex32::create(&path, 0.8, 128, 7).expect("create persistent");
         let mut memory = LshIndex32::new(0.8, 128, 7).expect("create memory index");
