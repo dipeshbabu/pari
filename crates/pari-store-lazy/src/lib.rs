@@ -7,12 +7,11 @@
 //! vectors are read from disk only for buckets touched by a query.
 
 use std::{
-    cmp::Ordering,
     collections::{BTreeMap, HashSet},
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Seek, SeekFrom, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -66,7 +65,11 @@ impl fmt::Display for LazyStoreError {
             }
             Self::LengthOverflow => formatter.write_str("lazy store layout arithmetic overflowed"),
             Self::AlreadyExists(path) => {
-                write!(formatter, "lazy store destination already exists: {}", path.display())
+                write!(
+                    formatter,
+                    "lazy store destination already exists: {}",
+                    path.display()
+                )
             }
             Self::IncompatibleSeed { expected, actual } => write!(
                 formatter,
@@ -166,25 +169,31 @@ impl LazyIndex32 {
         let mut file = File::open(path)?;
         let layout = FileLayout::read_from(&mut file)?;
         validate_metadata(layout.metadata())?;
-        let bucket_section = layout.section(SectionKind::Buckets).ok_or(
-            LazyStoreError::InvalidSnapshot {
-                reason: "missing required buckets section",
-            },
-        )?;
-        let keys_section = layout.section(SectionKind::Keys).ok_or(
-            LazyStoreError::InvalidSnapshot {
-                reason: "missing required keys section",
-            },
-        )?;
+        let bucket_section =
+            layout
+                .section(SectionKind::Buckets)
+                .ok_or(LazyStoreError::InvalidSnapshot {
+                    reason: "missing required buckets section",
+                })?;
+        let keys_section =
+            layout
+                .section(SectionKind::Keys)
+                .ok_or(LazyStoreError::InvalidSnapshot {
+                    reason: "missing required keys section",
+                })?;
 
         let item_count = read_source_count(&layout, &mut file, keys_section)?;
         let directory = read_bucket_directory(&layout, &mut file, bucket_section)?;
         let metadata = layout.metadata();
-        let num_perm = usize::try_from(metadata.num_perm()).map_err(|_| LazyStoreError::LengthOverflow)?;
-        let bands = usize::try_from(metadata.bands()).map_err(|_| LazyStoreError::LengthOverflow)?;
+        let num_perm =
+            usize::try_from(metadata.num_perm()).map_err(|_| LazyStoreError::LengthOverflow)?;
+        let bands =
+            usize::try_from(metadata.bands()).map_err(|_| LazyStoreError::LengthOverflow)?;
         let rows = usize::try_from(metadata.rows()).map_err(|_| LazyStoreError::LengthOverflow)?;
+        let seed = metadata.seed();
+        let threshold = metadata.threshold();
         let params = LshParams::new(bands, rows);
-        LshIndex32::with_params(metadata.threshold(), num_perm, metadata.seed(), params)?;
+        LshIndex32::with_params(threshold, num_perm, seed, params)?;
 
         validate_directory(&directory, bucket_section, bands)?;
         Ok(Self {
@@ -194,7 +203,7 @@ impl LazyIndex32 {
             directory,
             item_count,
             num_perm,
-            seed: metadata.seed(),
+            seed,
             params,
         })
     }
@@ -272,8 +281,8 @@ impl LazyIndex32 {
         &mut self,
         descriptor: BucketDescriptor,
     ) -> Result<Vec<u64>, LazyStoreError> {
-        let length = usize::try_from(descriptor.member_bytes)
-            .map_err(|_| LazyStoreError::LengthOverflow)?;
+        let length =
+            usize::try_from(descriptor.member_bytes).map_err(|_| LazyStoreError::LengthOverflow)?;
         let bytes = self.layout.read_section_range(
             &mut self.file,
             self.bucket_section,
@@ -288,13 +297,18 @@ impl LazyIndex32 {
             }
             .into());
         }
-        let expected = usize::try_from(descriptor.member_count)
-            .map_err(|_| LazyStoreError::LengthOverflow)?;
-        let mut keys = Vec::with_capacity(expected);
-        for chunk in bytes.chunks_exact(U64_BYTES) {
-            keys.push(read_u64_exact(chunk)?);
+        let expected =
+            usize::try_from(descriptor.member_count).map_err(|_| LazyStoreError::LengthOverflow)?;
+        let chunks = bytes.chunks_exact(U64_BYTES);
+        if !chunks.remainder().is_empty() {
+            return Err(LazyStoreError::InvalidSnapshot {
+                reason: "bucket membership bytes are not u64 aligned",
+            });
         }
-        if keys.len() != expected || !bytes.chunks_exact(U64_BYTES).remainder().is_empty() {
+        let keys = chunks
+            .map(read_u64_exact)
+            .collect::<Result<Vec<_>, _>>()?;
+        if keys.len() != expected {
             return Err(LazyStoreError::InvalidSnapshot {
                 reason: "bucket membership length disagrees with its descriptor",
             });
@@ -343,16 +357,18 @@ pub fn build_from_snapshot(
     let mut source_file = File::open(source)?;
     let source_layout = FileLayout::read_from(&mut source_file)?;
     validate_metadata(source_layout.metadata())?;
-    let keys_descriptor = source_layout.section(SectionKind::Keys).ok_or(
-        LazyStoreError::InvalidSnapshot {
-            reason: "phase-1 source is missing keys",
-        },
-    )?;
-    let hashes_descriptor = source_layout.section(SectionKind::BandHashes).ok_or(
-        LazyStoreError::InvalidSnapshot {
-            reason: "phase-1 source is missing band hashes",
-        },
-    )?;
+    let keys_descriptor =
+        source_layout
+            .section(SectionKind::Keys)
+            .ok_or(LazyStoreError::InvalidSnapshot {
+                reason: "phase-1 source is missing keys",
+            })?;
+    let hashes_descriptor =
+        source_layout
+            .section(SectionKind::BandHashes)
+            .ok_or(LazyStoreError::InvalidSnapshot {
+                reason: "phase-1 source is missing band hashes",
+            })?;
     let keys_payload = source_layout.read_section(&mut source_file, keys_descriptor)?;
     let hashes_payload = source_layout.read_section(&mut source_file, hashes_descriptor)?;
 
@@ -459,11 +475,16 @@ fn read_bucket_directory(
         u64::try_from(BUCKET_HEADER_BYTES).map_err(|_| LazyStoreError::LengthOverflow)?,
         directory_bytes,
     )?;
-    let mut output = Vec::with_capacity(count);
-    for record in records.chunks_exact(BUCKET_RECORD_BYTES) {
-        output.push(decode_bucket_record(record)?);
+    let chunks = records.chunks_exact(BUCKET_RECORD_BYTES);
+    if !chunks.remainder().is_empty() {
+        return Err(LazyStoreError::InvalidSnapshot {
+            reason: "bucket directory is not record aligned",
+        });
     }
-    if output.len() != count || !records.chunks_exact(BUCKET_RECORD_BYTES).remainder().is_empty() {
+    let output = chunks
+        .map(decode_bucket_record)
+        .collect::<Result<Vec<_>, _>>()?;
+    if output.len() != count {
         return Err(LazyStoreError::InvalidSnapshot {
             reason: "bucket directory length disagrees with its count",
         });
@@ -525,9 +546,7 @@ fn validate_directory(
     Ok(())
 }
 
-fn encode_buckets(
-    buckets: &BTreeMap<(u32, u64), Vec<u64>>,
-) -> Result<Vec<u8>, LazyStoreError> {
+fn encode_buckets(buckets: &BTreeMap<(u32, u64), Vec<u64>>) -> Result<Vec<u8>, LazyStoreError> {
     let count = buckets.len();
     let directory_bytes = count
         .checked_mul(BUCKET_RECORD_BYTES)
@@ -567,7 +586,8 @@ fn encode_buckets(
             bytes.extend_from_slice(&key.to_le_bytes());
         }
         let member_count = u32::try_from(keys.len()).map_err(|_| LazyStoreError::LengthOverflow)?;
-        let member_bytes = u64::try_from(bytes.len()).map_err(|_| LazyStoreError::LengthOverflow)?;
+        let member_bytes =
+            u64::try_from(bytes.len()).map_err(|_| LazyStoreError::LengthOverflow)?;
         output.extend_from_slice(&band.to_le_bytes());
         output.extend_from_slice(&member_count.to_le_bytes());
         output.extend_from_slice(&hash.to_le_bytes());
@@ -658,15 +678,20 @@ fn decode_phase1_band_hashes(
 }
 
 fn phase1_count(payload: &[u8]) -> Result<usize, LazyStoreError> {
-    let bytes = payload.get(..U64_BYTES).ok_or(LazyStoreError::InvalidSnapshot {
-        reason: "phase-1 section is missing its record count",
-    })?;
+    let bytes = payload
+        .get(..U64_BYTES)
+        .ok_or(LazyStoreError::InvalidSnapshot {
+            reason: "phase-1 section is missing its record count",
+        })?;
     let count = read_u64_exact(bytes)?;
     usize::try_from(count).map_err(|_| LazyStoreError::LengthOverflow)
 }
 
 fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), LazyStoreError> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)?;
     }
     let temporary = temporary_path(path)?;
@@ -746,9 +771,13 @@ fn read_u64_at(bytes: &[u8], offset: usize) -> Result<u64, LazyStoreError> {
     let end = offset
         .checked_add(U64_BYTES)
         .ok_or(LazyStoreError::LengthOverflow)?;
-    read_u64_exact(bytes.get(offset..end).ok_or(LazyStoreError::InvalidSnapshot {
-        reason: "truncated u64 field",
-    })?)
+    read_u64_exact(
+        bytes
+            .get(offset..end)
+            .ok_or(LazyStoreError::InvalidSnapshot {
+                reason: "truncated u64 field",
+            })?,
+    )
 }
 
 fn read_u64_exact(bytes: &[u8]) -> Result<u64, LazyStoreError> {
@@ -808,9 +837,12 @@ mod tests {
         ];
         let mut store = PersistentIndex32::create(&source, 0.8, 128, 7).expect("create source");
         store
-            .insert_many(sketches.iter().enumerate().map(|(key, value)| {
-                (u64::try_from(key).expect("test key fits u64"), value)
-            }))
+            .insert_many(
+                sketches
+                    .iter()
+                    .enumerate()
+                    .map(|(key, value)| (u64::try_from(key).expect("test key fits u64"), value)),
+            )
             .expect("insert source");
         store.sync().expect("sync source");
         build_from_snapshot(&source, &lazy).expect("build lazy");
@@ -823,15 +855,24 @@ mod tests {
         let phase1 = PersistentIndex32::open(&source).expect("open phase1");
         let mut memory = LshIndex32::new(0.8, 128, 7).expect("memory index");
         memory
-            .insert_many(sketches.iter().enumerate().map(|(key, value)| {
-                (u64::try_from(key).expect("test key fits u64"), value)
-            }))
+            .insert_many(
+                sketches
+                    .iter()
+                    .enumerate()
+                    .map(|(key, value)| (u64::try_from(key).expect("test key fits u64"), value)),
+            )
             .expect("insert memory");
         let mut lazy = LazyIndex32::open(&lazy_path).expect("open lazy");
 
         for query in &sketches {
-            assert_eq!(lazy.query(query).expect("lazy query"), phase1.query(query).expect("phase1 query"));
-            assert_eq!(lazy.query(query).expect("lazy query"), memory.query(query).expect("memory query"));
+            assert_eq!(
+                lazy.query(query).expect("lazy query"),
+                phase1.query(query).expect("phase1 query")
+            );
+            assert_eq!(
+                lazy.query(query).expect("lazy query"),
+                memory.query(query).expect("memory query")
+            );
         }
         assert_eq!(lazy.stats().items, sketches.len());
         assert!(lazy.stats().buckets > 0);
@@ -857,10 +898,17 @@ mod tests {
     #[test]
     fn corrupt_bucket_directory_is_rejected() {
         let (source, lazy_path, _) = build_fixture("directory-corrupt");
-        let mut file = OpenOptions::new().read(true).write(true).open(&lazy_path).expect("open file");
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lazy_path)
+            .expect("open file");
         let layout = FileLayout::read_from(&mut file).expect("layout");
-        let buckets = layout.section(SectionKind::Buckets).expect("bucket section");
-        file.seek(SeekFrom::Start(buckets.payload_offset())).expect("seek bucket magic");
+        let buckets = layout
+            .section(SectionKind::Buckets)
+            .expect("bucket section");
+        file.seek(SeekFrom::Start(buckets.payload_offset()))
+            .expect("seek bucket magic");
         file.write_all(b"BROKEN!!").expect("corrupt bucket magic");
         file.sync_all().expect("sync corruption");
         drop(file);
@@ -875,7 +923,7 @@ mod tests {
     #[test]
     fn corrupt_membership_fails_per_bucket_checksum() {
         let (source, lazy_path, _) = build_fixture("membership-corrupt");
-        let mut lazy = LazyIndex32::open(&lazy_path).expect("open lazy");
+        let lazy = LazyIndex32::open(&lazy_path).expect("open lazy");
         let descriptor = lazy.directory[0];
         let absolute = lazy
             .bucket_section
@@ -884,8 +932,13 @@ mod tests {
             .expect("offset fits");
         drop(lazy);
 
-        let mut file = OpenOptions::new().read(true).write(true).open(&lazy_path).expect("open file");
-        file.seek(SeekFrom::Start(absolute)).expect("seek membership");
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lazy_path)
+            .expect("open file");
+        file.seek(SeekFrom::Start(absolute))
+            .expect("seek membership");
         file.write_all(&[0xFF]).expect("corrupt membership");
         file.sync_all().expect("sync corruption");
         drop(file);
