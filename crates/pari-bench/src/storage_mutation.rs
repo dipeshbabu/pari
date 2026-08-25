@@ -55,10 +55,10 @@ pub(crate) fn append_storage_mutation_metrics(
         reference.insert(key, signature)?;
     }
     let mutation_elapsed = mutation_started.elapsed();
-    let operations = item_count * 2;
+    let operations = u32::try_from(item_count * 2)?;
     let mutation_seconds = mutation_elapsed.as_secs_f64();
     let operations_per_second = if mutation_seconds > 0.0 {
-        operations as f64 / mutation_seconds
+        f64::from(operations) / mutation_seconds
     } else {
         0.0
     };
