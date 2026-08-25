@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! PyO3 bindings for Pari's stable Rust APIs.
+//! `PyO3` bindings for Pari's stable Rust APIs.
 
 use std::{
     path::PathBuf,
@@ -23,12 +23,58 @@ create_exception!(_native, DuplicateKeyError, PariError);
 create_exception!(_native, StorageError, PariError);
 create_exception!(_native, ClosedIndexError, PariError);
 
+#[derive(Debug, Clone, Copy)]
+enum BindingErrorKind {
+    Closed,
+    Configuration,
+    Compatibility,
+    DuplicateKey,
+    Storage,
+}
+
 #[derive(Debug)]
 enum BindingError {
     Closed,
     Poisoned,
     MinHash(MinHashError),
     Store(StoreError),
+}
+
+impl BindingError {
+    fn kind(&self) -> BindingErrorKind {
+        match self {
+            Self::Closed => BindingErrorKind::Closed,
+            Self::Poisoned => BindingErrorKind::Storage,
+            Self::MinHash(MinHashError::InvalidPermutationCount { .. }) => {
+                BindingErrorKind::Configuration
+            }
+            Self::MinHash(
+                MinHashError::IncompatibleSeed { .. }
+                | MinHashError::IncompatiblePermutationCount { .. },
+            ) => BindingErrorKind::Compatibility,
+            Self::Store(StoreError::DuplicateKey { .. }) => BindingErrorKind::DuplicateKey,
+            Self::Store(
+                StoreError::IncompatibleSeed { .. }
+                | StoreError::IncompatiblePermutationCount { .. },
+            ) => BindingErrorKind::Compatibility,
+            Self::Store(StoreError::Index(
+                LshError::InvalidThreshold { .. }
+                | LshError::InvalidPermutationCount { .. }
+                | LshError::AutomaticTuningTooLarge { .. }
+                | LshError::InvalidParams { .. },
+            )) => BindingErrorKind::Configuration,
+            Self::Store(_) => BindingErrorKind::Storage,
+        }
+    }
+
+    fn into_message(self) -> String {
+        match self {
+            Self::Closed => "index is closed".into(),
+            Self::Poisoned => "index state lock is poisoned".into(),
+            Self::MinHash(error) => error.to_string(),
+            Self::Store(error) => error.to_string(),
+        }
+    }
 }
 
 impl From<MinHashError> for BindingError {
@@ -44,37 +90,14 @@ impl From<StoreError> for BindingError {
 }
 
 fn binding_error(error: BindingError) -> PyErr {
-    let message = error_text(&error);
-    match error {
-        BindingError::Closed => ClosedIndexError::new_err(message),
-        BindingError::Poisoned => StorageError::new_err(message),
-        BindingError::MinHash(MinHashError::InvalidPermutationCount { .. }) => {
-            ConfigurationError::new_err(message)
-        }
-        BindingError::MinHash(
-            MinHashError::IncompatibleSeed { .. }
-            | MinHashError::IncompatiblePermutationCount { .. },
-        ) => CompatibilityError::new_err(message),
-        BindingError::Store(StoreError::DuplicateKey { .. }) => DuplicateKeyError::new_err(message),
-        BindingError::Store(
-            StoreError::IncompatibleSeed { .. } | StoreError::IncompatiblePermutationCount { .. },
-        ) => CompatibilityError::new_err(message),
-        BindingError::Store(StoreError::Index(
-            LshError::InvalidThreshold { .. }
-            | LshError::InvalidPermutationCount { .. }
-            | LshError::AutomaticTuningTooLarge { .. }
-            | LshError::InvalidParams { .. },
-        )) => ConfigurationError::new_err(message),
-        BindingError::Store(_) => StorageError::new_err(message),
-    }
-}
-
-fn error_text(error: &BindingError) -> String {
-    match error {
-        BindingError::Closed => "index is closed".into(),
-        BindingError::Poisoned => "index state lock is poisoned".into(),
-        BindingError::MinHash(error) => error.to_string(),
-        BindingError::Store(error) => error.to_string(),
+    let kind = error.kind();
+    let message = error.into_message();
+    match kind {
+        BindingErrorKind::Closed => ClosedIndexError::new_err(message),
+        BindingErrorKind::Configuration => ConfigurationError::new_err(message),
+        BindingErrorKind::Compatibility => CompatibilityError::new_err(message),
+        BindingErrorKind::DuplicateKey => DuplicateKeyError::new_err(message),
+        BindingErrorKind::Storage => StorageError::new_err(message),
     }
 }
 
@@ -86,9 +109,9 @@ fn owned_bytes(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
         return Ok(bytes);
     }
 
-    // PyO3's low-level buffer module is not exposed by abi3-py310. A Python
+    // `PyO3`'s low-level buffer module is not exposed by abi3-py310. A Python
     // memoryview still validates the generic buffer protocol through the stable
-    // ABI, and `tobytes` gives Rust owned memory before detached work starts.
+    // ABI, and `tobytes` gives Rust-owned memory before detached work starts.
     let builtins = py.import("builtins")?;
     let view = builtins.getattr("memoryview")?.call1((value,))?;
     let bytes = view.call_method0("tobytes")?;
@@ -102,12 +125,8 @@ fn collect_byte_values(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Ve
         .collect()
 }
 
-/// Pari's 32-bit affine MinHash sketch.
-#[pyclass(
-    module = "pari._native",
-    name = "MinHash",
-    skip_from_py_object
-)]
+/// Pari's 32-bit affine `MinHash` sketch.
+#[pyclass(module = "pari._native", name = "MinHash", skip_from_py_object)]
 #[derive(Debug, Clone)]
 struct PyMinHash {
     inner: MinHash32,
@@ -167,13 +186,13 @@ impl PyMinHash {
         Ok(())
     }
 
-    fn jaccard(&self, other: PyRef<'_, Self>) -> PyResult<f64> {
+    fn jaccard(&self, other: &Self) -> PyResult<f64> {
         self.inner
             .jaccard(&other.inner)
             .map_err(|error| binding_error(error.into()))
     }
 
-    fn merge(&mut self, other: PyRef<'_, Self>) -> PyResult<()> {
+    fn merge(&mut self, other: &Self) -> PyResult<()> {
         self.inner
             .merge(&other.inner)
             .map_err(|error| binding_error(error.into()))
@@ -276,7 +295,7 @@ impl PyIndexStats {
 
 type SharedIndex = Arc<Mutex<Option<PersistentIndex32>>>;
 
-/// High-level persistent MinHash LSH index.
+/// High-level persistent `MinHash` LSH index.
 #[pyclass(module = "pari._native", name = "Index", skip_from_py_object)]
 #[derive(Debug, Clone)]
 struct PyIndex {
@@ -344,8 +363,8 @@ impl PyIndex {
             .map_err(binding_error)
     }
 
-    /// Insert one key and compatible MinHash sketch.
-    fn add(&self, py: Python<'_>, key: u64, sketch: PyRef<'_, PyMinHash>) -> PyResult<()> {
+    /// Insert one key and compatible `MinHash` sketch.
+    fn add(&self, py: Python<'_>, key: u64, sketch: &PyMinHash) -> PyResult<()> {
         let sketch = sketch.inner.clone();
         self.run_write(py, move |store| {
             store.insert(key, &sketch).map_err(BindingError::from)
@@ -366,7 +385,7 @@ impl PyIndex {
     }
 
     /// Return sorted approximate candidate keys for one sketch.
-    fn search(&self, py: Python<'_>, sketch: PyRef<'_, PyMinHash>) -> PyResult<Vec<u64>> {
+    fn search(&self, py: Python<'_>, sketch: &PyMinHash) -> PyResult<Vec<u64>> {
         let sketch = sketch.inner.clone();
         self.run_read(py, move |store| {
             store.query(&sketch).map_err(BindingError::from)
