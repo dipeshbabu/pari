@@ -26,14 +26,19 @@ use pari_format::{
 const FILE_MAGIC: [u8; 8] = *b"PARIIDX\0";
 const FORMAT_VERSION: u16 = 1;
 const HEADER_BYTES: usize = 72;
+const HEADER_BYTES_U16: u16 = 72;
 const SECTION_HEADER_BYTES: usize = 16;
 const SECTION_REQUIRED: u16 = 1;
 const BUCKET_MAGIC: [u8; 8] = *b"PARIBKT1";
 const BUCKET_HEADER_BYTES: usize = 16;
+const BUCKET_HEADER_BYTES_U64: u64 = 16;
 const BUCKET_RECORD_BYTES: usize = 40;
+const BUCKET_RECORD_BYTES_U64: u64 = 40;
 const SPILL_RECORD_BYTES: usize = 20;
 const U64_BYTES: usize = 8;
+const U64_BYTES_U64: u64 = 8;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
+const COPY_BUFFER_BYTES_U64: u64 = 64 * 1024;
 
 /// Configuration for the bounded external builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +102,9 @@ impl fmt::Display for BuildError {
                 "lazy index destination already exists: {}",
                 path.display()
             ),
-            Self::LengthOverflow => formatter.write_str("bounded builder length arithmetic overflowed"),
+            Self::LengthOverflow => {
+                formatter.write_str("bounded builder length arithmetic overflowed")
+            }
         }
     }
 }
@@ -218,7 +225,8 @@ pub fn build_external(
             reason: "key and band-hash record counts differ",
         });
     }
-    let bands = usize::try_from(layout.metadata().bands()).map_err(|_| BuildError::LengthOverflow)?;
+    let bands =
+        usize::try_from(layout.metadata().bands()).map_err(|_| BuildError::LengthOverflow)?;
     validate_source_lengths(keys, band_hashes, item_count, bands)?;
 
     let nonce = build_nonce()?;
@@ -238,21 +246,17 @@ pub fn build_external(
         .map_err(|_| BuildError::LengthOverflow)?
         .checked_mul(u64::try_from(bands).map_err(|_| BuildError::LengthOverflow)?)
         .ok_or(BuildError::LengthOverflow)?;
-    let peak_buffered_records = options.max_buffer_records.min(
-        usize::try_from(records).unwrap_or(usize::MAX),
-    );
+    let peak_buffered_records = options
+        .max_buffer_records
+        .min(usize::try_from(records).unwrap_or(usize::MAX));
 
     let descriptors = temporary.track(temp_path(destination, nonce, "descriptors"));
     let memberships = temporary.track(temp_path(destination, nonce, "memberships"));
     let buckets = merge_runs(&run_paths, &descriptors, &memberships)?;
 
     let bucket_payload = temporary.track(temp_path(destination, nonce, "bucket-payload"));
-    let (bucket_bytes, bucket_checksum) = assemble_bucket_payload(
-        &descriptors,
-        &memberships,
-        buckets,
-        &bucket_payload,
-    )?;
+    let (bucket_bytes, bucket_checksum) =
+        assemble_bucket_payload(&descriptors, &memberships, buckets, &bucket_payload)?;
 
     let destination_temp = temporary.track(temp_path(destination, nonce, "commit"));
     write_final_container(
@@ -360,7 +364,7 @@ fn verify_section_streaming(
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     let mut hasher = Hasher::new();
     while remaining > 0 {
-        let chunk = usize::try_from(remaining.min(COPY_BUFFER_BYTES as u64))
+        let chunk = usize::try_from(remaining.min(COPY_BUFFER_BYTES_U64))
             .map_err(|_| BuildError::LengthOverflow)?;
         source.read_exact(&mut buffer[..chunk])?;
         hasher.update(&buffer[..chunk]);
@@ -441,12 +445,26 @@ fn spill_runs(
                 key,
             });
             if buffer.len() == options.max_buffer_records {
-                spill_one_run(&mut buffer, destination, nonce, runs.len(), temporary, &mut runs)?;
+                spill_one_run(
+                    &mut buffer,
+                    destination,
+                    nonce,
+                    runs.len(),
+                    temporary,
+                    &mut runs,
+                )?;
             }
         }
     }
     if !buffer.is_empty() {
-        spill_one_run(&mut buffer, destination, nonce, runs.len(), temporary, &mut runs)?;
+        spill_one_run(
+            &mut buffer,
+            destination,
+            nonce,
+            runs.len(),
+            temporary,
+            &mut runs,
+        )?;
     }
     Ok(runs)
 }
@@ -461,7 +479,10 @@ fn spill_one_run(
 ) -> Result<(), BuildError> {
     buffer.sort_unstable();
     let path = temporary.track(temp_path(destination, nonce, &format!("run-{index}")));
-    let file = OpenOptions::new().write(true).create_new(true).open(&path)?;
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
     let mut writer = BufWriter::new(file);
     for record in buffer.iter().copied() {
         write_spill_record(&mut writer, record)?;
@@ -521,7 +542,9 @@ fn merge_runs(
                         checksum: current_hasher.finalize(),
                     },
                 )?;
-                bucket_count = bucket_count.checked_add(1).ok_or(BuildError::LengthOverflow)?;
+                bucket_count = bucket_count
+                    .checked_add(1)
+                    .ok_or(BuildError::LengthOverflow)?;
                 current_offset = current_offset
                     .checked_add(current_bytes)
                     .ok_or(BuildError::LengthOverflow)?;
@@ -535,9 +558,11 @@ fn merge_runs(
         let key_bytes = entry.record.key.to_le_bytes();
         memberships.write_all(&key_bytes)?;
         current_hasher.update(&key_bytes);
-        current_count = current_count.checked_add(1).ok_or(BuildError::LengthOverflow)?;
+        current_count = current_count
+            .checked_add(1)
+            .ok_or(BuildError::LengthOverflow)?;
         current_bytes = current_bytes
-            .checked_add(U64_BYTES as u64)
+            .checked_add(U64_BYTES_U64)
             .ok_or(BuildError::LengthOverflow)?;
 
         if let Some(next) = read_spill_record(&mut readers[entry.run])? {
@@ -560,7 +585,9 @@ fn merge_runs(
                 checksum: current_hasher.finalize(),
             },
         )?;
-        bucket_count = bucket_count.checked_add(1).ok_or(BuildError::LengthOverflow)?;
+        bucket_count = bucket_count
+            .checked_add(1)
+            .ok_or(BuildError::LengthOverflow)?;
     }
     descriptors.flush()?;
     memberships.flush()?;
@@ -576,9 +603,9 @@ fn assemble_bucket_payload(
     output_path: &Path,
 ) -> Result<(u64, u32), BuildError> {
     let descriptor_bytes = bucket_count
-        .checked_mul(BUCKET_RECORD_BYTES as u64)
+        .checked_mul(BUCKET_RECORD_BYTES_U64)
         .ok_or(BuildError::LengthOverflow)?;
-    let membership_start = (BUCKET_HEADER_BYTES as u64)
+    let membership_start = BUCKET_HEADER_BYTES_U64
         .checked_add(descriptor_bytes)
         .ok_or(BuildError::LengthOverflow)?;
     let mut descriptors = BufReader::new(File::open(descriptor_path)?);
@@ -627,7 +654,12 @@ fn write_final_container(
         keys.payload_length(),
         keys.checksum(),
     ))?;
-    copy_file_range(source, keys.payload_offset(), keys.payload_length(), &mut output)?;
+    copy_file_range(
+        source,
+        keys.payload_offset(),
+        keys.payload_length(),
+        &mut output,
+    )?;
     output.write_all(&encode_section_header(
         SectionKind::Buckets,
         bucket_bytes,
@@ -644,7 +676,7 @@ fn encode_header(metadata: &IndexMetadata, section_count: u32) -> [u8; HEADER_BY
     let mut header = [0_u8; HEADER_BYTES];
     header[0..8].copy_from_slice(&FILE_MAGIC);
     header[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
-    header[10..12].copy_from_slice(&(HEADER_BYTES as u16).to_le_bytes());
+    header[10..12].copy_from_slice(&HEADER_BYTES_U16.to_le_bytes());
     header[12..14].copy_from_slice(&algorithm_raw(metadata.algorithm()).to_le_bytes());
     header[14..16].copy_from_slice(&scheme_raw(metadata.signature_scheme()).to_le_bytes());
     header[16..18].copy_from_slice(&metadata.signature_scheme().width_bits().to_le_bytes());
@@ -728,9 +760,21 @@ fn read_spill_record(reader: &mut impl Read) -> Result<Option<SpillRecord>, Buil
         }
     }
     Ok(Some(SpillRecord {
-        band: u32::from_le_bytes(raw[0..4].try_into().map_err(|_| BuildError::LengthOverflow)?),
-        hash: u64::from_le_bytes(raw[4..12].try_into().map_err(|_| BuildError::LengthOverflow)?),
-        key: u64::from_le_bytes(raw[12..20].try_into().map_err(|_| BuildError::LengthOverflow)?),
+        band: u32::from_le_bytes(
+            raw[0..4]
+                .try_into()
+                .map_err(|_| BuildError::LengthOverflow)?,
+        ),
+        hash: u64::from_le_bytes(
+            raw[4..12]
+                .try_into()
+                .map_err(|_| BuildError::LengthOverflow)?,
+        ),
+        key: u64::from_le_bytes(
+            raw[12..20]
+                .try_into()
+                .map_err(|_| BuildError::LengthOverflow)?,
+        ),
     }))
 }
 
@@ -748,25 +792,46 @@ fn finish_descriptor(writer: &mut impl Write, draft: DescriptorDraft) -> Result<
 fn read_descriptor_draft(reader: &mut impl Read) -> Result<DescriptorDraft, BuildError> {
     let mut raw = [0_u8; BUCKET_RECORD_BYTES];
     reader.read_exact(&mut raw)?;
-    if u32::from_le_bytes(raw[36..40].try_into().map_err(|_| BuildError::LengthOverflow)?) != 0 {
+    if u32::from_le_bytes(
+        raw[36..40]
+            .try_into()
+            .map_err(|_| BuildError::LengthOverflow)?,
+    ) != 0
+    {
         return Err(BuildError::InvalidSource {
             reason: "temporary descriptor reserved bytes are nonzero",
         });
     }
     Ok(DescriptorDraft {
-        band: u32::from_le_bytes(raw[0..4].try_into().map_err(|_| BuildError::LengthOverflow)?),
-        member_count: u32::from_le_bytes(
-            raw[4..8].try_into().map_err(|_| BuildError::LengthOverflow)?,
+        band: u32::from_le_bytes(
+            raw[0..4]
+                .try_into()
+                .map_err(|_| BuildError::LengthOverflow)?,
         ),
-        hash: u64::from_le_bytes(raw[8..16].try_into().map_err(|_| BuildError::LengthOverflow)?),
+        member_count: u32::from_le_bytes(
+            raw[4..8]
+                .try_into()
+                .map_err(|_| BuildError::LengthOverflow)?,
+        ),
+        hash: u64::from_le_bytes(
+            raw[8..16]
+                .try_into()
+                .map_err(|_| BuildError::LengthOverflow)?,
+        ),
         relative_offset: u64::from_le_bytes(
-            raw[16..24].try_into().map_err(|_| BuildError::LengthOverflow)?,
+            raw[16..24]
+                .try_into()
+                .map_err(|_| BuildError::LengthOverflow)?,
         ),
         member_bytes: u64::from_le_bytes(
-            raw[24..32].try_into().map_err(|_| BuildError::LengthOverflow)?,
+            raw[24..32]
+                .try_into()
+                .map_err(|_| BuildError::LengthOverflow)?,
         ),
         checksum: u32::from_le_bytes(
-            raw[32..36].try_into().map_err(|_| BuildError::LengthOverflow)?,
+            raw[32..36]
+                .try_into()
+                .map_err(|_| BuildError::LengthOverflow)?,
         ),
     })
 }
@@ -822,7 +887,7 @@ fn copy_file_range(
     let mut remaining = length;
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     while remaining > 0 {
-        let count = usize::try_from(remaining.min(COPY_BUFFER_BYTES as u64))
+        let count = usize::try_from(remaining.min(COPY_BUFFER_BYTES_U64))
             .map_err(|_| BuildError::LengthOverflow)?;
         source.read_exact(&mut buffer[..count])?;
         writer.write_all(&buffer[..count])?;
@@ -832,11 +897,12 @@ fn copy_file_range(
 }
 
 fn build_nonce() -> Result<u128, BuildError> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| BuildError::InvalidSource {
-            reason: "system clock is before UNIX epoch",
-        })?;
+    let duration =
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| BuildError::InvalidSource {
+                reason: "system clock is before UNIX epoch",
+            })?;
     Ok(duration.as_nanos() ^ u128::from(std::process::id()))
 }
 
@@ -858,7 +924,10 @@ fn sync_parent(path: &Path) -> Result<(), BuildError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::{Path, PathBuf}};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use pari_core::MinHash32;
     use pari_store::PersistentIndex32;
@@ -894,9 +963,12 @@ mod tests {
             .collect::<Vec<_>>();
         let mut store = PersistentIndex32::create(&source, 0.8, 128, 7).expect("create source");
         store
-            .insert_many(sketches.iter().enumerate().map(|(key, sketch)| {
-                (u64::try_from(key).expect("test key fits u64"), sketch)
-            }))
+            .insert_many(
+                sketches
+                    .iter()
+                    .enumerate()
+                    .map(|(key, sketch)| (u64::try_from(key).expect("test key fits u64"), sketch)),
+            )
             .expect("insert source");
         store.sync().expect("sync source");
         (source, sketches)
@@ -920,7 +992,10 @@ mod tests {
         .expect("external build");
         assert!(stats.spill_runs > 1);
         assert!(stats.peak_buffered_records <= 7);
-        assert_eq!(fs::read(&external).expect("external bytes"), fs::read(&reference).expect("reference bytes"));
+        assert_eq!(
+            fs::read(&external).expect("external bytes"),
+            fs::read(&reference).expect("reference bytes")
+        );
         cleanup(&source);
         cleanup(&reference);
         cleanup(&external);
@@ -942,7 +1017,10 @@ mod tests {
         let phase1 = PersistentIndex32::open(&source).expect("phase1");
         let mut lazy = LazyIndex32::open(&external).expect("lazy");
         for query in sketches.iter().take(8) {
-            assert_eq!(lazy.query(query).expect("lazy query"), phase1.query(query).expect("phase1 query"));
+            assert_eq!(
+                lazy.query(query).expect("lazy query"),
+                phase1.query(query).expect("phase1 query")
+            );
         }
         cleanup(&source);
         cleanup(&external);
