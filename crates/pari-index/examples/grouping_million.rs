@@ -10,7 +10,10 @@ fn main() {
     let elapsed = started.elapsed();
 
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].len(), usize::try_from(EDGE_COUNT + 1).expect("edge count fits usize"));
+    assert_eq!(
+        groups[0].len(),
+        usize::try_from(EDGE_COUNT + 1).expect("edge count fits usize")
+    );
     println!(
         "grouped {EDGE_COUNT} streamed edges into {} component(s) in {elapsed:?}",
         groups.len()
