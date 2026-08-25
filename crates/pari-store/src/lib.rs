@@ -385,7 +385,7 @@ impl PersistentIndex32 {
         for section in file.sections() {
             match section.kind() {
                 SectionKind::Keys => {
-                    set_unique_section(&mut keys_payload, section.payload(), "keys")?
+                    set_unique_section(&mut keys_payload, section.payload(), "keys")?;
                 }
                 SectionKind::BandHashes => {
                     set_unique_section(&mut hashes_payload, section.payload(), "band hashes")?;
@@ -665,11 +665,9 @@ fn read_count(payload: &[u8]) -> Result<usize, StoreError> {
 }
 
 fn read_u64(bytes: &[u8]) -> Result<u64, StoreError> {
-    let raw: [u8; U64_BYTES] = bytes
-        .try_into()
-        .map_err(|_| StoreError::InvalidSnapshot {
-            reason: "fixed-width u64 field is truncated",
-        })?;
+    let raw: [u8; U64_BYTES] = bytes.try_into().map_err(|_| StoreError::InvalidSnapshot {
+        reason: "fixed-width u64 field is truncated",
+    })?;
     Ok(u64::from_le_bytes(raw))
 }
 
