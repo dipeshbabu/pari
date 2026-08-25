@@ -4,6 +4,7 @@ members = [
   "crates/pari-core",
   "crates/pari-format",
   "crates/pari-index",
+  "crates/pari-store",
 ]
 resolver = "2"
 
