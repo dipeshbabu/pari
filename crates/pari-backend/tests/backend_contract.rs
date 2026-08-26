@@ -1,5 +1,6 @@
 use pari_backend::{
-    BackendCapability, BackendIndex32, BackendIndexError, MemoryBackend, StorageBackend,
+    BackendCapabilities, BackendCapability, BackendIndex32, BackendIndexError, IndexDescriptor,
+    MemoryBackend, StorageBackend,
 };
 use pari_core::MinHash32;
 use pari_index::LshIndex32;
@@ -69,6 +70,25 @@ fn exercise_backend_contract<B: StorageBackend>(backend: B) -> BackendIndex32<B>
     assert_eq!(stats.items, 2);
     assert!(stats.bucket_memberships > 0);
     index
+}
+
+#[test]
+fn public_backend_extension_types_are_constructible() {
+    let capabilities = BackendCapabilities::empty()
+        .with(BackendCapability::BatchRead)
+        .with(BackendCapability::Health);
+    assert!(capabilities.supports(BackendCapability::BatchRead));
+    assert!(capabilities.supports(BackendCapability::Health));
+    assert!(!capabilities.supports(BackendCapability::Remote));
+
+    let params = LshIndex32::new(0.8, 64, 1)
+        .expect("reference index")
+        .params();
+    let descriptor =
+        IndexDescriptor::new(0.8, 64, 1, params, None).expect("public descriptor constructor");
+    assert_eq!(descriptor.num_perm(), 64);
+    assert_eq!(descriptor.seed(), 1);
+    assert_eq!(descriptor.params(), params);
 }
 
 #[test]
