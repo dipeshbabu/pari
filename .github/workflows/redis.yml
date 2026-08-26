@@ -1,0 +1,47 @@
+name: Redis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.97.1"
+  PARI_REDIS_URL: "redis://127.0.0.1:6379/"
+  PARI_REDIS_BENCH_ITEMS: "1000"
+  PARI_REDIS_BENCH_QUERIES: "100"
+
+jobs:
+  redis-backend:
+    name: Redis backend
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7.4.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Run Redis backend tests
+        run: cargo test -p pari-backend --features redis --all-targets
+      - name: Run Redis batch benchmark smoke
+        run: |
+          cargo run --release -p pari-backend --example redis_bench --features redis \
+            > redis-backend-benchmark.json
+          cat redis-backend-benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: redis-backend-benchmark
+          path: redis-backend-benchmark.json
+          if-no-files-found: error
