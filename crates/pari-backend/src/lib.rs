@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Pluggable storage backends for shared Pari similarity indexes.
 //!
-//! [`BackendIndex32`] owns MinHash compatibility checks, LSH band hashing,
+//! [`BackendIndex32`] owns `MinHash` compatibility checks, LSH band hashing,
 //! batch orchestration, and deterministic candidate aggregation. Concrete
 //! backends only persist validated index descriptors, user keys, per-key band
 //! hashes, and bucket membership.
@@ -135,7 +135,7 @@ impl IndexDescriptor {
         self.num_perm
     }
 
-    /// Return the required MinHash seed.
+    /// Return the required `MinHash` seed.
     #[must_use]
     pub const fn seed(&self) -> u64 {
         self.seed
@@ -264,7 +264,7 @@ impl From<CodecError> for BackendError {
 /// Errors returned by [`BackendIndex32`].
 #[derive(Debug)]
 pub enum BackendIndexError {
-    /// LSH or MinHash compatibility validation failed.
+    /// LSH or `MinHash` compatibility validation failed.
     Index(LshError),
     /// The selected storage backend failed.
     Backend(BackendError),
