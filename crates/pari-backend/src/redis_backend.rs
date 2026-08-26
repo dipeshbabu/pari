@@ -66,8 +66,8 @@ impl RedisBackend {
     /// in errors or debug output, so credentials cannot be leaked accidentally.
     pub fn connect(url: &str, namespace: &str) -> Result<Self, BackendError> {
         validate_namespace(namespace)?;
-        let client = redis::Client::open(url)
-            .map_err(|error| redis_error("client setup", &error))?;
+        let client =
+            redis::Client::open(url).map_err(|error| redis_error("client setup", &error))?;
         let connection = client
             .get_connection()
             .map_err(|error| redis_error("connect", &error))?;
