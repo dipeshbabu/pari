@@ -1,0 +1,26 @@
+[package]
+name = "pari-backend"
+description = "Pluggable shared storage backends for Pari similarity indexes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+redis = ["dep:redis"]
+
+[dependencies]
+pari-core = { path = "../pari-core" }
+pari-format = { path = "../pari-format" }
+pari-index = { path = "../pari-index" }
+redis = { version = "=0.32.7", optional = true, default-features = false }
+
+[[example]]
+name = "redis_bench"
+required-features = ["redis"]
+
+[lints]
+workspace = true
