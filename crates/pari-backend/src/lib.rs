@@ -77,10 +77,28 @@ impl BackendCapabilities {
             | Self::REMOTE,
     };
 
+    /// Create an empty capability set for a custom backend implementation.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { mask: 0 }
+    }
+
+    /// Return a capability set with `capability` enabled.
+    #[must_use]
+    pub const fn with(self, capability: BackendCapability) -> Self {
+        Self {
+            mask: self.mask | Self::flag(capability),
+        }
+    }
+
     /// Return whether the backend supports `capability`.
     #[must_use]
     pub const fn supports(self, capability: BackendCapability) -> bool {
-        let flag = match capability {
+        self.mask & Self::flag(capability) != 0
+    }
+
+    const fn flag(capability: BackendCapability) -> u8 {
+        match capability {
             BackendCapability::BatchRead => Self::BATCH_READ,
             BackendCapability::BatchWrite => Self::BATCH_WRITE,
             BackendCapability::Delete => Self::DELETE,
@@ -88,8 +106,7 @@ impl BackendCapabilities {
             BackendCapability::Ttl => Self::TTL,
             BackendCapability::Health => Self::HEALTH,
             BackendCapability::Remote => Self::REMOTE,
-        };
-        self.mask & flag != 0
+        }
     }
 }
 
@@ -104,7 +121,11 @@ pub struct IndexDescriptor {
 }
 
 impl IndexDescriptor {
-    fn new(
+    /// Construct and validate an index descriptor for a custom backend.
+    ///
+    /// Backends that persist their own metadata can use this constructor when
+    /// rebuilding the descriptor returned by [`StorageBackend::load_descriptor`].
+    pub fn new(
         threshold: f64,
         num_perm: usize,
         seed: u64,
@@ -114,6 +135,11 @@ impl IndexDescriptor {
         if retention.is_some_and(|value| value.is_zero()) {
             return Err(BackendError::InvalidRetention);
         }
+        LshIndex32::with_params(threshold, num_perm, seed, params).map_err(|error| {
+            BackendError::InvalidDescriptor {
+                reason: error.to_string(),
+            }
+        })?;
         Ok(Self {
             threshold,
             num_perm,
@@ -206,6 +232,8 @@ pub enum BackendError {
     UnsupportedCapability { capability: BackendCapability },
     /// Retention must be at least one second when configured.
     InvalidRetention,
+    /// A persisted index descriptor failed semantic validation.
+    InvalidDescriptor { reason: String },
     /// A backend namespace failed validation.
     InvalidNamespace { reason: String },
     /// Backend data failed bounded decoding or structural validation.
@@ -235,6 +263,7 @@ impl fmt::Display for BackendError {
                 write!(formatter, "backend does not support {capability:?}")
             }
             Self::InvalidRetention => formatter.write_str("retention must be at least one second"),
+            Self::InvalidDescriptor { reason } => write!(formatter, "invalid descriptor: {reason}"),
             Self::InvalidNamespace { reason } => write!(formatter, "invalid namespace: {reason}"),
             Self::CorruptData { reason } => write!(formatter, "invalid backend data: {reason}"),
             Self::LengthOverflow => formatter.write_str("backend length arithmetic overflowed"),
@@ -376,7 +405,6 @@ impl<B: StorageBackend> BackendIndex32<B> {
         params: LshParams,
         retention: Option<Duration>,
     ) -> Result<Self, BackendIndexError> {
-        LshIndex32::with_params(threshold, num_perm, seed, params)?;
         let descriptor = IndexDescriptor::new(threshold, num_perm, seed, params, retention)?;
         validate_retention_capability(&backend, &descriptor)?;
         backend.initialize(&descriptor)?;
