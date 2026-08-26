@@ -1,6 +1,6 @@
-use std::time::Duration;
-
-use pari_backend::{BackendIndex32, BackendIndexError, MemoryBackend, StorageBackend};
+use pari_backend::{
+    BackendCapability, BackendIndex32, BackendIndexError, MemoryBackend, StorageBackend,
+};
 use pari_core::MinHash32;
 use pari_index::LshIndex32;
 
@@ -74,7 +74,11 @@ fn exercise_backend_contract<B: StorageBackend>(backend: B) -> BackendIndex32<B>
 #[test]
 fn memory_backend_satisfies_shared_contract() {
     let index = exercise_backend_contract(MemoryBackend::new());
-    assert_eq!(index.backend().capabilities(), pari_backend::BackendCapabilities::MEMORY_FOR_TESTS);
+    let capabilities = index.backend().capabilities();
+    assert!(capabilities.supports(BackendCapability::BatchRead));
+    assert!(capabilities.supports(BackendCapability::BatchWrite));
+    assert!(!capabilities.supports(BackendCapability::Ttl));
+    assert!(!capabilities.supports(BackendCapability::Remote));
     index.cleanup().expect("memory cleanup");
 }
 
@@ -128,16 +132,12 @@ mod redis_tests {
         let mut reopened = BackendIndex32::open(reopened_backend).expect("open shared namespace");
         assert_eq!(
             reopened.query(&first).expect("query through second handle"),
-            index
-                .descriptor()
-                .params()
-                .bands
-                .checked_sub(index.descriptor().params().bands)
-                .map_or_else(|| vec![1], |_| vec![1])
+            vec![1]
         );
         let stats = reopened.stats().expect("Redis stats");
         assert_eq!(stats.items, 2);
         assert!(stats.round_trips > 0);
+        drop(index);
         reopened.cleanup().expect("Redis cleanup");
     }
 
