@@ -66,11 +66,11 @@ impl RedisBackend {
     /// in errors or debug output, so credentials cannot be leaked accidentally.
     pub fn connect(url: &str, namespace: &str) -> Result<Self, BackendError> {
         validate_namespace(namespace)?;
-        let client =
-            redis::Client::open(url).map_err(|error| redis_error("client setup", error))?;
+        let client = redis::Client::open(url)
+            .map_err(|error| redis_error("client setup", &error))?;
         let connection = client
             .get_connection()
-            .map_err(|error| redis_error("connect", error))?;
+            .map_err(|error| redis_error("connect", &error))?;
         Ok(Self {
             connection,
             namespace: namespace.to_owned(),
@@ -130,7 +130,7 @@ impl StorageBackend for RedisBackend {
             .arg(payload)
             .arg(ttl)
             .query(&mut self.connection)
-            .map_err(|error| redis_error("initialize", error))?;
+            .map_err(|error| redis_error("initialize", &error))?;
         if result != 1 {
             return Err(BackendError::AlreadyExists);
         }
@@ -143,7 +143,7 @@ impl StorageBackend for RedisBackend {
         let payload: Option<Vec<u8>> = redis::cmd("GET")
             .arg(&self.keys.meta)
             .query(&mut self.connection)
-            .map_err(|error| redis_error("load descriptor", error))?;
+            .map_err(|error| redis_error("load descriptor", &error))?;
         let payload = payload.ok_or(BackendError::NotFound)?;
         let descriptor = decode_descriptor(&payload)?;
         self.retention_seconds = descriptor.retention().map(|value| value.as_secs());
@@ -166,7 +166,7 @@ impl StorageBackend for RedisBackend {
         self.bump_round_trip();
         pipeline
             .query(&mut self.connection)
-            .map_err(|error| redis_error("batch contains", error))
+            .map_err(|error| redis_error("batch contains", &error))
     }
 
     fn insert_many(&mut self, items: &[StoredItem]) -> Result<(), BackendError> {
@@ -194,7 +194,7 @@ impl StorageBackend for RedisBackend {
         self.bump_round_trip();
         let (code, detail): (i64, i64) = command
             .query(&mut self.connection)
-            .map_err(|error| redis_error("batch insert", error))?;
+            .map_err(|error| redis_error("batch insert", &error))?;
         match code {
             1 => Ok(()),
             0 => Err(BackendError::NotFound),
@@ -231,7 +231,7 @@ impl StorageBackend for RedisBackend {
         self.bump_round_trip();
         let raw: Vec<Vec<Vec<u8>>> = pipeline
             .query(&mut self.connection)
-            .map_err(|error| redis_error("batch bucket query", error))?;
+            .map_err(|error| redis_error("batch bucket query", &error))?;
         if raw.len() != buckets.len() {
             return Err(BackendError::CorruptData {
                 reason: "Redis returned the wrong number of bucket result rows".to_owned(),
@@ -271,7 +271,7 @@ impl StorageBackend for RedisBackend {
         self.bump_round_trip();
         let removed: i64 = command
             .query(&mut self.connection)
-            .map_err(|error| redis_error("batch delete", error))?;
+            .map_err(|error| redis_error("batch delete", &error))?;
         match removed {
             -1 => Err(BackendError::NotFound),
             -2 => Err(BackendError::CorruptData {
@@ -288,7 +288,7 @@ impl StorageBackend for RedisBackend {
         self.bump_round_trip();
         let response: String = redis::cmd("PING")
             .query(&mut self.connection)
-            .map_err(|error| redis_error("flush barrier", error))?;
+            .map_err(|error| redis_error("flush barrier", &error))?;
         if response == "PONG" {
             Ok(())
         } else {
@@ -302,7 +302,7 @@ impl StorageBackend for RedisBackend {
         self.bump_round_trip();
         let response: String = redis::cmd("PING")
             .query(&mut self.connection)
-            .map_err(|error| redis_error("health check", error))?;
+            .map_err(|error| redis_error("health check", &error))?;
         if response == "PONG" {
             Ok(())
         } else {
@@ -325,7 +325,7 @@ impl StorageBackend for RedisBackend {
         self.bump_round_trip();
         let (items, memberships, ttl): (u64, u64, i64) = pipeline
             .query(&mut self.connection)
-            .map_err(|error| redis_error("stats", error))?;
+            .map_err(|error| redis_error("stats", &error))?;
         if ttl == -2 {
             return Err(BackendError::NotFound);
         }
@@ -351,7 +351,7 @@ impl StorageBackend for RedisBackend {
                 self.keys.buckets.as_str(),
             ])
             .query(&mut self.connection)
-            .map_err(|error| redis_error("namespace cleanup", error))?;
+            .map_err(|error| redis_error("namespace cleanup", &error))?;
         self.retention_seconds = None;
         Ok(())
     }
@@ -421,7 +421,7 @@ fn bucket_lex_range(bucket: BucketKey) -> (Vec<u8>, Vec<u8>) {
     (lower, upper)
 }
 
-fn redis_error(operation: &'static str, error: redis::RedisError) -> BackendError {
+fn redis_error(operation: &'static str, error: &redis::RedisError) -> BackendError {
     BackendError::Transport {
         operation,
         message: format!("Redis {:?}", error.kind()),
