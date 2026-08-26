@@ -45,8 +45,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let stats = index.stats()?;
-    let insert_rate = rate(items, build_elapsed.as_secs_f64());
-    let query_rate = rate(queries, query_elapsed.as_secs_f64());
+    let insert_rate = rate(items, build_elapsed.as_secs_f64())?;
+    let query_rate = rate(queries, query_elapsed.as_secs_f64())?;
     println!(
         "{{\"items\":{items},\"queries\":{queries},\"insert_items_per_second\":{insert_rate:.3},\"query_items_per_second\":{query_rate:.3},\"backend_round_trips\":{},\"bucket_memberships\":{}}}",
         stats.round_trips, stats.bucket_memberships
@@ -83,9 +83,10 @@ fn benchmark_signature(
     Ok(sketch)
 }
 
-fn rate(count: usize, seconds: f64) -> f64 {
+fn rate(count: usize, seconds: f64) -> Result<f64, std::num::TryFromIntError> {
     if seconds <= 0.0 {
-        return 0.0;
+        return Ok(0.0);
     }
-    count as f64 / seconds
+    let count = u32::try_from(count)?;
+    Ok(f64::from(count) / seconds)
 }
