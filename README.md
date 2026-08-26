@@ -61,11 +61,26 @@ pari dedup --input documents.jsonl --emit groups --json
 
 See [docs/cli.md](docs/cli.md) for indexing, search, deduplication, inspection, JSONL output, verification, and shell completion.
 
+## Shared Redis indexes
+
+Rust services that need one index shared across processes can use `pari-backend` with its optional Redis feature. The same `BackendIndex32` logic runs against both the in-process memory backend and Redis; Redis details are kept out of `pari-index`.
+
+```rust
+use pari_backend::{BackendIndex32, RedisBackend};
+
+let backend = RedisBackend::connect("redis://127.0.0.1:6379/", "documents")?;
+let index = BackendIndex32::create(backend, 0.8, 128, 7, None)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+See [docs/storage-backends.md](docs/storage-backends.md) for the typed backend contract, batching, namespace ownership, TTL semantics, cleanup, security, and benchmark behavior.
+
 ## Design goals
 
-- Batch-first compute, insert, and query paths.
+- Batch-first compute, insert, query, and remote storage paths.
 - Safe, versioned persistence instead of executable object serialization.
 - A persistent local index between RAM-only prototypes and remote databases.
+- Shared backends without coupling LSH code to database-specific commands.
 - A small Rust core shared by Python and CLI frontends.
 - Correctness tests and benchmark evidence for performance-sensitive changes.
 - No merge to `main` while required CI is failing.
@@ -74,7 +89,8 @@ See [docs/cli.md](docs/cli.md) for indexing, search, deduplication, inspection, 
 
 - `pari-core`: signatures and similarity primitives.
 - `pari-index`: LSH and candidate generation.
-- `pari-store`: local and remote storage backends.
+- `pari-store`: crash-safe local persistent indexes.
+- `pari-backend`: typed in-process and shared remote storage backends, including Redis.
 - `pari-py`: PyO3 Python bindings and the `pari` package.
 - `pari-cli`: command-line workflows.
 
