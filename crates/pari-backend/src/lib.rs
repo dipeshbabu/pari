@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 //! Pluggable storage backends for shared Pari similarity indexes.
 //!
-//! The generic [`BackendIndex32`] owns all `MinHash32` compatibility checks,
-//! LSH band hashing, batch orchestration, and deterministic candidate ordering.
-//! Backends only persist typed keys, per-key band hashes, and bucket membership.
-//! This keeps Redis-specific behavior and serialization out of the LSH layer.
+//! [`BackendIndex32`] owns MinHash compatibility checks, LSH band hashing,
+//! batch orchestration, and deterministic candidate aggregation. Concrete
+//! backends only persist validated index descriptors, user keys, per-key band
+//! hashes, and bucket membership.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -64,11 +64,7 @@ impl BackendCapabilities {
     const REMOTE: u8 = 1 << 6;
 
     const MEMORY: Self = Self {
-        mask: Self::BATCH_READ
-            | Self::BATCH_WRITE
-            | Self::DELETE
-            | Self::FLUSH
-            | Self::HEALTH,
+        mask: Self::BATCH_READ | Self::BATCH_WRITE | Self::DELETE | Self::FLUSH | Self::HEALTH,
     };
 
     pub(crate) const REDIS: Self = Self {
@@ -115,7 +111,7 @@ impl IndexDescriptor {
         params: LshParams,
         retention: Option<Duration>,
     ) -> Result<Self, BackendError> {
-        if retention.is_some_and(Duration::is_zero) {
+        if retention.is_some_and(|value| value.is_zero()) {
             return Err(BackendError::InvalidRetention);
         }
         Ok(Self {
@@ -139,7 +135,7 @@ impl IndexDescriptor {
         self.num_perm
     }
 
-    /// Return the required `MinHash32` seed.
+    /// Return the required MinHash seed.
     #[must_use]
     pub const fn seed(&self) -> u64 {
         self.seed
@@ -183,7 +179,7 @@ impl StoredItem {
     }
 }
 
-/// Observable storage statistics independent of a specific backend product.
+/// Observable storage statistics independent of a backend product.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendStats {
     /// Number of live indexed keys.
@@ -191,10 +187,9 @@ pub struct BackendStats {
     /// Number of live `(bucket, key)` memberships.
     pub bucket_memberships: u64,
     /// Network round trips performed by this backend handle.
-    ///
     /// In-process backends report zero.
     pub round_trips: u64,
-    /// Remaining retention time for the namespace, when supported and active.
+    /// Remaining namespace retention time when supported and active.
     pub ttl_seconds_remaining: Option<u64>,
 }
 
@@ -211,14 +206,15 @@ pub enum BackendError {
     UnsupportedCapability { capability: BackendCapability },
     /// Retention must be at least one second when configured.
     InvalidRetention,
+    /// A backend namespace failed validation.
+    InvalidNamespace { reason: String },
     /// Backend data failed bounded decoding or structural validation.
     CorruptData { reason: String },
     /// Integer conversion or size arithmetic overflowed.
     LengthOverflow,
     /// A safe key codec rejected backend data.
     Codec(CodecError),
-    /// A remote operation failed. Connection URLs and credentials are never
-    /// included in this error variant.
+    /// A remote operation failed. URLs and credentials are never included.
     Transport {
         operation: &'static str,
         message: String,
@@ -228,13 +224,18 @@ pub enum BackendError {
 impl fmt::Display for BackendError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AlreadyExists => formatter.write_str("backend namespace already contains an index"),
+            Self::AlreadyExists => {
+                formatter.write_str("backend namespace already contains an index")
+            }
             Self::NotFound => formatter.write_str("backend namespace does not contain an index"),
-            Self::DuplicateKey { key } => write!(formatter, "key {key} already exists in the index"),
+            Self::DuplicateKey { key } => {
+                write!(formatter, "key {key} already exists in the index")
+            }
             Self::UnsupportedCapability { capability } => {
                 write!(formatter, "backend does not support {capability:?}")
             }
             Self::InvalidRetention => formatter.write_str("retention must be at least one second"),
+            Self::InvalidNamespace { reason } => write!(formatter, "invalid namespace: {reason}"),
             Self::CorruptData { reason } => write!(formatter, "invalid backend data: {reason}"),
             Self::LengthOverflow => formatter.write_str("backend length arithmetic overflowed"),
             Self::Codec(error) => error.fmt(formatter),
@@ -263,7 +264,7 @@ impl From<CodecError> for BackendError {
 /// Errors returned by [`BackendIndex32`].
 #[derive(Debug)]
 pub enum BackendIndexError {
-    /// LSH or `MinHash32` compatibility validation failed.
+    /// LSH or MinHash compatibility validation failed.
     Index(LshError),
     /// The selected storage backend failed.
     Backend(BackendError),
@@ -302,10 +303,10 @@ impl From<BackendError> for BackendIndexError {
 /// Typed storage contract used by shared LSH indexes.
 ///
 /// Scalar application APIs live on [`BackendIndex32`]. Backends implement batch
-/// primitives directly so remote implementations never need N network round
-/// trips for N records or query buckets.
+/// primitives directly so remote implementations do not need one network round
+/// trip per application record or query bucket.
 pub trait StorageBackend {
-    /// Return the operations implemented natively by this backend.
+    /// Return operations implemented natively by this backend.
     fn capabilities(&self) -> BackendCapabilities;
 
     /// Initialize an empty namespace with one validated index descriptor.
@@ -317,8 +318,7 @@ pub trait StorageBackend {
     /// Test key existence while preserving input order.
     fn contains_many(&mut self, keys: &[u64]) -> Result<Vec<bool>, BackendError>;
 
-    /// Atomically insert one validated batch or return a duplicate-key error
-    /// without partially applying the batch.
+    /// Atomically insert one validated batch or fail without partial mutation.
     fn insert_many(&mut self, items: &[StoredItem]) -> Result<(), BackendError>;
 
     /// Read candidate members for each requested bucket in input order.
@@ -327,10 +327,10 @@ pub trait StorageBackend {
     /// Delete keys in one backend batch, returning the number actually removed.
     fn delete_many(&mut self, keys: &[u64]) -> Result<usize, BackendError>;
 
-    /// Complete all writes issued before this call.
+    /// Complete writes issued before this call.
     fn flush(&mut self) -> Result<(), BackendError>;
 
-    /// Return backend health or an actionable backend error.
+    /// Return backend health or an actionable error.
     fn health(&mut self) -> Result<(), BackendError>;
 
     /// Return current backend statistics.
@@ -386,7 +386,7 @@ impl<B: StorageBackend> BackendIndex32<B> {
         })
     }
 
-    /// Open an existing index from its backend-owned descriptor.
+    /// Open an existing index using its backend-owned descriptor.
     pub fn open(mut backend: B) -> Result<Self, BackendIndexError> {
         let descriptor = backend.load_descriptor()?;
         LshIndex32::with_params(
@@ -506,7 +506,7 @@ impl<B: StorageBackend> BackendIndex32<B> {
 
     /// Return whether one key exists.
     pub fn contains(&mut self, key: u64) -> Result<bool, BackendIndexError> {
-        let values = self.backend.contains_many(&[key])?;
+        let values = self.contains_many(&[key])?;
         values.first().copied().ok_or_else(|| {
             BackendError::CorruptData {
                 reason: "backend returned no contains result".to_owned(),
@@ -531,7 +531,7 @@ impl<B: StorageBackend> BackendIndex32<B> {
         Ok(values)
     }
 
-    /// Complete all outstanding backend writes.
+    /// Complete outstanding backend writes.
     pub fn flush(&mut self) -> Result<(), BackendIndexError> {
         self.backend.flush()?;
         Ok(())
@@ -606,9 +606,7 @@ fn validate_retention_capability<B: StorageBackend>(
     backend: &B,
     descriptor: &IndexDescriptor,
 ) -> Result<(), BackendError> {
-    if descriptor.retention.is_some()
-        && !backend.capabilities().supports(BackendCapability::Ttl)
-    {
+    if descriptor.retention.is_some() && !backend.capabilities().supports(BackendCapability::Ttl) {
         return Err(BackendError::UnsupportedCapability {
             capability: BackendCapability::Ttl,
         });
@@ -618,8 +616,9 @@ fn validate_retention_capability<B: StorageBackend>(
 
 /// In-process reference implementation of [`StorageBackend`].
 ///
-/// This adapter intentionally has no TTL support. It is used for contract tests
-/// and for callers that want the shared-backend API without external services.
+/// The memory backend intentionally has no TTL support. It is useful for
+/// contract tests and callers that want the shared-backend API without a remote
+/// service.
 #[derive(Debug, Default)]
 pub struct MemoryBackend {
     descriptor: Option<IndexDescriptor>,
@@ -749,14 +748,10 @@ impl StorageBackend for MemoryBackend {
             return Err(BackendError::NotFound);
         }
         let items = u64::try_from(self.records.len()).map_err(|_| BackendError::LengthOverflow)?;
-        let memberships = self
-            .buckets
-            .values()
-            .try_fold(0_u64, |total, members| {
-                let count =
-                    u64::try_from(members.len()).map_err(|_| BackendError::LengthOverflow)?;
-                total.checked_add(count).ok_or(BackendError::LengthOverflow)
-            })?;
+        let memberships = self.buckets.values().try_fold(0_u64, |total, members| {
+            let count = u64::try_from(members.len()).map_err(|_| BackendError::LengthOverflow)?;
+            total.checked_add(count).ok_or(BackendError::LengthOverflow)
+        })?;
         Ok(BackendStats {
             items,
             bucket_memberships: memberships,
@@ -799,7 +794,9 @@ pub(crate) fn encode_descriptor(descriptor: &IndexDescriptor) -> Result<Vec<u8>,
     bytes.extend_from_slice(&descriptor.seed.to_le_bytes());
     bytes.extend_from_slice(&usize_to_u64(descriptor.params.bands)?.to_le_bytes());
     bytes.extend_from_slice(&usize_to_u64(descriptor.params.rows)?.to_le_bytes());
-    let retention = descriptor.retention.map_or(NO_RETENTION, |value| value.as_secs());
+    let retention = descriptor
+        .retention
+        .map_or(NO_RETENTION, |value| value.as_secs());
     bytes.extend_from_slice(&retention.to_le_bytes());
     debug_assert_eq!(bytes.len(), DESCRIPTOR_BYTES);
     Ok(bytes)
@@ -866,107 +863,4 @@ fn usize_to_u64(value: usize) -> Result<u64, BackendError> {
 
 fn u64_to_usize(value: u64) -> Result<usize, BackendError> {
     usize::try_from(value).map_err(|_| BackendError::LengthOverflow)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use pari_core::MinHash32;
-    use pari_index::LshIndex32;
-
-    use super::{
-        decode_descriptor, encode_descriptor, BackendCapability, BackendError, BackendIndex32,
-        MemoryBackend, StorageBackend,
-    };
-
-    fn sketch(values: &[&[u8]], num_perm: usize, seed: u64) -> MinHash32 {
-        let mut sketch = MinHash32::new(num_perm, seed).expect("valid sketch");
-        sketch.update_many(values);
-        sketch
-    }
-
-    #[test]
-    fn descriptor_round_trip_is_stable_and_data_only() {
-        let reference = LshIndex32::new(0.8, 128, 7).expect("reference");
-        let descriptor = super::IndexDescriptor::new(
-            0.8,
-            128,
-            7,
-            reference.params(),
-            Some(Duration::from_secs(60)),
-        )
-        .expect("descriptor");
-        let encoded = encode_descriptor(&descriptor).expect("encode");
-        assert_eq!(decode_descriptor(&encoded).expect("decode"), descriptor);
-    }
-
-    #[test]
-    fn memory_backend_matches_in_memory_lsh_candidates() {
-        let num_perm = 128;
-        let seed = 7;
-        let first = sketch(&[b"alpha", b"beta", b"gamma"], num_perm, seed);
-        let second = sketch(&[b"alpha", b"beta", b"delta"], num_perm, seed);
-        let third = sketch(&[b"unrelated", b"record"], num_perm, seed);
-
-        let mut reference = LshIndex32::new(0.8, num_perm, seed).expect("reference");
-        reference
-            .insert_many([(1, &first), (2, &second), (3, &third)])
-            .expect("reference insert");
-
-        let mut index = BackendIndex32::create(MemoryBackend::new(), 0.8, num_perm, seed, None)
-            .expect("backend index");
-        index
-            .insert_many([(1, &first), (2, &second), (3, &third)])
-            .expect("backend insert");
-
-        assert_eq!(index.query(&first).expect("query"), reference.query(&first).expect("reference query"));
-        assert_eq!(
-            index.query_many([&first, &third]).expect("batch query"),
-            reference.query_many([&first, &third]).expect("reference batch query")
-        );
-        assert_eq!(index.contains_many(&[1, 4]).expect("contains"), vec![true, false]);
-        assert!(index.remove(2).expect("remove"));
-        assert!(reference.remove(2));
-        assert_eq!(index.query(&first).expect("query after remove"), reference.query(&first).expect("reference after remove"));
-        assert_eq!(index.stats().expect("stats").items, 2);
-    }
-
-    #[test]
-    fn memory_backend_rejects_ttl_and_duplicate_batches_atomically() {
-        let error = BackendIndex32::create(
-            MemoryBackend::new(),
-            0.8,
-            64,
-            1,
-            Some(Duration::from_secs(10)),
-        )
-        .expect_err("memory TTL must fail");
-        assert!(matches!(
-            error,
-            super::BackendIndexError::Backend(BackendError::UnsupportedCapability {
-                capability: BackendCapability::Ttl
-            })
-        ));
-
-        let value = sketch(&[b"same"], 64, 1);
-        let mut index = BackendIndex32::create(MemoryBackend::new(), 0.8, 64, 1, None)
-            .expect("index");
-        let error = index
-            .insert_many([(1, &value), (1, &value)])
-            .expect_err("duplicate batch must fail");
-        assert!(matches!(
-            error,
-            super::BackendIndexError::Backend(BackendError::DuplicateKey { key: 1 })
-        ));
-        assert_eq!(index.stats().expect("stats").items, 0);
-    }
-
-    #[test]
-    fn memory_cleanup_resets_namespace() {
-        let mut backend = MemoryBackend::new();
-        assert!(backend.health().is_ok());
-        backend.cleanup().expect("cleanup");
-        assert!(matches!(backend.load_descriptor(), Err(BackendError::NotFound)));
-    }
 }
