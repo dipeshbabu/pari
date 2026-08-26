@@ -12,87 +12,9 @@ const BUCKET_PREFIX_BYTES: usize = 12;
 const KEY_BYTES: usize = 8;
 const MAX_NAMESPACE_BYTES: usize = 128;
 
-const INITIALIZE_SCRIPT: &str = r#"
-if redis.call('EXISTS', KEYS[1]) ~= 0 or redis.call('EXISTS', KEYS[2]) ~= 0 or redis.call('EXISTS', KEYS[3]) ~= 0 then
-  return 0
-end
-redis.call('SET', KEYS[1], ARGV[1])
-local ttl = tonumber(ARGV[2])
-if ttl > 0 then
-  redis.call('EXPIRE', KEYS[1], ttl)
-end
-return 1
-"#;
-
-const INSERT_SCRIPT: &str = r#"
-if redis.call('EXISTS', KEYS[1]) == 0 then
-  return {0, 0}
-end
-local ttl = tonumber(ARGV[1])
-local count = tonumber(ARGV[2])
-local position = 3
-local seen = {}
-for item = 1, count do
-  local field = ARGV[position]
-  local blob = ARGV[position + 1]
-  if (#blob % 20) ~= 0 then
-    return {3, item}
-  end
-  if seen[field] or redis.call('HEXISTS', KEYS[2], field) == 1 then
-    return {2, item}
-  end
-  seen[field] = true
-  position = position + 2
-end
-position = 3
-for _ = 1, count do
-  local field = ARGV[position]
-  local blob = ARGV[position + 1]
-  redis.call('HSET', KEYS[2], field, blob)
-  for offset = 1, #blob, 20 do
-    redis.call('ZADD', KEYS[3], 0, string.sub(blob, offset, offset + 19))
-  end
-  position = position + 2
-end
-if ttl > 0 then
-  redis.call('EXPIRE', KEYS[1], ttl)
-  redis.call('EXPIRE', KEYS[2], ttl)
-  redis.call('EXPIRE', KEYS[3], ttl)
-end
-return {1, count}
-"#;
-
-const DELETE_SCRIPT: &str = r#"
-if redis.call('EXISTS', KEYS[1]) == 0 then
-  return -1
-end
-local ttl = tonumber(ARGV[1])
-local blobs = {}
-for position = 2, #ARGV do
-  local blob = redis.call('HGET', KEYS[2], ARGV[position])
-  if blob and (#blob % 20) ~= 0 then
-    return -2
-  end
-  blobs[position] = blob
-end
-local removed = 0
-for position = 2, #ARGV do
-  local blob = blobs[position]
-  if blob then
-    redis.call('HDEL', KEYS[2], ARGV[position])
-    for offset = 1, #blob, 20 do
-      redis.call('ZREM', KEYS[3], string.sub(blob, offset, offset + 19))
-    end
-    removed = removed + 1
-  end
-end
-if ttl > 0 and removed > 0 then
-  redis.call('EXPIRE', KEYS[1], ttl)
-  redis.call('EXPIRE', KEYS[2], ttl)
-  redis.call('EXPIRE', KEYS[3], ttl)
-end
-return removed
-"#;
+const INITIALIZE_SCRIPT: &str = include_str!("scripts/initialize.lua");
+const INSERT_SCRIPT: &str = include_str!("scripts/insert.lua");
+const DELETE_SCRIPT: &str = include_str!("scripts/delete.lua");
 
 #[derive(Debug)]
 struct RedisKeys {
@@ -144,7 +66,8 @@ impl RedisBackend {
     /// in errors or debug output, so credentials cannot be leaked accidentally.
     pub fn connect(url: &str, namespace: &str) -> Result<Self, BackendError> {
         validate_namespace(namespace)?;
-        let client = redis::Client::open(url).map_err(|error| redis_error("client setup", error))?;
+        let client =
+            redis::Client::open(url).map_err(|error| redis_error("client setup", error))?;
         let connection = client
             .get_connection()
             .map_err(|error| redis_error("connect", error))?;
@@ -238,10 +161,7 @@ impl StorageBackend for RedisBackend {
             .collect::<Result<Vec<_>, _>>()?;
         let mut pipeline = redis::pipe();
         for field in fields {
-            pipeline
-                .cmd("HEXISTS")
-                .arg(&self.keys.records)
-                .arg(field);
+            pipeline.cmd("HEXISTS").arg(&self.keys.records).arg(field);
         }
         self.bump_round_trip();
         pipeline
@@ -357,9 +277,7 @@ impl StorageBackend for RedisBackend {
             -2 => Err(BackendError::CorruptData {
                 reason: "Redis record payload has an invalid bucket-member width".to_owned(),
             }),
-            value if value >= 0 => {
-                usize::try_from(value).map_err(|_| BackendError::LengthOverflow)
-            }
+            value if value >= 0 => usize::try_from(value).map_err(|_| BackendError::LengthOverflow),
             value => Err(BackendError::CorruptData {
                 reason: format!("Redis delete script returned unknown status {value}"),
             }),
@@ -446,9 +364,8 @@ fn validate_namespace(namespace: &str) -> Result<(), BackendError> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        return Err(BackendError::CorruptData {
-            reason: "Redis namespace must be 1..=128 ASCII alphanumeric, '.', '_' or '-' bytes"
-                .to_owned(),
+        return Err(BackendError::InvalidNamespace {
+            reason: "must be 1..=128 ASCII alphanumeric, '.', '_' or '-' bytes".to_owned(),
         });
     }
     Ok(())
