@@ -20,8 +20,8 @@ fn exercise_backend_contract<B: StorageBackend>(backend: B) -> BackendIndex32<B>
     let mut reference = LshIndex32::new(0.8, num_perm, seed).expect("reference index");
     reference.insert(1, &first).expect("reference insert");
 
-    let mut index = BackendIndex32::create(backend, 0.8, num_perm, seed, None)
-        .expect("backend index create");
+    let mut index =
+        BackendIndex32::create(backend, 0.8, num_perm, seed, None).expect("backend index create");
     index.insert(1, &first).expect("initial insert");
 
     let error = index
@@ -45,9 +45,7 @@ fn exercise_backend_contract<B: StorageBackend>(backend: B) -> BackendIndex32<B>
         reference.query(&first).expect("reference scalar query")
     );
     assert_eq!(
-        index
-            .query_many([&first, &third])
-            .expect("batch query"),
+        index.query_many([&first, &third]).expect("batch query"),
         reference
             .query_many([&first, &third])
             .expect("reference batch query")
@@ -61,7 +59,9 @@ fn exercise_backend_contract<B: StorageBackend>(backend: B) -> BackendIndex32<B>
     assert!(reference.remove(2));
     assert_eq!(
         index.query(&first).expect("query after remove"),
-        reference.query(&first).expect("reference query after remove")
+        reference
+            .query(&first)
+            .expect("reference query after remove")
     );
     index.flush().expect("flush");
     index.health().expect("health");
@@ -85,8 +85,7 @@ fn memory_backend_satisfies_shared_contract() {
 #[cfg(feature = "redis")]
 mod redis_tests {
     use std::{
-        process,
-        thread,
+        process, thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
@@ -128,7 +127,8 @@ mod redis_tests {
         let index = exercise_backend_contract(backend);
         let first = sketch(&[b"alpha", b"beta", b"gamma"], 128, 7);
 
-        let reopened_backend = RedisBackend::connect(&url, &namespace).expect("second Redis handle");
+        let reopened_backend =
+            RedisBackend::connect(&url, &namespace).expect("second Redis handle");
         let mut reopened = BackendIndex32::open(reopened_backend).expect("open shared namespace");
         assert_eq!(
             reopened.query(&first).expect("query through second handle"),
@@ -172,14 +172,8 @@ mod redis_tests {
         let namespace = namespace("ttl");
         let backend = clean_backend(&url, &namespace);
         let value = sketch(&[b"ttl"], 64, 3);
-        let mut index = BackendIndex32::create(
-            backend,
-            0.8,
-            64,
-            3,
-            Some(Duration::from_secs(1)),
-        )
-        .expect("TTL index");
+        let mut index = BackendIndex32::create(backend, 0.8, 64, 3, Some(Duration::from_secs(1)))
+            .expect("TTL index");
         index.insert(1, &value).expect("TTL insert");
         let ttl = index
             .stats()
