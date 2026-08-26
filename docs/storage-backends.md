@@ -23,6 +23,16 @@ Scalar operations on `BackendIndex32` delegate to the batch surface. Remote impl
 
 `MemoryBackend` is the in-process reference implementation. It runs the same logical contract tests as Redis and intentionally does not advertise TTL or remote capabilities.
 
+## Implementing another backend
+
+`StorageBackend` is designed to be implemented outside the `pari-backend` crate. A custom backend can build its capability set with `BackendCapabilities::empty().with(...)`, and can reconstruct persisted index metadata with the validated public `IndexDescriptor::new(...)` constructor.
+
+`BackendIndex32` constructs `StoredItem` values after validating each MinHash sketch. Backend implementations receive those values through `insert_many` and can inspect the external key and per-band hashes through read-only getters. This keeps LSH hashing policy owned by Pari instead of letting each database adapter reimplement it.
+
+A remote backend should make its native batch operations real batch operations. In particular, `contains_many` and `query_buckets` should not perform one network request per input, and `insert_many` should either commit the complete validated batch or fail without partial mutation.
+
+The integration contract tests are intentionally compiled as an external crate. They verify that the public descriptor and capability construction APIs are sufficient for third-party backend implementations in addition to exercising the built-in memory and Redis adapters.
+
 ## Redis backend
 
 Enable the optional Redis implementation with the `redis` feature:
