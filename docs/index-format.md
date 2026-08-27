@@ -2,6 +2,8 @@
 
 Pari uses an explicit binary container instead of serializing Rust or Python objects. Version 1 is little-endian and starts with a fixed 72-byte header followed by framed sections.
 
+Package-level promises for retaining and migrating published format versions are defined in [compatibility.md](compatibility.md). This document specifies the bytes and interpretation of format version 1 itself.
+
 ## Header
 
 | Offset | Size | Field |
@@ -58,6 +60,8 @@ Integer codecs use exactly eight little-endian bytes. JSON is data-only `serde_j
 Pari v1 stores the signature scheme separately from the LSH algorithm. This is intentional: `pari-affine32-v1` and `pari-affine64-v1` have stable seed semantics, and persisted indexes must not silently reinterpret their signatures after an implementation change.
 
 A future incompatible binary layout uses a new format version. Compatible extensions should prefer optional sections. A feature that changes required interpretation must use a required section, a required feature flag, or a new version.
+
+Published package releases that read format v1 must not silently change these semantics. Dropping support for a published format requires the migration and release-note process defined in [compatibility.md](compatibility.md).
 
 ## Golden fixture
 
