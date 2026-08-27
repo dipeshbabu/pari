@@ -8,17 +8,20 @@ on:
       - "crates/**/Cargo.toml"
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
   generate:
-    name: Generate Cargo.lock
+    name: Generate and commit Cargo.lock
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -26,8 +29,15 @@ jobs:
         run: cargo generate-lockfile
       - name: Validate locked metadata
         run: cargo metadata --locked --format-version 1 > /dev/null
-      - uses: actions/upload-artifact@v4
-        with:
-          name: workspace-cargo-lock
-          path: Cargo.lock
-          if-no-files-found: error
+      - name: Commit generated lockfile
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          if git diff --cached --quiet; then
+            echo "Cargo.lock already matches the generated dependency graph"
+            exit 0
+          fi
+          git commit -m "Lock release dependency graph"
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
