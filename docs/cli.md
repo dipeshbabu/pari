@@ -10,6 +10,21 @@ cargo build --release -p pari-cli
 
 The binary is written to `target/release/pari` (`pari.exe` on Windows).
 
+## Compatibility
+
+The command names, documented 0.1 input fields, and machine-readable output field sets are supported interfaces for the 0.1.x release line. Human-readable wording and whitespace are not parser contracts. See [compatibility.md](compatibility.md) for the full versioning and deprecation policy.
+
+Machine-readable output revision 1 is pinned by compiled CLI integration tests. The current JSON/JSONL field sets are:
+
+- `index --json`: `items`, `file_bytes`, `bands`, `rows`
+- `search --json`: `query`, optional `id`, `candidates`
+- `dedup --emit pairs --json`: `left`, `right`
+- `dedup --emit groups --json`: `representative`, `members`
+- `stats --json`: `items`, `file_bytes`, `dirty`, `bands`, `rows`, `committed_buckets`, `overlay_buckets`, `suppressed_base_keys`, `num_perm`, `seed`, `threshold`
+- `verify --json`: `valid`, `sections`, `bucket_sections`, `buckets`, `members_checked`
+
+Revision-1 consumers should ignore unknown output fields so future releases can add information without breaking existing parsers. Removing, renaming, retyping, or changing the meaning of an existing field requires a new documented output revision.
+
 ## JSONL record format
 
 `index` and `dedup` consume one record per line. A record may contain raw values:

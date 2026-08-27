@@ -6,7 +6,7 @@ The project is built around a Rust core with Python bindings and a CLI. The goal
 
 ## Status
 
-Pari is pre-alpha. Public APIs may change while the core architecture is established.
+Pari is pre-alpha. Public APIs may still evolve, but the supported 0.1 surface, machine-readable CLI contract, signature semantics, and persisted-format guarantees are defined in [docs/compatibility.md](docs/compatibility.md).
 
 ## Python quick start
 
@@ -94,7 +94,7 @@ See [docs/storage-backends.md](docs/storage-backends.md) for the typed backend c
 - `pari-py`: PyO3 Python bindings and the `pari` package.
 - `pari-cli`: command-line workflows.
 
-See [docs/architecture.md](docs/architecture.md) and the GitHub issues for the implementation roadmap.
+See [docs/architecture.md](docs/architecture.md), [docs/compatibility.md](docs/compatibility.md), and the GitHub issues for the implementation roadmap.
 
 ## Development
 

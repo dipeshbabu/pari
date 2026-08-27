@@ -43,6 +43,11 @@ Operational interface for indexing, search, deduplication, statistics, and valid
 5. **Scale without API rewrites.** Users should be able to move from memory to local persistence to a remote backend while retaining the same indexing model.
 6. **Separate candidate generation from verification.** Pari finds likely matches cheaply; exact application-specific verification remains optional and pluggable.
 7. **Stable semantics.** Signature/index compatibility is explicit and validated before operations that would otherwise silently return invalid similarity results.
+8. **Explicit stability tiers.** Supported, experimental, and internal interfaces are classified in [`compatibility.md`](compatibility.md) so package version changes cannot silently redefine persisted data or public API promises.
+
+## Compatibility boundaries
+
+Package versions, signature schemes, CLI machine-readable schemas, and `.pari` file versions are separate compatibility dimensions. A package update must never silently reinterpret an existing signature-scheme identifier or persisted-format version. The v0.x rules and deprecation policy are defined in [`compatibility.md`](compatibility.md); the binary layout contract remains specified independently in [`index-format.md`](index-format.md).
 
 ## Upstream provenance
 
