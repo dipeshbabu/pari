@@ -343,7 +343,7 @@ jobs:
     needs: [metadata, python-wheels, python-sdist]
     environment:
       name: pypi
-      url: https://pypi.org/p/pari
+      url: https://pypi.org/p/pari-similarity
     permissions:
       id-token: write
     steps:
