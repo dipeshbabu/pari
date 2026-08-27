@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import metadata
 import unittest
 
 import pari
@@ -34,6 +35,11 @@ class PublicContractTests(unittest.TestCase):
             pari.StorageError,
         ):
             self.assertTrue(issubclass(error_type, pari.PariError), error_type.__name__)
+
+    def test_installed_distribution_uses_pari_name(self) -> None:
+        distribution = metadata.metadata("pari")
+        self.assertEqual(distribution["Name"], "pari")
+        self.assertEqual(metadata.version("pari"), pari.__version__)
 
 
 if __name__ == "__main__":
