@@ -17,6 +17,10 @@ maturin develop
 
 The distribution is named `pari-similarity`; the import is simply `pari`.
 
+## Stability
+
+The supported top-level Python surface for the 0.1 line is defined by `pari.__all__` and pinned by installed-wheel tests. Patch releases in 0.1.x must not intentionally remove or rename those exports or make a previously valid typed call invalid. See [compatibility.md](compatibility.md) for the full v0.x policy, deprecation rules, signature compatibility, and persisted-format guarantees.
+
 ## Build signatures
 
 ```python
