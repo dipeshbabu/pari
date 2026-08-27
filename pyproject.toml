@@ -3,7 +3,7 @@ requires = ["maturin>=1.14,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "pari"
+name = "pari-similarity"
 dynamic = ["version"]
 description = "Fast, persistent approximate similarity search powered by Rust"
 readme = "README.md"
