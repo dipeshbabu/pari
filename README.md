@@ -10,10 +10,10 @@ Pari is pre-alpha. Public APIs may still evolve, but the supported 0.1 surface, 
 
 ## Python quick start
 
-Install from the repository:
+Install Pari from PyPI:
 
 ```bash
-python -m pip install .
+python -m pip install pari
 ```
 
 Build signatures and a persistent index:
