@@ -18,8 +18,9 @@ SPEC.loader.exec_module(release)
 class ReleaseMetadataTests(unittest.TestCase):
     def test_release_contract_is_self_consistent(self) -> None:
         self.assertEqual(release.workspace_version(), "0.1.0")
+        self.assertEqual(release.PYPI_DISTRIBUTION, "pari")
         pyproject = release.load_toml(release.ROOT / "pyproject.toml")
-        self.assertEqual(pyproject["project"]["name"], "pari")
+        self.assertEqual(pyproject["project"]["name"], release.PYPI_DISTRIBUTION)
         release.validate()
 
     def test_tag_must_match_workspace_version(self) -> None:
