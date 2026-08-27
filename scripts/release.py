@@ -8,11 +8,13 @@ second packaging dependency chain.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -41,7 +43,9 @@ EXACT_INTERNAL_DEPENDENCIES = {
     "pari-index": {"pari-core"},
     "pari-store": {"pari-core", "pari-format", "pari-index"},
 }
+NOTICE_CRATES = {"pari-core", "pari-index"}
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$")
+ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 
 
 def load_toml(path: Path) -> dict:
@@ -80,6 +84,15 @@ def validate(tag: str | None = None) -> None:
             errors.append(f"{manifest}: public crate version must use version.workspace = true")
         if package.get("publish") is False:
             errors.append(f"{manifest}: public crate must not set publish = false")
+        crate_dir = manifest.parent
+        if not (crate_dir / "LICENSE").is_file():
+            errors.append(f"{manifest}: public crate must package LICENSE")
+        if name in NOTICE_CRATES:
+            notice = crate_dir / "NOTICE"
+            if not notice.is_file():
+                errors.append(f"{manifest}: datasketch-derived crate must package NOTICE")
+            elif "Copyright (c) 2015 ekzhu" not in notice.read_text(encoding="utf-8"):
+                errors.append(f"{notice}: upstream datasketch copyright is missing")
 
     for name, manifest in INTERNAL_CRATES.items():
         data = load_toml(manifest)
@@ -138,7 +151,9 @@ def build_sbom(output: Path) -> None:
     metadata = cargo_metadata()
     version = workspace_version()
     components = []
-    for package in sorted(metadata["packages"], key=lambda item: (item["name"], item["version"], item["id"])):
+    for package in sorted(
+        metadata["packages"], key=lambda item: (item["name"], item["version"], item["id"])
+    ):
         component = {
             "type": "library",
             "bom-ref": package["id"],
@@ -187,31 +202,84 @@ def write_checksums(directory: Path, output: Path) -> None:
     print(output)
 
 
+def source_date_epoch() -> int:
+    raw = os.environ.get("SOURCE_DATE_EPOCH", "0")
+    try:
+        epoch = int(raw)
+    except ValueError as error:
+        raise SystemExit(f"SOURCE_DATE_EPOCH must be an integer, got {raw!r}") from error
+    if epoch < 0:
+        raise SystemExit("SOURCE_DATE_EPOCH must not be negative")
+    return epoch
+
+
+def normalize_tar_info(info: tarfile.TarInfo, epoch: int) -> tarfile.TarInfo:
+    info.mtime = epoch
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    return info
+
+
+def write_deterministic_tar(archive: Path, staging: Path, archive_root: str) -> None:
+    epoch = source_date_epoch()
+    with archive.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as bundle:
+                bundle.addfile(normalize_tar_info(bundle.gettarinfo(staging, archive_root), epoch))
+                for path in sorted(staging.iterdir(), key=lambda item: item.name):
+                    info = normalize_tar_info(
+                        bundle.gettarinfo(path, f"{archive_root}/{path.name}"), epoch
+                    )
+                    with path.open("rb") as handle:
+                        bundle.addfile(info, handle)
+
+
+def write_deterministic_zip(archive: Path, staging: Path, archive_root: str) -> None:
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for path in sorted(staging.iterdir(), key=lambda item: item.name):
+            info = zipfile.ZipInfo(f"{archive_root}/{path.name}", date_time=ZIP_EPOCH)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
+            bundle.writestr(info, path.read_bytes())
+
+
 def package_cli(binary: Path, output_dir: Path, platform_name: str) -> None:
     version = workspace_version()
     if not binary.is_file():
         raise SystemExit(f"CLI binary does not exist: {binary}")
+
+    subprocess.run([str(binary), "--help"], check=True, stdout=subprocess.DEVNULL)
+    reported = subprocess.check_output(
+        [str(binary), "--version"], text=True, stderr=subprocess.STDOUT
+    ).strip()
+    if version not in reported:
+        raise SystemExit(f"CLI reports {reported!r}, expected release version {version!r}")
+
     output_dir.mkdir(parents=True, exist_ok=True)
     base = f"pari-{version}-{platform_name}"
-    executable_name = "pari.exe" if binary.suffix.lower() == ".exe" else "pari"
-    files = {
-        executable_name: binary,
-        "README.md": ROOT / "README.md",
-        "LICENSE": ROOT / "LICENSE",
-        "NOTICE": ROOT / "NOTICE",
-    }
+    windows = platform_name.startswith("windows")
+    executable_name = "pari.exe" if windows else "pari"
 
-    if platform_name.startswith("windows"):
-        destination = output_dir / f"{base}.zip"
-        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for archive_name, source in files.items():
-                archive.write(source, f"{base}/{archive_name}")
-    else:
-        destination = output_dir / f"{base}.tar.gz"
-        with tarfile.open(destination, "w:gz") as archive:
-            for archive_name, source in files.items():
-                archive.add(source, arcname=f"{base}/{archive_name}", recursive=False)
-    print(destination)
+    with tempfile.TemporaryDirectory(prefix="pari-release-") as temporary:
+        staging = Path(temporary) / base
+        staging.mkdir()
+        destination = staging / executable_name
+        shutil.copyfile(binary, destination)
+        if not windows:
+            destination.chmod(binary.stat().st_mode)
+        shutil.copyfile(ROOT / "README.md", staging / "README.md")
+        shutil.copyfile(ROOT / "LICENSE", staging / "LICENSE")
+        shutil.copyfile(ROOT / "NOTICE", staging / "NOTICE")
+
+        if windows:
+            archive = output_dir / f"{base}.zip"
+            write_deterministic_zip(archive, staging, base)
+        else:
+            archive = output_dir / f"{base}.tar.gz"
+            write_deterministic_tar(archive, staging, base)
+    print(archive)
 
 
 def command_version(_: argparse.Namespace) -> None:
