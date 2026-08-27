@@ -1,0 +1,33 @@
+name: Lockfile Bootstrap
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/lockfile-bootstrap.yml"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.97.1"
+
+jobs:
+  generate:
+    name: Generate Cargo.lock
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+      - name: Validate locked metadata
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workspace-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
