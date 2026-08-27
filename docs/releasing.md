@@ -6,14 +6,14 @@ This document defines the operator procedure for Pari releases. The workspace ve
 
 A version tag `vX.Y.Z` builds and validates:
 
-- `pari-similarity` source distribution and abi3 wheels.
+- `pari` source distribution and abi3 wheels.
 - `pari` CLI archives for Linux x86_64, macOS x86_64, macOS arm64, and Windows x86_64.
 - crates.io packages for the public Rust crates: `pari-core`, `pari-format`, `pari-index`, and `pari-store`.
 - SHA-256 checksums.
 - a CycloneDX dependency SBOM generated from locked Cargo metadata.
 - GitHub build provenance attestations for assembled release files.
 
-The release workflow never builds in a job that has publication credentials. Build jobs have read-only repository access. OIDC permissions exist only in publication/attestation jobs.
+The release workflow never builds in a job that has publication credentials. Build jobs have read-only repository access. OIDC permissions exist only in publication and attestation jobs.
 
 ## Before the first 0.1.0 release
 
@@ -23,7 +23,7 @@ All normal Rust, Python, Redis, and Release Validation jobs must be green on the
 
 ### 2. Configure PyPI Trusted Publishing
 
-Create a pending or normal Trusted Publisher for distribution `pari-similarity` with:
+Create a pending or normal Trusted Publisher for distribution `pari` with:
 
 - owner: `dipeshbabu`
 - repository: `pari`
@@ -85,7 +85,7 @@ git push origin v0.1.0
 
 The immutable tag must exactly match the root workspace version. The release workflow rejects mismatches.
 
-For v0.1.0, the crates.io publication job verifies the bootstrapped crates rather than publishing them again. The workflow publishes `pari-similarity` to PyPI through Trusted Publishing and creates the GitHub Release from the already-tested artifacts.
+For v0.1.0, the crates.io publication job verifies the bootstrapped crates rather than publishing them again. The workflow publishes `pari` to PyPI through Trusted Publishing and creates the GitHub Release from the already-tested artifacts.
 
 ## Subsequent releases
 
@@ -94,7 +94,7 @@ For releases after 0.1.0:
 1. update the workspace version and exact public-crate dependency versions in one PR;
 2. update `CHANGELOG.md` and add `docs/releases/X.Y.Z.md`;
 3. run the full release validation PR gate;
-4. configure/verify Trusted Publishing for all public packages;
+4. configure or verify Trusted Publishing for all public packages;
 5. tag the exact green `main` commit;
 6. allow the release workflow to publish Rust crates in dependency order using the temporary OIDC token, then publish the Python distribution and GitHub Release.
 

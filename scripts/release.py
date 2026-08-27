@@ -25,6 +25,7 @@ import uuid
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+PYPI_DISTRIBUTION = "pari"
 PUBLIC_CRATES = {
     "pari-core": ROOT / "crates/pari-core/Cargo.toml",
     "pari-format": ROOT / "crates/pari-format/Cargo.toml",
@@ -70,8 +71,8 @@ def validate(tag: str | None = None) -> None:
 
     pyproject = load_toml(ROOT / "pyproject.toml")
     project = pyproject.get("project", {})
-    if project.get("name") != "pari-similarity":
-        errors.append("Python distribution name must remain 'pari-similarity'")
+    if project.get("name") != PYPI_DISTRIBUTION:
+        errors.append(f"Python distribution name must remain {PYPI_DISTRIBUTION!r}")
     if project.get("dynamic") != ["version"]:
         errors.append("pyproject version must remain dynamic and derive from pari-py/Cargo.toml")
 
