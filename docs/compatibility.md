@@ -42,7 +42,7 @@ CLI:
 - the `index`, `search`, `dedup`, `stats`, `verify`, and `completion` command names
 - documented command options in the 0.1.x line
 - documented JSONL input fields in the 0.1.x line
-- machine-readable JSON/JSONL output schema version 1
+- machine-readable JSON/JSONL output revision 1, pinned by compiled CLI integration tests
 
 ### Experimental
 
@@ -74,7 +74,7 @@ For `0.1.x` patch releases:
 
 - no intentional breaking changes to supported Python, Rust, or CLI interfaces
 - no incompatible reinterpretation of existing signature schemes
-- no incompatible change to machine-readable CLI schema version 1
+- no incompatible change to machine-readable CLI output revision 1
 - no incompatible change to `.pari` format version 1
 - bug fixes may reject data that was previously accepted only because validation was incorrect or unsafe
 
@@ -82,7 +82,7 @@ For a future `0.y.0` minor release:
 
 - supported APIs may change only with release notes and a migration section
 - deprecated supported APIs should normally remain available for at least one minor release when keeping them is safe and practical
-- machine-readable output that removes fields, changes field types, or changes field meaning requires a new schema version
+- machine-readable output that removes fields, changes field types, or changes field meaning requires a new documented output revision
 - persisted data must never be silently reinterpreted under old format or signature identifiers
 
 ## Python surface
@@ -113,17 +113,19 @@ Rules:
 - corrupt, truncated, unsupported, or security-sensitive data fails closed
 - dropping read support for a published format requires an explicit migration plan and release note; it is not an ordinary patch-level change
 
-## CLI machine-readable schemas
+## CLI machine-readable output
 
-All JSON and JSONL emitted by `pari --json` commands include `"schema_version": 1`.
+The JSON and JSONL field sets emitted by 0.1 `--json` commands define machine-readable output revision 1. The current payloads do not embed a separate `schema_version` field; the CLI package version identifies the producer version, while compiled integration tests pin the revision-1 field sets.
 
-For one schema version:
+For revision 1:
 
 - existing fields keep their meaning and JSON type
-- new output fields may be added
+- new output fields may be added when they are backward compatible
 - consumers should ignore unknown output fields
-- removing or renaming a field requires a new schema version
-- changing a field from scalar to collection, or vice versa, requires a new schema version
+- removing or renaming a field requires a new documented output revision
+- changing a field from scalar to collection, or vice versa, requires a new documented output revision
+
+Adding an explicit schema-version field in a future release is itself backward compatible because revision-1 consumers are required to ignore unknown output fields.
 
 Human-readable output is intentionally not a parser contract.
 
