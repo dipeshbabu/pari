@@ -2,20 +2,22 @@
 
 Pari ships a small typed Python API backed by the same Rust implementation used by the native crates. The wheel uses Python's stable ABI with a minimum of CPython 3.10.
 
-## Install from the repository
+## Install
+
+Install the public package from PyPI:
 
 ```bash
-python -m pip install .
+python -m pip install pari
 ```
 
-For local extension development:
+For local extension development from a repository checkout:
 
 ```bash
 python -m pip install "maturin>=1.14,<2"
 maturin develop
 ```
 
-The distribution is named `pari-similarity`; the import is simply `pari`.
+The PyPI distribution and import package are both named `pari`.
 
 ## Stability
 
