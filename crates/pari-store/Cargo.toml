@@ -1,5 +1,6 @@
 [package]
 name = "pari-store"
+description = "Crash-safe local persistent similarity indexes for the Pari engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,9 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-pari-core = { path = "../pari-core" }
-pari-format = { path = "../pari-format" }
-pari-index = { path = "../pari-index" }
+pari-core = { version = "=0.1.0", path = "../pari-core" }
+pari-format = { version = "=0.1.0", path = "../pari-format" }
+pari-index = { version = "=0.1.0", path = "../pari-index" }
 
 [lints]
 workspace = true
