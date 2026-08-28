@@ -24,7 +24,7 @@ Backend = Literal["memory", "local"]
 PathInput = str | PathLike[str]
 
 
-class DedupeError(PariError):
+class DedupeError(PariError):  # type: ignore[misc]
     """Base class for high-level deduplication errors."""
 
 
@@ -88,7 +88,7 @@ class DedupeIndex(Generic[T]):
 
     def __init__(
         self,
-        feature: FeatureExtractor[T],
+        feature: FeatureExtractor[T] | None = None,
         *,
         threshold: float = 0.8,
         num_perm: int = 128,
@@ -99,8 +99,8 @@ class DedupeIndex(Generic[T]):
         exact: ExactVerifier[T] | None = None,
         representative: RepresentativeSelector[T] | None = None,
     ) -> None:
-        if not callable(feature):
-            raise ConfigurationError("feature must be callable")
+        if feature is not None and not callable(feature):
+            raise ConfigurationError("feature must be callable or None")
         if (
             isinstance(batch_size, bool)
             or not isinstance(batch_size, int)
@@ -148,23 +148,36 @@ class DedupeIndex(Generic[T]):
     def closed(self) -> bool:
         """Return whether this handle has been closed."""
 
-        return self._engine.closed
+        return bool(self._engine.closed)
 
     def add(self, record: T) -> int:
         """Add one record and return its stable ingestion index."""
 
-        self._ensure_open()
-        key = len(self._records)
-        features = self._feature(record)
-        self._engine.add_many([key], [features])
-        self._records.append(record)
-        return key
+        feature = self._require_feature()
+        return self.add_features(record, feature(record))
 
     def add_many(self, records: Iterable[T]) -> int:
         """Add records in bounded, atomic native batches and return the count."""
 
+        feature = self._require_feature()
+        return self.add_many_features((record, feature(record)) for record in records)
+
+    def add_features(self, record: T, features: Iterable[ReadableBuffer]) -> int:
+        """Add one record with precomputed features and return its stable index."""
+
         self._ensure_open()
-        iterator = iter(records)
+        key = len(self._records)
+        self._engine.add_many([key], [features])
+        self._records.append(record)
+        return key
+
+    def add_many_features(
+        self, items: Iterable[tuple[T, Iterable[ReadableBuffer]]]
+    ) -> int:
+        """Add precomputed feature rows without retaining source payloads."""
+
+        self._ensure_open()
+        iterator = iter(items)
         added = 0
         while True:
             batch = list(islice(iterator, self._batch_size))
@@ -173,10 +186,20 @@ class DedupeIndex(Generic[T]):
 
             start = len(self._records)
             keys = list(range(start, start + len(batch)))
-            feature_rows = [self._feature(record) for record in batch]
+            records = [record for record, _features in batch]
+            feature_rows = [features for _record, features in batch]
             self._engine.add_many(keys, feature_rows)
-            self._records.extend(batch)
+            self._records.extend(records)
             added += len(batch)
+
+    def candidate_groups(self) -> tuple[DuplicateGroup[T], ...]:
+        """Return unverified LSH candidate groups for measurement or review."""
+
+        self._ensure_open()
+        raw_groups = self._engine.groups(verifier=None)
+        return tuple(
+            self._convert_group(member_indices) for _, member_indices in raw_groups
+        )
 
     def groups(self) -> tuple[DuplicateGroup[T], ...]:
         """Return deterministic duplicate groups for the current records."""
@@ -237,6 +260,13 @@ class DedupeIndex(Generic[T]):
     def _ensure_open(self) -> None:
         if self.closed:
             raise ClosedIndexError("dedupe index is closed")
+
+    def _require_feature(self) -> FeatureExtractor[T]:
+        if self._feature is None:
+            raise ConfigurationError(
+                "feature is required for add/add_many; use add_features/add_many_features"
+            )
+        return self._feature
 
     def _native_verifier(self) -> Callable[[int, int], bool] | None:
         if self._exact is None:

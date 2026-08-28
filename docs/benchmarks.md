@@ -163,3 +163,7 @@ The baseline uses the same deterministic synthetic integer sets, query mutation,
 - Criterion output
 
 Scheduled results are review evidence, not a merge gate. Correctness, candidate parity, format validation, Rustfmt, Clippy, and tests remain the CI gates.
+
+## Text deduplication and contamination workloads
+
+The [text workload guide](text-workloads.md) provides streaming JSONL commands for corpus deduplication, reusable persistent reference indexes, and non-mutating cross-corpus audits. Each command emits a versioned machine-readable report with throughput, RSS where supported, index/output size, candidate reduction, and duplicate or overlap measurements suitable for the larger campaigns in issue #47.

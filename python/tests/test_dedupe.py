@@ -118,6 +118,30 @@ class DedupeIndexTests(unittest.TestCase):
             scalar.close()
             batch.close()
 
+    def test_precomputed_features_retain_only_supplied_records(self) -> None:
+        records = [{"id": 1}, {"id": 2}, {"id": 3}]
+        index = DedupeIndex[dict[str, int]](None, num_perm=32, batch_size=2)
+        try:
+            added = index.add_many_features(
+                [
+                    (records[0], [b"same"]),
+                    (records[1], [b"same"]),
+                    (records[2], [b"different"]),
+                ]
+            )
+            self.assertEqual(added, 3)
+            self.assertEqual(index.candidate_groups()[0].member_indices, (0, 1))
+            self.assertEqual(index.result().dropped_indices, (1,))
+        finally:
+            index.close()
+
+        without_feature = DedupeIndex[object](None, num_perm=32)
+        try:
+            with self.assertRaisesRegex(ConfigurationError, "use add_features"):
+                without_feature.add(object())
+        finally:
+            without_feature.close()
+
     def test_local_backend_persists_the_same_native_batches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "dedupe.pari"
