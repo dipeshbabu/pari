@@ -16,7 +16,21 @@ Install from the repository:
 python -m pip install .
 ```
 
-Build signatures and a persistent index:
+Deduplicate records with application-defined features:
+
+```python
+from pari import deduplicate
+
+documents = ["new york rust search", "new york rust search", "unrelated record"]
+result = deduplicate(
+    documents,
+    feature=lambda text: (word.encode() for word in text.split()),
+    seed=7,
+)
+print(result.kept)
+```
+
+For lower-level candidate queries, build signatures and a persistent index:
 
 ```python
 from pari import Index, MinHash
