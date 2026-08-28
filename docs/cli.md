@@ -2,7 +2,17 @@
 
 The `pari` binary is a thin operational layer over the same Rust APIs used by the Python package. It does not reimplement MinHash, LSH, persistence, or duplicate grouping.
 
-## Build
+## Install a published binary
+
+Pari 0.1.0 CLI archives are attached to the [GitHub Release](https://github.com/dipeshbabu/pari/releases/tag/v0.1.0):
+
+- [Linux x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-linux.tar.gz)
+- [macOS arm64](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-macos.tar.gz)
+- [Windows x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-windows.zip)
+
+Each archive contains `LICENSE`, `NOTICE`, `README.md`, and the `pari` executable (`pari.exe` on Windows). Verify the archive against the release's [`SHA256SUMS`](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/SHA256SUMS), extract it, and move the executable to a directory on `PATH` if desired.
+
+## Build from source for contributors
 
 ```bash
 cargo build --release -p pari-cli

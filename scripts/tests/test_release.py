@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
+import re
 import tempfile
 import unittest
-
+from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "release.py"
+ROOT = SCRIPT.parent.parent
 SPEC = importlib.util.spec_from_file_location("pari_release", SCRIPT)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("could not load release utility")
@@ -80,6 +81,35 @@ class ArtifactTests(unittest.TestCase):
                 os.environ.pop("SOURCE_DATE_EPOCH", None)
             else:
                 os.environ["SOURCE_DATE_EPOCH"] = previous_epoch
+
+
+class ReadmeOnboardingTests(unittest.TestCase):
+    def test_public_install_commands_track_workspace_version(self) -> None:
+        version = release.workspace_version()
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        expected = [
+            f"pari-similarity=={version}",
+            f"cargo add pari-core@{version} pari-index@{version} pari-store@{version}",
+            f'pari-format = "{version}"',
+            f"pari-{version}-linux.tar.gz",
+            f"pari-{version}-macos.tar.gz",
+            f"pari-{version}-windows.zip",
+            "The distribution name is `pari-similarity`; the import name is `pari`",
+        ]
+        for value in expected:
+            self.assertIn(value, readme)
+
+    def test_relative_readme_links_exist(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        links = re.findall(r"\]\(([^)]+)\)", readme)
+        relative_links = [
+            link.split("#", 1)[0]
+            for link in links
+            if "://" not in link and not link.startswith("#")
+        ]
+        for link in relative_links:
+            self.assertTrue((ROOT / link).exists(), link)
 
 
 if __name__ == "__main__":

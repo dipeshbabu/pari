@@ -7,7 +7,7 @@ This document defines the operator procedure for Pari releases. The workspace ve
 A version tag `vX.Y.Z` builds and validates:
 
 - `pari-similarity` source distribution and abi3 wheels.
-- `pari` CLI archives for Linux x86_64, macOS x86_64, macOS arm64, and Windows x86_64.
+- `pari` CLI archives for Linux x86_64, macOS arm64, and Windows x86_64.
 - crates.io packages for the public Rust crates: `pari-core`, `pari-format`, `pari-index`, and `pari-store`.
 - SHA-256 checksums.
 - a CycloneDX dependency SBOM generated from locked Cargo metadata.
