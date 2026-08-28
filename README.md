@@ -6,52 +6,100 @@ The project is built around a Rust core with Python bindings and a CLI. The goal
 
 ## Status
 
-Pari is pre-alpha. Public APIs may still evolve, but the supported 0.1 surface, machine-readable CLI contract, signature semantics, and persisted-format guarantees are defined in [docs/compatibility.md](docs/compatibility.md).
+Pari **0.1.0 alpha** is publicly available from PyPI, crates.io, and [GitHub Releases](https://github.com/dipeshbabu/pari/releases/tag/v0.1.0). Pari is still pre-1.0: supported 0.1.x interfaces follow the [v0.x compatibility policy](docs/compatibility.md), while experimental surfaces may change in a future minor release with release notes and migration guidance.
 
 ## Python quick start
 
-Install from the repository:
+Install the published distribution (CPython 3.10 or newer):
 
 ```bash
-python -m pip install .
+python -m pip install "pari-similarity==0.1.0"
 ```
 
-Deduplicate records with application-defined features:
+The distribution name is `pari-similarity`; the import name is `pari`:
 
 ```python
-from pari import deduplicate
+from pari import MinHash
 
-documents = ["new york rust search", "new york rust search", "unrelated record"]
-result = deduplicate(
-    documents,
-    feature=lambda text: (word.encode() for word in text.split()),
+first = MinHash.from_values(
+    [b"new york", b"rust", b"search"],
+    num_perm=128,
     seed=7,
 )
-print(result.kept)
+second = MinHash.from_values(
+    [b"new york", b"python", b"search"],
+    num_perm=128,
+    seed=7,
+)
+
+print(first.jaccard(second))
 ```
 
-For lower-level candidate queries, build signatures and a persistent index:
+See the [Python API guide](docs/python.md) for persistent indexes, batch operations, and current main-branch APIs.
 
-```python
-from pari import Index, MinHash
+## Rust quick start
 
-first = MinHash.from_values([b"new york", b"rust", b"search"], num_perm=128, seed=7)
-second = MinHash.from_values([b"new york", b"python", b"search"], num_perm=128, seed=7)
+The four public crates are independently versioned together at 0.1.0:
 
-with Index.create("documents.pari", threshold=0.8, num_perm=128, seed=7) as index:
-    index.add_many([(1, first), (2, second)])
-    print(index.search(first))
+| Crate | Use it for |
+| --- | --- |
+| [`pari-core`](https://crates.io/crates/pari-core/0.1.0) | MinHash signatures and similarity primitives |
+| [`pari-format`](https://crates.io/crates/pari-format/0.1.0) | Safe codecs and the versioned index format |
+| [`pari-index`](https://crates.io/crates/pari-index/0.1.0) | In-memory LSH indexing and duplicate grouping |
+| [`pari-store`](https://crates.io/crates/pari-store/0.1.0) | Crash-safe local persistent indexes |
+
+Add only the layers your application uses:
+
+```bash
+cargo add pari-core@0.1.0 pari-index@0.1.0 pari-store@0.1.0
 ```
 
-`Index.search` returns approximate LSH candidates, not exact duplicate decisions. See [docs/python.md](docs/python.md) for the full typed API and [docs/persistence.md](docs/persistence.md) for durability semantics.
+Or declare them directly:
+
+```toml
+[dependencies]
+pari-core = "0.1.0"
+pari-index = "0.1.0"
+pari-store = "0.1.0"
+```
+
+Add `pari-format = "0.1.0"` only when working directly with codecs or format metadata.
 
 ## CLI quick start
 
-Build the command-line binary:
+Download the published archive for your platform:
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86_64 | [`pari-0.1.0-linux.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-linux.tar.gz) |
+| macOS arm64 | [`pari-0.1.0-macos.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-macos.tar.gz) |
+| Windows x86_64 | [`pari-0.1.0-windows.zip`](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-windows.zip) |
+
+Linux:
 
 ```bash
-cargo build --release -p pari-cli
+curl -LO https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-linux.tar.gz
+tar -xzf pari-0.1.0-linux.tar.gz
+./pari-0.1.0-linux/pari --version
 ```
+
+macOS:
+
+```bash
+curl -LO https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-macos.tar.gz
+tar -xzf pari-0.1.0-macos.tar.gz
+./pari-0.1.0-macos/pari --version
+```
+
+Windows PowerShell:
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-windows.zip" -OutFile "pari-0.1.0-windows.zip"
+Expand-Archive -Path "pari-0.1.0-windows.zip" -DestinationPath .
+.\pari-0.1.0-windows\pari.exe --version
+```
+
+Verify downloads with the published [`SHA256SUMS`](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/SHA256SUMS) before installing the binary on `PATH`.
 
 Given JSONL records such as:
 
@@ -75,19 +123,16 @@ pari dedup --input documents.jsonl --emit groups --json
 
 See [docs/cli.md](docs/cli.md) for indexing, search, deduplication, inspection, JSONL output, verification, and shell completion.
 
-## Shared Redis indexes
+Source users evaluating shared memory or Redis backends can follow the [storage backend guide](docs/storage-backends.md); those experimental crates are not part of the published 0.1.0 Rust set.
 
-Rust services that need one index shared across processes can use `pari-backend` with its optional Redis feature. The same `BackendIndex32` logic runs against both the in-process memory backend and Redis; Redis details are kept out of `pari-index`.
+## Project links
 
-```rust
-use pari_backend::{BackendIndex32, RedisBackend};
-
-let backend = RedisBackend::connect("redis://127.0.0.1:6379/", "documents")?;
-let index = BackendIndex32::create(backend, 0.8, 128, 7, None)?;
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-See [docs/storage-backends.md](docs/storage-backends.md) for the typed backend contract, batching, namespace ownership, TTL semantics, cleanup, security, and benchmark behavior.
+- [PyPI: `pari-similarity`](https://pypi.org/project/pari-similarity/0.1.0/)
+- [GitHub Release and binary downloads](https://github.com/dipeshbabu/pari/releases/tag/v0.1.0)
+- [0.1.0 release notes](docs/releases/0.1.0.md)
+- [Compatibility policy](docs/compatibility.md)
+- [Python guide](docs/python.md) and [CLI guide](docs/cli.md)
+- [Benchmarks](docs/benchmarks.md) and [workload roadmap](https://github.com/dipeshbabu/pari/issues)
 
 ## Design goals
 
@@ -122,8 +167,11 @@ Python wheel development additionally uses maturin:
 
 ```bash
 python -m pip install "maturin>=1.14,<2"
+python -m pip install .
 maturin build --release
 ```
+
+Build the CLI from source with `cargo build --release -p pari-cli`.
 
 ## License
 
