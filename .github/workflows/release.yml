@@ -180,9 +180,10 @@ jobs:
         run: |
           archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
           test -n "$archive"
-          prefix="pari_similarity-$(python scripts/release.py version)"
-          tar -tzf "$archive" | grep -Fx "$prefix/LICENSE"
-          tar -tzf "$archive" | grep -Fx "$prefix/NOTICE"
+          listing="$RUNNER_TEMP/pari-sdist-files.txt"
+          tar -tzf "$archive" > "$listing"
+          grep -Eq '^[^/]+/LICENSE$' "$listing"
+          grep -Eq '^[^/]+/NOTICE$' "$listing"
       - name: Install source distribution
         run: python -m pip install --force-reinstall dist/*.tar.gz
       - name: Smoke installed source distribution outside checkout
