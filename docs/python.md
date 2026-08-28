@@ -21,6 +21,101 @@ The distribution is named `pari-similarity`; the import is simply `pari`.
 
 The supported top-level Python surface for the 0.1 line is defined by `pari.__all__` and pinned by installed-wheel tests. Patch releases in 0.1.x must not intentionally remove or rename those exports or make a previously valid typed call invalid. See [compatibility.md](compatibility.md) for the full v0.x policy, deprecation rules, signature compatibility, and persisted-format guarantees.
 
+## Deduplicate records
+
+`deduplicate` is the concise API for users who do not need to manage signatures or an index directly. Supply a feature callback that returns byte-like shingles for one record:
+
+```python
+from pari import deduplicate
+
+documents = [
+    {"id": 1, "text": "Rust makes systems programming practical"},
+    {"id": 2, "text": "Rust makes systems programming practical"},
+    {"id": 3, "text": "Python is useful for data workflows"},
+]
+
+result = deduplicate(
+    documents,
+    feature=lambda row: (word.casefold().encode() for word in row["text"].split()),
+    threshold=0.8,
+    num_perm=128,
+    seed=7,
+)
+
+print(result.groups[0].member_indices)  # (0, 1)
+print([row["id"] for row in result.kept])  # [1, 3]
+print([row["id"] for row in result.dropped])  # [2]
+```
+
+The default representative is the first record in ingestion order. A selector can keep a preferred member instead:
+
+```python
+result = deduplicate(
+    documents,
+    feature=features,
+    representative=lambda members: max(members, key=lambda row: row["quality"]),
+)
+```
+
+The selector must return one of the exact member objects it receives. Returning an unrelated object raises `InvalidRepresentativeError`.
+
+LSH groups are approximate connected components. Use `exact` when candidate pairs need application-level verification:
+
+```python
+result = deduplicate(
+    records,
+    feature=features,
+    exact=lambda left, right: normalized_distance(left, right) <= 2,
+)
+```
+
+The verifier runs before native components are joined; it does not post-filter already connected groups or alter LSH internals. Exceptions raised by feature, verifier, or representative callbacks propagate to the caller.
+
+### Incremental and persistent ingestion
+
+`DedupeIndex` exposes the same operation incrementally. `add_many` consumes any iterable in bounded batches, and `add` has the same ingestion-order semantics:
+
+```python
+from pari import DedupeIndex
+
+with DedupeIndex(features, batch_size=2048) as index:
+    index.add_many(stream_of_records())
+    result = index.result()
+```
+
+Feature extraction runs in Python. Each batch's byte buffers are copied into Rust-owned memory before CPU-heavy MinHash construction, insertion, and grouping run outside the GIL. The native grouping path unions LSH buckets directly and does not materialize all candidate pairs.
+
+The default `memory` backend is fastest for one-shot jobs. To mirror the same native batches into a crash-safe local index, supply a new path:
+
+```python
+with DedupeIndex(features, backend="local", path="records.pari") as index:
+    index.add_many(records)
+    result = index.result()
+```
+
+The local file contains signatures and bucket membership, not the original Python records. Reopen it with the lower-level `Index` API for candidate queries; reconstructing high-level results still requires the source records.
+
+### Feature callback patterns
+
+Pari deliberately leaves domain tokenization to the application:
+
+```python
+# Text: normalized word shingles.
+text_features = lambda text: (word.encode() for word in text.casefold().split())
+
+# Code: normalized non-empty source lines.
+code_features = lambda source: (
+    line.strip().encode() for line in source.splitlines() if line.strip()
+)
+
+# Records: explicit field/value tokens.
+def record_features(row):
+    yield f"email:{row['email'].casefold()}".encode()
+    yield f"postal:{row['postal_code']}".encode()
+```
+
+This keeps similarity semantics explicit while the signature, index, and grouping implementation remains shared across workloads.
+
 ## Build signatures
 
 ```python

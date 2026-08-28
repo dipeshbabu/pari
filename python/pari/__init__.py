@@ -1,7 +1,7 @@
 """Pari approximate similarity search.
 
-The public API intentionally stays small: build :class:`MinHash` signatures,
-store them in a persistent :class:`Index`, and query approximate candidates.
+The public API intentionally stays small: deduplicate records directly, or
+build :class:`MinHash` signatures and query a persistent :class:`Index`.
 """
 
 from ._native import (
@@ -16,16 +16,30 @@ from ._native import (
     StorageError,
     __version__,
 )
+from .dedupe import (
+    DedupeError,
+    DedupeIndex,
+    DeduplicationResult,
+    DuplicateGroup,
+    InvalidRepresentativeError,
+    deduplicate,
+)
 
 __all__ = [
     "ClosedIndexError",
     "CompatibilityError",
     "ConfigurationError",
+    "DedupeError",
+    "DedupeIndex",
+    "DeduplicationResult",
+    "DuplicateGroup",
     "DuplicateKeyError",
     "Index",
     "IndexStats",
+    "InvalidRepresentativeError",
     "MinHash",
     "PariError",
     "StorageError",
     "__version__",
+    "deduplicate",
 ]

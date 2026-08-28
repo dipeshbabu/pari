@@ -18,7 +18,13 @@ Python:
 - `MinHash`
 - `Index`
 - `IndexStats`
+- `DedupeIndex`
+- `DuplicateGroup`
+- `DeduplicationResult`
+- `deduplicate`
 - `PariError`
+- `DedupeError`
+- `InvalidRepresentativeError`
 - `ConfigurationError`
 - `CompatibilityError`
 - `DuplicateKeyError`

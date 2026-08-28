@@ -1,8 +1,14 @@
+from collections.abc import Callable, Iterable, Sequence
 from os import PathLike
-from typing import Iterable, Sequence
+from typing import Generic, Literal, TypeAlias, TypeVar
 
-ReadableBuffer = bytes | bytearray | memoryview
-PathInput = str | PathLike[str]
+ReadableBuffer: TypeAlias = bytes | bytearray | memoryview
+PathInput: TypeAlias = str | PathLike[str]
+_T = TypeVar("_T")
+_FeatureExtractor: TypeAlias = Callable[[_T], Iterable[ReadableBuffer]]
+_ExactVerifier: TypeAlias = Callable[[_T, _T], bool]
+_RepresentativeSelector: TypeAlias = Callable[[Sequence[_T]], _T]
+_Backend: TypeAlias = Literal["memory", "local"]
 
 class PariError(Exception): ...
 class ConfigurationError(PariError): ...
@@ -10,6 +16,25 @@ class CompatibilityError(PariError): ...
 class DuplicateKeyError(PariError): ...
 class StorageError(PariError): ...
 class ClosedIndexError(PariError): ...
+class DedupeError(PariError): ...
+class InvalidRepresentativeError(DedupeError): ...
+
+class DuplicateGroup(Generic[_T]):
+    representative: _T
+    members: tuple[_T, ...]
+    representative_index: int
+    member_indices: tuple[int, ...]
+
+class DeduplicationResult(Generic[_T]):
+    groups: tuple[DuplicateGroup[_T], ...]
+    kept: tuple[_T, ...]
+    dropped: tuple[_T, ...]
+    kept_indices: tuple[int, ...]
+    dropped_indices: tuple[int, ...]
+    @property
+    def group_count(self) -> int: ...
+    @property
+    def duplicate_count(self) -> int: ...
 
 class MinHash:
     def __init__(self, num_perm: int = 128, seed: int = 1) -> None: ...
@@ -78,6 +103,56 @@ class Index:
     def __len__(self) -> int: ...
     def __contains__(self, key: int) -> bool: ...
     def __enter__(self) -> Index: ...
-    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool: ...
+    def __exit__(
+        self, exc_type: object, exc_value: object, traceback: object
+    ) -> bool: ...
+
+class DedupeIndex(Generic[_T]):
+    threshold: float
+    num_perm: int
+    seed: int
+    backend: _Backend
+    def __init__(
+        self,
+        feature: _FeatureExtractor[_T],
+        *,
+        threshold: float = 0.8,
+        num_perm: int = 128,
+        seed: int = 1,
+        batch_size: int = 1024,
+        path: PathInput | None = None,
+        backend: _Backend | None = None,
+        exact: _ExactVerifier[_T] | None = None,
+        representative: _RepresentativeSelector[_T] | None = None,
+    ) -> None: ...
+    @property
+    def batch_size(self) -> int: ...
+    @property
+    def closed(self) -> bool: ...
+    def add(self, record: _T) -> int: ...
+    def add_many(self, records: Iterable[_T]) -> int: ...
+    def groups(self) -> tuple[DuplicateGroup[_T], ...]: ...
+    def result(self) -> DeduplicationResult[_T]: ...
+    def sync(self) -> None: ...
+    def close(self) -> None: ...
+    def __len__(self) -> int: ...
+    def __enter__(self) -> DedupeIndex[_T]: ...
+    def __exit__(
+        self, exc_type: object, exc_value: object, traceback: object
+    ) -> Literal[False]: ...
+
+def deduplicate(
+    records: Iterable[_T],
+    *,
+    feature: _FeatureExtractor[_T],
+    threshold: float = 0.8,
+    num_perm: int = 128,
+    seed: int = 1,
+    batch_size: int = 1024,
+    path: PathInput | None = None,
+    backend: _Backend | None = None,
+    exact: _ExactVerifier[_T] | None = None,
+    representative: _RepresentativeSelector[_T] | None = None,
+) -> DeduplicationResult[_T]: ...
 
 __version__: str

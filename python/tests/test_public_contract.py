@@ -9,13 +9,19 @@ V01_PUBLIC_EXPORTS = {
     "ClosedIndexError",
     "CompatibilityError",
     "ConfigurationError",
+    "DeduplicationResult",
+    "DedupeError",
+    "DedupeIndex",
     "DuplicateKeyError",
+    "DuplicateGroup",
     "Index",
     "IndexStats",
+    "InvalidRepresentativeError",
     "MinHash",
     "PariError",
     "StorageError",
     "__version__",
+    "deduplicate",
 }
 
 
@@ -31,6 +37,8 @@ class PublicContractTests(unittest.TestCase):
             pari.CompatibilityError,
             pari.ConfigurationError,
             pari.DuplicateKeyError,
+            pari.DedupeError,
+            pari.InvalidRepresentativeError,
             pari.StorageError,
         ):
             self.assertTrue(issubclass(error_type, pari.PariError), error_type.__name__)

@@ -188,7 +188,16 @@ impl LshIndex32 {
     /// index's internal item slots).
     #[must_use]
     pub fn duplicate_groups(&self) -> Vec<DuplicateGroup> {
-        self.duplicate_groups_with(2, |_, _| true)
+        let mut union_find = UnionFind::with_len(self.id_to_key.len());
+        union_index_buckets_unverified(self, &mut union_find);
+        collect_default_groups(
+            &mut union_find,
+            self.id_to_key
+                .iter()
+                .enumerate()
+                .filter_map(|(id, key)| key.map(|value| (id, value))),
+            2,
+        )
     }
 
     /// Group LSH candidates after optional application-level pair verification.
@@ -303,6 +312,27 @@ where
                     if verify(left_key, right_key) {
                         union_find.union(left_node, right_node);
                     }
+                }
+            }
+        }
+    }
+}
+
+fn union_index_buckets_unverified(index: &LshIndex32, union_find: &mut UnionFind) {
+    for table in &index.buckets {
+        for ids in table.values() {
+            let mut anchor = None;
+            for id in ids {
+                let Ok(node) = usize::try_from(*id) else {
+                    continue;
+                };
+                if live_key(index, *id).is_none() {
+                    continue;
+                }
+                if let Some(anchor_node) = anchor {
+                    union_find.union(anchor_node, node);
+                } else {
+                    anchor = Some(node);
                 }
             }
         }
@@ -552,6 +582,19 @@ mod tests {
             .expect("valid insert");
 
         assert_eq!(member_lists(&index.duplicate_groups()), vec![vec![10, 11]]);
+    }
+
+    #[test]
+    fn direct_grouping_selects_a_live_anchor_after_removal() {
+        let same = signature(6, 0..100);
+        let mut index =
+            LshIndex32::with_params(0.8, 128, 6, LshParams::new(32, 4)).expect("valid index");
+        index
+            .insert_many([(1, &same), (2, &same), (3, &same)])
+            .expect("valid batch");
+        assert!(index.remove(1));
+
+        assert_eq!(member_lists(&index.duplicate_groups()), vec![vec![2, 3]]);
     }
 
     #[test]

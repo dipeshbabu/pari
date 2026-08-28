@@ -3,11 +3,11 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, TryLockError},
 };
 
 use pari_core::{MinHash32, MinHashError};
-use pari_index::LshError;
+use pari_index::{DuplicateGroup, LshError, LshIndex32};
 use pari_store::{PersistentIndex32, StoreError, StoreStats};
 use pyo3::{
     create_exception,
@@ -34,8 +34,10 @@ enum BindingErrorKind {
 
 #[derive(Debug)]
 enum BindingError {
+    Busy,
     Closed,
     Poisoned,
+    Index(LshError),
     MinHash(MinHashError),
     Store(StoreError),
 }
@@ -51,27 +53,50 @@ impl BindingError {
                 MinHashError::IncompatibleSeed { .. }
                 | MinHashError::IncompatiblePermutationCount { .. },
             )
+            | Self::Index(
+                LshError::IncompatibleSeed { .. } | LshError::IncompatiblePermutationCount { .. },
+            )
             | Self::Store(
                 StoreError::IncompatibleSeed { .. }
                 | StoreError::IncompatiblePermutationCount { .. },
             ) => BindingErrorKind::Compatibility,
-            Self::Store(StoreError::DuplicateKey { .. }) => BindingErrorKind::DuplicateKey,
-            Self::Store(StoreError::Index(
+            Self::Index(LshError::DuplicateKey { .. })
+            | Self::Store(StoreError::DuplicateKey { .. }) => BindingErrorKind::DuplicateKey,
+            Self::Index(
+                LshError::InvalidThreshold { .. }
+                | LshError::InvalidPermutationCount { .. }
+                | LshError::AutomaticTuningTooLarge { .. }
+                | LshError::InvalidParams { .. },
+            )
+            | Self::Store(StoreError::Index(
                 LshError::InvalidThreshold { .. }
                 | LshError::InvalidPermutationCount { .. }
                 | LshError::AutomaticTuningTooLarge { .. }
                 | LshError::InvalidParams { .. },
             )) => BindingErrorKind::Configuration,
-            Self::Poisoned | Self::Store(_) => BindingErrorKind::Storage,
+            Self::Busy | Self::Poisoned | Self::Index(_) | Self::Store(_) => {
+                BindingErrorKind::Storage
+            }
         }
     }
 
     fn into_message(self) -> String {
         match self {
+            Self::Busy => "index is busy running a callback".into(),
             Self::Closed => "index is closed".into(),
             Self::Poisoned => "index state lock is poisoned".into(),
+            Self::Index(error) => error.to_string(),
             Self::MinHash(error) => error.to_string(),
             Self::Store(error) => error.to_string(),
+        }
+    }
+}
+
+impl<T> From<TryLockError<T>> for BindingError {
+    fn from(error: TryLockError<T>) -> Self {
+        match error {
+            TryLockError::Poisoned(_) => Self::Poisoned,
+            TryLockError::WouldBlock => Self::Busy,
         }
     }
 }
@@ -79,6 +104,12 @@ impl BindingError {
 impl From<MinHashError> for BindingError {
     fn from(error: MinHashError) -> Self {
         Self::MinHash(error)
+    }
+}
+
+impl From<LshError> for BindingError {
+    fn from(error: LshError) -> Self {
+        Self::Index(error)
     }
 }
 
@@ -121,6 +152,33 @@ fn collect_byte_values(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Ve
     values
         .try_iter()?
         .map(|item| owned_bytes(py, &item?))
+        .collect()
+}
+
+fn collect_feature_rows(py: Python<'_>, rows: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<Vec<u8>>>> {
+    rows.try_iter()?
+        .map(|row| collect_byte_values(py, &row?))
+        .collect()
+}
+
+fn build_sketches(
+    rows: Vec<Vec<Vec<u8>>>,
+    num_perm: usize,
+    seed: u64,
+) -> Result<Vec<MinHash32>, BindingError> {
+    rows.into_iter()
+        .map(|values| {
+            let mut sketch = MinHash32::new(num_perm, seed).map_err(BindingError::from)?;
+            sketch.update_many(values);
+            Ok(sketch)
+        })
+        .collect()
+}
+
+fn owned_groups(groups: Vec<DuplicateGroup>) -> Vec<(u64, Vec<u64>)> {
+    groups
+        .into_iter()
+        .map(|group| (group.representative(), group.members().to_vec()))
         .collect()
 }
 
@@ -480,11 +538,222 @@ impl PyIndex {
     }
 }
 
+#[derive(Debug)]
+struct DedupeState {
+    index: LshIndex32,
+    store: Option<PersistentIndex32>,
+}
+
+type SharedDedupe = Arc<Mutex<Option<DedupeState>>>;
+
+/// Native batch and grouping engine behind the Python usability layer.
+#[pyclass(module = "pari._native", name = "_DedupeEngine", skip_from_py_object)]
+#[derive(Debug, Clone)]
+struct PyDedupeEngine {
+    inner: SharedDedupe,
+    num_perm: usize,
+    seed: u64,
+}
+
+impl PyDedupeEngine {
+    fn run_read<T, F>(&self, py: Python<'_>, operation: F) -> PyResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&DedupeState) -> Result<T, BindingError> + Send + 'static,
+    {
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let guard = inner.try_lock().map_err(BindingError::from)?;
+            let state = guard.as_ref().ok_or(BindingError::Closed)?;
+            operation(state)
+        })
+        .map_err(binding_error)
+    }
+
+    fn run_write<T, F>(&self, py: Python<'_>, operation: F) -> PyResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut DedupeState) -> Result<T, BindingError> + Send + 'static,
+    {
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let mut guard = inner.try_lock().map_err(BindingError::from)?;
+            let state = guard.as_mut().ok_or(BindingError::Closed)?;
+            operation(state)
+        })
+        .map_err(binding_error)
+    }
+}
+
+#[pymethods]
+impl PyDedupeEngine {
+    #[new]
+    #[pyo3(signature = (*, threshold = 0.8, num_perm = 128, seed = 1, path = None))]
+    fn new(
+        py: Python<'_>,
+        threshold: f64,
+        num_perm: usize,
+        seed: u64,
+        path: Option<PathBuf>,
+    ) -> PyResult<Self> {
+        let state = py
+            .detach(move || {
+                let index =
+                    LshIndex32::new(threshold, num_perm, seed).map_err(BindingError::from)?;
+                let store = path
+                    .map(|path| {
+                        PersistentIndex32::create(path, threshold, num_perm, seed)
+                            .map_err(BindingError::from)
+                    })
+                    .transpose()?;
+                Ok::<_, BindingError>(DedupeState { index, store })
+            })
+            .map_err(binding_error)?;
+
+        Ok(Self {
+            inner: Arc::new(Mutex::new(Some(state))),
+            num_perm,
+            seed,
+        })
+    }
+
+    /// Build and insert one bounded batch after copying Python buffers.
+    fn add_many(
+        &self,
+        py: Python<'_>,
+        keys: Vec<u64>,
+        feature_rows: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let rows = collect_feature_rows(py, feature_rows)?;
+        if keys.len() != rows.len() {
+            return Err(ConfigurationError::new_err(format!(
+                "keys and feature rows must have equal lengths, got {} and {}",
+                keys.len(),
+                rows.len()
+            )));
+        }
+
+        let num_perm = self.num_perm;
+        let seed = self.seed;
+        let sketches = py
+            .detach(move || build_sketches(rows, num_perm, seed))
+            .map_err(binding_error)?;
+
+        self.run_write(py, move |state| {
+            state
+                .index
+                .insert_many(
+                    keys.iter()
+                        .zip(&sketches)
+                        .map(|(key, sketch)| (*key, sketch)),
+                )
+                .map_err(BindingError::from)?;
+
+            if let Some(store) = &mut state.store {
+                if let Err(error) = store.insert_many(
+                    keys.iter()
+                        .zip(&sketches)
+                        .map(|(key, sketch)| (*key, sketch)),
+                ) {
+                    for key in &keys {
+                        state.index.remove(*key);
+                    }
+                    return Err(BindingError::from(error));
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Run direct native grouping, optionally invoking a Python pair verifier.
+    #[pyo3(signature = (*, verifier = None))]
+    fn groups(
+        &self,
+        py: Python<'_>,
+        verifier: Option<Py<PyAny>>,
+    ) -> PyResult<Vec<(u64, Vec<u64>)>> {
+        let Some(verifier) = verifier else {
+            return self.run_read(py, |state| Ok(owned_groups(state.index.duplicate_groups())));
+        };
+
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let guard = inner
+                .try_lock()
+                .map_err(BindingError::from)
+                .map_err(binding_error)?;
+            let state = guard
+                .as_ref()
+                .ok_or_else(|| binding_error(BindingError::Closed))?;
+            let mut callback_error = None;
+            let groups = state.index.duplicate_groups_with(2, |left, right| {
+                if callback_error.is_some() {
+                    return false;
+                }
+                match Python::attach(|py| verifier.bind(py).call1((left, right))?.extract::<bool>())
+                {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        callback_error = Some(error);
+                        false
+                    }
+                }
+            });
+            if let Some(error) = callback_error {
+                return Err(error);
+            }
+            Ok(owned_groups(groups))
+        })
+    }
+
+    fn sync(&self, py: Python<'_>) -> PyResult<()> {
+        self.run_write(py, |state| {
+            if let Some(store) = &mut state.store {
+                store.sync().map_err(BindingError::from)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let mut guard = inner.try_lock().map_err(BindingError::from)?;
+            let Some(mut state) = guard.take() else {
+                return Ok(());
+            };
+            if let Some(store) = &mut state.store {
+                store.sync().map_err(BindingError::from)?;
+            }
+            Ok(())
+        })
+        .map_err(binding_error)
+    }
+
+    #[getter]
+    fn closed(&self) -> PyResult<bool> {
+        self.inner
+            .try_lock()
+            .map(|guard| guard.is_none())
+            .map_err(BindingError::from)
+            .map_err(binding_error)
+    }
+
+    fn __len__(&self, py: Python<'_>) -> PyResult<usize> {
+        self.run_read(py, |state| Ok(state.index.len()))
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("_DedupeEngine(closed={})", self.closed()?))
+    }
+}
+
 #[pymodule]
 fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMinHash>()?;
     module.add_class::<PyIndex>()?;
     module.add_class::<PyIndexStats>()?;
+    module.add_class::<PyDedupeEngine>()?;
     module.add("PariError", py.get_type::<PariError>())?;
     module.add("ConfigurationError", py.get_type::<ConfigurationError>())?;
     module.add("CompatibilityError", py.get_type::<CompatibilityError>())?;
