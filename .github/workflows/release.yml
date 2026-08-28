@@ -169,6 +169,15 @@ jobs:
         run: python -m pip install "maturin==${{ env.MATURIN_VERSION }}"
       - name: Build source distribution
         run: maturin sdist --out dist
+      - name: Verify source distribution licenses
+        shell: bash
+        run: |
+          archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$archive"
+          listing="$RUNNER_TEMP/pari-sdist-files.txt"
+          tar -tzf "$archive" > "$listing"
+          grep -Eq '^[^/]+/LICENSE$' "$listing"
+          grep -Eq '^[^/]+/NOTICE$' "$listing"
       - name: Install source distribution
         run: python -m pip install --force-reinstall dist/*.tar.gz
       - name: Smoke installed source distribution outside checkout

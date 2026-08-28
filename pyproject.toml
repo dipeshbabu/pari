@@ -38,3 +38,7 @@ module-name = "pari._native"
 python-source = "python"
 bindings = "pyo3"
 strip = true
+include = [
+  { path = "LICENSE", format = "sdist" },
+  { path = "NOTICE", format = "sdist" },
+]
