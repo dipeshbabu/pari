@@ -17,6 +17,12 @@ on:
       - "docs/releasing.md"
       - "docs/releases/**"
   workflow_dispatch:
+    inputs:
+      repair_pypi:
+        description: Publish only files missing from PyPI for the current version
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
@@ -169,6 +175,14 @@ jobs:
         run: python -m pip install "maturin==${{ env.MATURIN_VERSION }}"
       - name: Build source distribution
         run: maturin sdist --out dist
+      - name: Verify source distribution licenses
+        shell: bash
+        run: |
+          archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$archive"
+          prefix="pari_similarity-$(python scripts/release.py version)"
+          tar -tzf "$archive" | grep -Fx "$prefix/LICENSE"
+          tar -tzf "$archive" | grep -Fx "$prefix/NOTICE"
       - name: Install source distribution
         run: python -m pip install --force-reinstall dist/*.tar.gz
       - name: Smoke installed source distribution outside checkout
@@ -257,7 +271,9 @@ jobs:
 
   attest:
     name: Attest release artifacts
-    if: startsWith(github.ref, 'refs/tags/')
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && inputs.repair_pypi)
     runs-on: ubuntu-latest
     needs: assemble
     permissions:
@@ -338,7 +354,9 @@ jobs:
 
   publish-pypi:
     name: Publish Python distribution
-    if: startsWith(github.ref, 'refs/tags/')
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && inputs.repair_pypi)
     runs-on: ubuntu-latest
     needs: [metadata, python-wheels, python-sdist]
     environment:
@@ -353,6 +371,8 @@ jobs:
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          skip-existing: ${{ github.event_name == 'workflow_dispatch' && inputs.repair_pypi }}
 
   github-release:
     name: Create GitHub Release
