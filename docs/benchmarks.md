@@ -246,6 +246,8 @@ python scripts/benchmark_campaign.py render \
 
 The weekly workflow uploads bundles under an artifact name containing both the profile and source SHA. Selected stable runs may be committed under `benchmarks/results/pari-scale-v1/<sha>/<profile>/`; later runs add evidence instead of rewriting previous measurements.
 
+The current selected 100K and 1M results, bottleneck summary, and decision gates are published in [benchmark evidence](benchmark-evidence.md).
+
 ## Profiling CPU, allocations, and I/O
 
 Build the profiled binary once, then collect profiles on a dedicated Linux host. Keep the generated profiler files beside the bundle and state whether caches were warm or cold.

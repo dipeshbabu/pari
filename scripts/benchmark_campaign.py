@@ -878,10 +878,27 @@ def maximum_available(*values: float | None) -> float | None:
     return max(available) if available else None
 
 
+def format_duration_ms(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if value >= 1_000.0:
+        return f"{value / 1_000.0:.2f}s"
+    return f"{value:.3f}ms"
+
+
+def format_gib(value: float | None) -> str:
+    return "n/a" if value is None else f"{value / (1024**3):.2f} GiB"
+
+
 def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: bool) -> None:
     rows: list[str] = []
     evidence: list[str] = []
     text_rows: list[str] = []
+    largest: tuple[
+        dict[str, Any],
+        dict[str, Any] | None,
+        dict[str, Any] | None,
+    ] | None = None
     for bundle_path in bundle_paths:
         bundle_path = bundle_path.resolve()
         bundle = validate_bundle(bundle_path, require_clean=require_clean)
@@ -890,6 +907,8 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
         storage = report_for_stage(bundle_path, bundle, "storage")
         text_reference = report_for_stage(bundle_path, bundle, "text-reference")
         text_audit = report_for_stage(bundle_path, bundle, "text-audit")
+        if largest is None or profile["items"] > largest[0]["profile"]["items"]:
+            largest = (bundle, synthetic, storage)
         relative = Path(os.path.relpath(bundle_path, output.parent)).as_posix()
         peak_rss = maximum_available(
             optional_metric(synthetic, "memory.signature_peak_rss_bytes"),
@@ -960,6 +979,54 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
                 *text_rows,
                 "",
                 "The deterministic reference workload plants exact cross-corpus matches and runs exact shingle verification. Corpus generation is excluded from timed phases and its hashes are stored in each bundle.",
+                "",
+            ]
+        )
+    if largest is not None:
+        largest_bundle, synthetic, storage = largest
+        profile = largest_bundle["profile"]
+        signature_ms = optional_metric(synthetic, "signature.elapsed_ms")
+        index_ms = optional_metric(synthetic, "index.build_elapsed_ms")
+        grouping_ms_values = [
+            optional_metric(synthetic, "grouping.index_elapsed_ms"),
+            optional_metric(synthetic, "grouping.stream_elapsed_ms"),
+        ]
+        grouping_ms = (
+            None
+            if all(value is None for value in grouping_ms_values)
+            else sum(value or 0.0 for value in grouping_ms_values)
+        )
+        query_ms_values = [
+            optional_metric(synthetic, "query.scalar_elapsed_ms"),
+            optional_metric(synthetic, "query.batch_elapsed_ms"),
+        ]
+        query_ms = (
+            None
+            if all(value is None for value in query_ms_values)
+            else sum(value or 0.0 for value in query_ms_values)
+        )
+        ground_truth_ms = optional_metric(
+            synthetic, "candidate.ground_truth_elapsed_ms"
+        )
+        synthetic_peak = maximum_available(
+            optional_metric(synthetic, "memory.signature_peak_rss_bytes"),
+            optional_metric(synthetic, "memory.index_build_peak_rss_bytes"),
+        )
+        persistent_peak = optional_metric(
+            storage, "storage.persistent.build.peak_rss_bytes"
+        )
+        builder_peak = optional_metric(storage, "storage.builder.peak_rss_bytes")
+        lines.extend(
+            [
+                "## Bottleneck evidence and decision gates",
+                "",
+                f"The largest validated profile is `{profile['name']}` at {profile['items']:,} synthetic items. Its measured Pari product phases were signature construction {format_duration_ms(signature_ms)}, in-memory index build {format_duration_ms(index_ms)}, grouping {format_duration_ms(grouping_ms)}, and scalar plus batch query {format_duration_ms(query_ms)}. Exact ground-truth scanning took {format_duration_ms(ground_truth_ms)} but is harness-only work and is excluded from product bottleneck decisions.",
+                "",
+                f"Persistent construction took {format_duration_ms(optional_metric(storage, 'storage.persistent.build_elapsed_ms'))}; bounded external construction took {format_duration_ms(optional_metric(storage, 'storage.builder.build_elapsed_ms'))}; lazy reopen took {format_duration_ms(optional_metric(storage, 'storage.lazy.reopen_ms'))}. Peak RSS was {format_gib(synthetic_peak)} for the synthetic process, {format_gib(persistent_peak)} during persistent construction, and {format_gib(builder_peak)} during external construction. The external builder held at most {format_number(optional_metric(storage, 'storage.builder.peak_buffered_records'), digits=0)} records and produced {format_number(optional_metric(storage, 'storage.lazy.bytes_per_item'))} bytes/item.",
+                "",
+                "- **Issue #48: defer implementation pending call-stack profiles.** Signature construction is the first CPU target; query parallelism would optimize a negligible phase in this workload. Capture the documented flamegraph and allocation profile on a dedicated Linux host before changing execution policy.",
+                "- **Issue #69: defer sharding implementation.** The 1M profile fits one process, while external construction is I/O-dominant. Run `scale-10m` on dedicated local scratch before using this WSL-backed result to choose a shard crossover point.",
+                "- **GPU work: defer.** The measured end-to-end storage path is I/O-bound, and no profile yet shows a GPU-suitable kernel dominating the real text workload.",
                 "",
             ]
         )

@@ -194,6 +194,7 @@ class ValidationTests(unittest.TestCase):
             campaign.render_report([bundle_path], output, require_clean=True)
             rendered = output.read_text(encoding="utf-8")
             self.assertIn("Benchmark evidence", rendered)
+            self.assertIn("Bottleneck evidence and decision gates", rendered)
             self.assertIn("smoke", rendered)
             self.assertIn(GIT_SHA[:12], rendered)
 
