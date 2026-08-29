@@ -217,6 +217,25 @@ impl PyMinHash {
         result.map(|inner| Self { inner }).map_err(binding_error)
     }
 
+    /// Construct a batch of sketches after copying all Python feature buffers.
+    #[staticmethod]
+    #[pyo3(signature = (rows, *, num_perm = 128, seed = 1))]
+    fn from_batch(
+        py: Python<'_>,
+        rows: &Bound<'_, PyAny>,
+        num_perm: usize,
+        seed: u64,
+    ) -> PyResult<Vec<Py<Self>>> {
+        let rows = collect_feature_rows(py, rows)?;
+        let sketches = py
+            .detach(move || build_sketches(rows, num_perm, seed))
+            .map_err(binding_error)?;
+        sketches
+            .into_iter()
+            .map(|inner| Py::new(py, Self { inner }))
+            .collect()
+    }
+
     /// Update from one bytes or byte-buffer value.
     fn update(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<()> {
         if let Ok(bytes) = value.cast::<PyBytes>() {

@@ -42,6 +42,15 @@ class MinHashTests(unittest.TestCase):
         second.update_many(values)
         self.assertEqual(first.signature, second.signature)
 
+    def test_from_batch_matches_scalar_construction(self) -> None:
+        rows = [[b"alpha", b"beta"], [b"gamma"], []]
+        batch = MinHash.from_batch(rows, num_perm=32, seed=11)
+        scalar = [MinHash.from_values(row, num_perm=32, seed=11) for row in rows]
+        self.assertEqual(
+            [sketch.signature for sketch in batch],
+            [sketch.signature for sketch in scalar],
+        )
+
     def test_clear_and_merge(self) -> None:
         left = MinHash.from_values([b"a", b"b"], num_perm=32, seed=1)
         right = MinHash.from_values([b"b", b"c"], num_perm=32, seed=1)

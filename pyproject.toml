@@ -41,4 +41,6 @@ strip = true
 include = [
   { path = "LICENSE", format = "sdist" },
   { path = "NOTICE", format = "sdist" },
+  { path = "docs/text-workloads.md", format = "sdist" },
+  { path = "examples/text_workload.py", format = "sdist" },
 ]

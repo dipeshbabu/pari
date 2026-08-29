@@ -95,6 +95,16 @@ with DedupeIndex(features, batch_size=2048) as index:
 
 Feature extraction runs in Python. Each batch's byte buffers are copied into Rust-owned memory before CPU-heavy MinHash construction, insertion, and grouping run outside the GIL. The native grouping path unions LSH buckets directly and does not materialize all candidate pairs.
 
+Streaming integrations that should discard large source payloads immediately can retain a lightweight record reference and provide precomputed features separately:
+
+```python
+with DedupeIndex(None, batch_size=2048) as index:
+    index.add_many_features((record_ref, shingles) for record_ref, shingles in rows)
+    result = index.result()
+```
+
+`candidate_groups()` exposes the unverified LSH components for measurement while `groups()` and `result()` apply the configured exact verifier. Batch signature consumers can use `MinHash.from_batch(feature_rows, num_perm=..., seed=...)`; all Python buffers are copied before the batch computation detaches from the GIL.
+
 The default `memory` backend is fastest for one-shot jobs. To mirror the same native batches into a crash-safe local index, supply a new path:
 
 ```python
