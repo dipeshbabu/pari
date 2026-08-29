@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "campaign_id": "pari-scale-v1",
+  "workload": {
+    "generator": "deterministic-u64-sets-v1",
+    "semantics": "Each synthetic query retains 29 of 32 source features and replaces three, producing exact Jaccard similarity 29/35 just above the 0.8 target threshold.",
+    "cache_policy": "Dataset generation, signature construction, index construction, and the first query pass are included. Filesystem cache state is not reset between persistent build and reopen.",
+    "correctness": "Exact Jaccard ground truth is evaluated for every configured query; scalar and batch candidates must match; persistent and lazy candidates must match the in-memory index."
+  },
+  "profiles": {
+    "smoke": {
+      "description": "Fast correctness and bundle-validation profile for local development and CI.",
+      "items": 256,
+      "queries": 16,
+      "set_size": 32,
+      "overlap": 29,
+      "threshold": 0.8,
+      "num_perm": 128,
+      "seed": 7,
+      "storage": true,
+      "text_reference_items": 64,
+      "text_query_items": 16,
+      "manual_only": false,
+      "minimum_memory_gib": 1,
+      "timeout_minutes": 10
+    },
+    "scale-100k": {
+      "description": "Standard committed scaling profile and weekly scheduled campaign.",
+      "items": 100000,
+      "queries": 100,
+      "set_size": 32,
+      "overlap": 29,
+      "threshold": 0.8,
+      "num_perm": 128,
+      "seed": 7,
+      "storage": true,
+      "text_reference_items": 10000,
+      "text_query_items": 1000,
+      "manual_only": false,
+      "minimum_memory_gib": 4,
+      "timeout_minutes": 45
+    },
+    "scale-1m": {
+      "description": "Dedicated-runner profile for the one-million-item scaling envelope.",
+      "items": 1000000,
+      "queries": 100,
+      "set_size": 32,
+      "overlap": 29,
+      "threshold": 0.8,
+      "num_perm": 128,
+      "seed": 7,
+      "storage": true,
+      "text_reference_items": 100000,
+      "text_query_items": 10000,
+      "manual_only": true,
+      "minimum_memory_gib": 16,
+      "timeout_minutes": 180
+    },
+    "scale-10m": {
+      "description": "Manual dedicated-host profile; run only after the 1M preflight confirms memory and disk headroom.",
+      "items": 10000000,
+      "queries": 100,
+      "set_size": 32,
+      "overlap": 29,
+      "threshold": 0.8,
+      "num_perm": 128,
+      "seed": 7,
+      "storage": true,
+      "text_reference_items": 1000000,
+      "text_query_items": 100000,
+      "manual_only": true,
+      "minimum_memory_gib": 128,
+      "timeout_minutes": 720
+    },
+    "scale-100m-methodology": {
+      "description": "Planning profile only. Extrapolate measured 10M memory and persistent bytes/item before approving a 100M single-index run.",
+      "items": 100000000,
+      "queries": 100,
+      "set_size": 32,
+      "overlap": 29,
+      "threshold": 0.8,
+      "num_perm": 128,
+      "seed": 7,
+      "storage": true,
+      "text_reference_items": 10000000,
+      "text_query_items": 1000000,
+      "manual_only": true,
+      "methodology_only": true,
+      "minimum_memory_gib": 512,
+      "timeout_minutes": 2880
+    }
+  }
+}

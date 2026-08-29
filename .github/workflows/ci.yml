@@ -46,6 +46,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo test --workspace --all-targets --all-features
       - run: cargo test --manifest-path benchmarks/criterion/Cargo.toml --all-targets
+      - run: python -m unittest scripts.tests.test_benchmark_campaign -v
 
   storage-layout-smoke:
     name: Storage layout smoke
