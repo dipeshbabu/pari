@@ -13,6 +13,7 @@ env:
   PARI_REDIS_URL: "redis://127.0.0.1:6379/"
   PARI_REDIS_BENCH_ITEMS: "1000"
   PARI_REDIS_BENCH_QUERIES: "100"
+  PARI_REDIS_BENCH_OUTPUT: "redis-backend-benchmark.json"
 
 jobs:
   redis-backend:
@@ -36,10 +37,9 @@ jobs:
       - name: Run Redis backend tests
         run: cargo test -p pari-backend --features redis --all-targets
       - name: Run Redis batch benchmark smoke
-        run: |
-          cargo run --release -p pari-backend --example redis_bench --features redis \
-            > redis-backend-benchmark.json
-          cat redis-backend-benchmark.json
+        run: cargo run --release -p pari-backend --example redis_bench --features redis
+      - name: Show Redis benchmark report
+        run: cat redis-backend-benchmark.json
       - uses: actions/upload-artifact@v4
         with:
           name: redis-backend-benchmark

@@ -248,6 +248,11 @@ pub fn run_storage_benchmark(config: &BenchmarkConfig) -> Result<BenchmarkReport
         query_signatures.len(),
         scalar_elapsed,
     );
+    insert_elapsed(
+        &mut report,
+        "storage.lazy.scalar_elapsed_ms",
+        scalar_elapsed,
+    );
     insert_latency_percentiles(&mut report, "storage.lazy.scalar", &scalar_latencies);
     insert_storage_rss(
         &mut report,
@@ -269,6 +274,7 @@ pub fn run_storage_benchmark(config: &BenchmarkConfig) -> Result<BenchmarkReport
         query_signatures.len(),
         batch_elapsed,
     );
+    insert_elapsed(&mut report, "storage.lazy.batch_elapsed_ms", batch_elapsed);
     report.insert_metric(
         "storage.candidate_parity",
         Metric::new(1.0, "ratio", MetricDirection::Neutral),

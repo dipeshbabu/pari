@@ -112,6 +112,7 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
         query_signatures.len(),
         scalar_elapsed,
     );
+    insert_elapsed(&mut report, "query.scalar_elapsed_ms", scalar_elapsed);
     insert_latency_percentiles(&mut report, &scalar_latencies);
 
     let batch_started = Instant::now();
@@ -123,9 +124,14 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
         query_signatures.len(),
         batch_elapsed,
     );
+    insert_elapsed(&mut report, "query.batch_elapsed_ms", batch_elapsed);
     if batch_results != scalar_results {
         return Err("scalar and batch query results diverged".into());
     }
+    report.insert_metric(
+        "query.scalar_batch_parity",
+        Metric::new(1.0, "ratio", MetricDirection::Neutral),
+    );
 
     let correctness_started = Instant::now();
     let correctness = candidate_correctness(&corpus, &queries, &scalar_results, config.threshold);
@@ -145,6 +151,14 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
             "items",
             MetricDirection::Lower,
         ),
+    );
+    report.insert_metric(
+        "candidate.rate",
+        Metric::new(correctness.rate, "ratio", MetricDirection::Lower),
+    );
+    report.insert_metric(
+        "candidate.reduction",
+        Metric::new(1.0 - correctness.rate, "ratio", MetricDirection::Higher),
     );
     report.insert_metric(
         "candidate.exact_matches",
@@ -193,6 +207,7 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
         index.len(),
         grouping_elapsed,
     );
+    insert_elapsed(&mut report, "grouping.index_elapsed_ms", grouping_elapsed);
     report.insert_metric(
         "grouping.index_group_count",
         Metric::new(groups.len() as f64, "groups", MetricDirection::Neutral),
@@ -212,6 +227,11 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
         &mut report,
         "grouping.stream_edges_per_second",
         edge_count,
+        pair_grouping_elapsed,
+    );
+    insert_elapsed(
+        &mut report,
+        "grouping.stream_elapsed_ms",
         pair_grouping_elapsed,
     );
     report.insert_metric(
@@ -338,6 +358,7 @@ struct CandidateCorrectness {
     recall: f64,
     precision: f64,
     average_candidates: f64,
+    rate: f64,
     exact_matches: usize,
 }
 
@@ -381,6 +402,7 @@ fn candidate_correctness(
         recall: ratio(found_exact, exact_matches),
         precision: ratio(exact_candidates, total_candidates),
         average_candidates: ratio(total_candidates, queries.len()),
+        rate: ratio(total_candidates, queries.len().saturating_mul(corpus.len())),
         exact_matches,
     }
 }
@@ -544,10 +566,13 @@ mod tests {
 
     #[test]
     fn dataset_parser_sorts_deduplicates_and_limits() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "pari-bench-dataset-{}-{}.txt",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            "pari-bench-dataset-{}-{nonce}.txt",
+            std::process::id()
         ));
         std::fs::write(&path, "3 1 1 2\n\n9 8\n7 6\n").expect("write fixture");
         let rows = load_set_dataset(&path, 2).expect("parse dataset");

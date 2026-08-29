@@ -995,6 +995,7 @@ fn temporary_path(path: &Path) -> Result<PathBuf, StoreError> {
     Ok(path.with_file_name(temporary_name))
 }
 
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
     #[cfg(windows)]
     {

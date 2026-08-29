@@ -2,6 +2,31 @@ name: Benchmarks
 
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Named scale profile
+        required: true
+        default: scale-100k
+        type: choice
+        options:
+          - smoke
+          - scale-100k
+          - scale-1m
+      include_text:
+        description: Run the reference text build and cross-corpus audit
+        required: true
+        default: true
+        type: boolean
+      include_datasketch:
+        description: Run the semantically overlapping Datasketch baseline
+        required: true
+        default: false
+        type: boolean
+      include_redis:
+        description: Run the Redis backend stage
+        required: true
+        default: false
+        type: boolean
   schedule:
     - cron: "17 6 * * 1"
 
@@ -10,31 +35,59 @@ permissions:
 
 env:
   RUST_TOOLCHAIN: "1.97.1"
+  MATURIN_VERSION: "1.14.1"
 
 jobs:
   benchmark:
-    name: Release benchmarks
+    name: Scale campaign
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 180
     env:
+      BENCHMARK_PROFILE: ${{ github.event_name == 'schedule' && 'scale-100k' || inputs.profile }}
+      INCLUDE_DATASKETCH: ${{ inputs.include_datasketch || false }}
+      INCLUDE_REDIS: ${{ inputs.include_redis || false }}
+      INCLUDE_TEXT: ${{ github.event_name == 'schedule' || inputs.include_text }}
       PARI_GIT_SHA: ${{ github.sha }}
+      PARI_REDIS_URL: redis://127.0.0.1:6379/
+    services:
+      redis:
+        image: redis:7.4.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - name: End-to-end benchmark
+      - name: Install reference workload package
+        if: ${{ env.INCLUDE_TEXT == 'true' }}
         run: |
-          cargo run --release -p pari-bench -- run \
-            --items 10000 \
-            --queries 100 \
-            --output benchmark-results.json
-      - name: Persistent storage benchmark
+          python -m pip install "maturin==${MATURIN_VERSION}"
+          maturin build --release --out dist
+          python python/tests/install_wheel.py dist
+      - name: Install Datasketch baseline
+        if: ${{ env.INCLUDE_DATASKETCH == 'true' }}
+        run: python -m pip install "datasketch==2.0.0"
+      - name: Run validated scale campaign
         run: |
-          cargo run --release -p pari-bench -- storage \
-            --items 10000 \
-            --queries 100 \
-            --output storage-results.json
+          arguments=(run "$BENCHMARK_PROFILE" --output "benchmark-artifacts/$BENCHMARK_PROFILE")
+          if [[ "$INCLUDE_TEXT" == "true" ]]; then arguments+=(--include-text); fi
+          if [[ "$INCLUDE_DATASKETCH" == "true" ]]; then arguments+=(--include-datasketch); fi
+          if [[ "$INCLUDE_REDIS" == "true" ]]; then arguments+=(--include-redis); fi
+          python scripts/benchmark_campaign.py "${arguments[@]}"
+      - name: Render public evidence table
+        run: >-
+          python scripts/benchmark_campaign.py render
+          "benchmark-artifacts/$BENCHMARK_PROFILE/bundle.json"
+          --output "benchmark-artifacts/$BENCHMARK_PROFILE/report.md"
       - name: Storage layout shootout
         run: |
           cargo run --release \
@@ -46,10 +99,9 @@ jobs:
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pari-benchmarks-${{ github.sha }}
+          name: pari-${{ env.BENCHMARK_PROFILE }}-${{ github.sha }}
           if-no-files-found: error
           path: |
-            benchmark-results.json
-            storage-results.json
+            benchmark-artifacts
             storage-layout-results.json
             benchmarks/criterion/target/criterion

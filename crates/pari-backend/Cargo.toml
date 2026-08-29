@@ -18,6 +18,9 @@ pari-format = { path = "../pari-format" }
 pari-index = { path = "../pari-index" }
 redis = { version = "=0.32.7", optional = true, default-features = false }
 
+[dev-dependencies]
+pari-bench = { path = "../pari-bench" }
+
 [[example]]
 name = "redis_bench"
 required-features = ["redis"]
