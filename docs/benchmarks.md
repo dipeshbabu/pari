@@ -167,3 +167,7 @@ Scheduled results are review evidence, not a merge gate. Correctness, candidate 
 ## Text deduplication and contamination workloads
 
 The [text workload guide](text-workloads.md) provides streaming JSONL commands for corpus deduplication, reusable persistent reference indexes, and non-mutating cross-corpus audits. Each command emits a versioned machine-readable report with throughput, RSS where supported, index/output size, candidate reduction, and duplicate or overlap measurements suitable for the larger campaigns in issue #47.
+
+## Datasketch migration benchmark
+
+`benchmarks/datasketch_interop.py` measures an exact affine32 migration only after checking value-for-value signature parity and converted self-query recall. It reports Datasketch and Pari signature throughput, adapter import throughput, Pari build/query throughput, and index size. It intentionally does not compare LSH candidate sets because banding, bucket hashing, persistence, and execution models can differ. See the [compatibility matrix and migration guide](datasketch-v2.md).

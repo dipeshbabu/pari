@@ -28,6 +28,9 @@ classifiers = [
   "Typing :: Typed",
 ]
 
+[project.optional-dependencies]
+datasketch = ["datasketch>=2,<3"]
+
 [project.urls]
 Repository = "https://github.com/dipeshbabu/pari"
 Issues = "https://github.com/dipeshbabu/pari/issues"
@@ -41,6 +44,9 @@ strip = true
 include = [
   { path = "LICENSE", format = "sdist" },
   { path = "NOTICE", format = "sdist" },
+  { path = "benchmarks/datasketch_interop.py", format = "sdist" },
+  { path = "docs/datasketch-v2.md", format = "sdist" },
   { path = "docs/text-workloads.md", format = "sdist" },
   { path = "examples/text_workload.py", format = "sdist" },
+  { path = "scripts/generate_datasketch_v2_golden.py", format = "sdist" },
 ]

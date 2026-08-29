@@ -5,6 +5,7 @@ ideas are derived from or informed by the MIT-licensed `datasketch` project:
 
 - Upstream: https://github.com/ekzhu/datasketch
 - Reference commit at project bootstrap: `ee60290e982be00b6f0a6aea8156e2be4d6921e6`
+- Datasketch 2.0 interoperability fixture: `3da96a591c954952c9dd367567db720cfdc151e0`
 - Upstream copyright: Copyright (c) 2015 ekzhu
 
 The upstream MIT license is reproduced below as required for copied or

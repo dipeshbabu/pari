@@ -56,6 +56,7 @@ Experimental interfaces are usable, tested, and documented, but may change at a 
 
 - `pari_backend::StorageBackend`
 - custom backend extension points
+- optional `pari.datasketch` interoperability adapters
 - Redis namespace layout and descriptor bytes
 - advanced low-level LSH parameter APIs
 - direct use of `pari-store-lazy` and `pari-store-build`

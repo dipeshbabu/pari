@@ -60,3 +60,39 @@ jobs:
         run: python python/tests/install_wheel.py dist
       - name: Test installed package
         run: python -m unittest discover -s python/tests -p "test_*.py" -v
+
+  datasketch-interop:
+    name: Datasketch 2.0 interoperability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install build and optional interoperability dependencies
+        run: >-
+          python -m pip install
+          "maturin==${{ env.MATURIN_VERSION }}"
+          "datasketch==2.0.0"
+      - name: Build wheel
+        run: maturin build --release --out dist
+      - name: Install built wheel
+        run: python python/tests/install_wheel.py dist
+      - name: Run cross-implementation golden tests
+        run: python -m unittest python.tests.test_datasketch_interop -v
+      - name: Run semantics-first migration benchmark smoke test
+        run: >-
+          python benchmarks/datasketch_interop.py
+          --items 64
+          --queries 8
+          --set-size 20
+          --num-perm 64
+          --output datasketch-interop.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: datasketch-interop-smoke
+          path: datasketch-interop.json
+          if-no-files-found: error
