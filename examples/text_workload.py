@@ -294,6 +294,7 @@ def dedupe_command(args: argparse.Namespace) -> None:
         num_perm=args.num_perm,
         seed=args.seed,
         batch_size=args.batch_size,
+        threads=args.threads,
         path=args.index,
         backend="local" if args.index is not None else "memory",
         exact=exact if args.exact else None,
@@ -428,12 +429,14 @@ def build_reference_command(args: argparse.Namespace) -> None:
             batch.append((reference, text_shingles(text, args.shingle_size)))
             if len(batch) == args.batch_size:
                 insert_reference_batch(
-                    index, connection, batch, args.num_perm, args.seed
+                    index, connection, batch, args.num_perm, args.seed, args.threads
                 )
                 item_count += len(batch)
                 batch.clear()
         if batch:
-            insert_reference_batch(index, connection, batch, args.num_perm, args.seed)
+            insert_reference_batch(
+                index, connection, batch, args.num_perm, args.seed, args.threads
+            )
             item_count += len(batch)
         connection.commit()
         index.sync()
@@ -512,9 +515,13 @@ def insert_reference_batch(
     batch: Sequence[tuple[DocumentRef, list[bytes]]],
     num_perm: int,
     seed: int,
+    threads: int | None,
 ) -> None:
     sketches = MinHash.from_batch(
-        [features for _reference, features in batch], num_perm=num_perm, seed=seed
+        [features for _reference, features in batch],
+        num_perm=num_perm,
+        seed=seed,
+        threads=threads,
     )
     index.add_many(
         [
@@ -682,6 +689,7 @@ def audit_batch(
         [features for _query, features in batch],
         num_perm=config["num_perm"],
         seed=config["seed"],
+        threads=args.threads,
     )
     candidate_rows = index.search_many(sketches)
     candidate_count = sum(len(candidates) for candidates in candidate_rows)
@@ -779,6 +787,7 @@ def workload_config(args: argparse.Namespace, input_path: Path) -> dict[str, Any
         "shingle_size": getattr(args, "shingle_size", None),
         "text_field": args.text_field,
         "threshold": getattr(args, "threshold", None),
+        "threads": args.threads,
     }
 
 
@@ -801,6 +810,7 @@ def add_document_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--text-field", default="text")
     parser.add_argument("--id-field", default="id")
     parser.add_argument("--batch-size", type=positive, default=1024)
+    parser.add_argument("--threads", type=positive)
     parser.add_argument("--limit", type=positive)
 
 

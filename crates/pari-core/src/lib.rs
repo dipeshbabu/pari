@@ -9,7 +9,10 @@ mod hash;
 mod minhash;
 
 pub use hash::{sha1_hash32, sha1_hash64};
-pub use minhash::{MinHash32, MinHash64, MinHashError, AFFINE32_SCHEME, AFFINE64_SCHEME};
+pub use minhash::{
+    BatchThreads, MinHash32, MinHash64, MinHashError, AFFINE32_SCHEME, AFFINE64_SCHEME,
+    AUTO_BATCH_MAX_THREADS, PARALLEL_BATCH_MIN_ROWS,
+};
 
 /// Human-readable engine name.
 pub const ENGINE_NAME: &str = "Pari";

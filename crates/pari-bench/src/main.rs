@@ -59,6 +59,7 @@ fn parse_benchmark_options(
         threshold: 0.8,
         num_perm: 128,
         seed: 7,
+        threads: None,
         dataset: None,
     };
     let mut output = PathBuf::from(default_output);
@@ -75,6 +76,7 @@ fn parse_benchmark_options(
             "--threshold" => config.threshold = parse_value(arguments, &mut index, flag)?,
             "--num-perm" => config.num_perm = parse_value(arguments, &mut index, flag)?,
             "--seed" => config.seed = parse_value(arguments, &mut index, flag)?,
+            "--threads" => config.threads = Some(parse_value(arguments, &mut index, flag)?),
             "--dataset" => config.dataset = Some(next_string(arguments, &mut index, flag)?),
             "--output" => output = PathBuf::from(next_string(arguments, &mut index, flag)?),
             other => return Err(format!("unknown benchmark option {other:?}").into()),
@@ -182,7 +184,7 @@ fn print_storage_help() {
 
 fn print_benchmark_help(command: &str, output: &str) {
     println!(
-        "Usage: pari-bench {command} [OPTIONS]\n\nOptions:\n  --items N          corpus items or real-dataset row limit (default 5000)\n  --queries N        query count (default 100)\n  --set-size N       synthetic features per item (default 100)\n  --overlap N        source features retained per query (default 90)\n  --threshold X      LSH target threshold (default 0.8)\n  --num-perm N       MinHash permutations (default 128)\n  --seed N           deterministic seed (default 7)\n  --dataset PATH     whitespace-separated integer-set dataset\n  --output PATH      report JSON (default {output})"
+        "Usage: pari-bench {command} [OPTIONS]\n\nOptions:\n  --items N          corpus items or real-dataset row limit (default 5000)\n  --queries N        query count (default 100)\n  --set-size N       synthetic features per item (default 100)\n  --overlap N        source features retained per query (default 90)\n  --threshold X      LSH target threshold (default 0.8)\n  --num-perm N       MinHash permutations (default 128)\n  --seed N           deterministic seed (default 7)\n  --threads N        maximum signature threads; 1 selects scalar execution\n  --dataset PATH     whitespace-separated integer-set dataset\n  --output PATH      report JSON (default {output})"
     );
 }
 

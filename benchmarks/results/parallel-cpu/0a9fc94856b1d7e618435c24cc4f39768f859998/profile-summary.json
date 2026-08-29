@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "workload": "parallel-signature-profile-v1",
+  "git_sha": "0a9fc94856b1d7e618435c24cc4f39768f859998",
+  "environment": {
+    "architecture": "x86_64",
+    "logical_cpus": 12,
+    "operating_system": "Linux 5.15.167.4-microsoft-standard-WSL2",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "config": {
+    "items": 100000,
+    "queries": 1,
+    "set_size": 32,
+    "overlap": 29,
+    "threshold": 0.8,
+    "num_perm": 128,
+    "seed": 7
+  },
+  "cpu_profile": {
+    "tool": "perf 6.8.12",
+    "command": "perf record -F 999 --call-graph dwarf -- pari-bench run --items 100000 --queries 1 --set-size 32 --overlap 29 --threshold 0.8 --num-perm 128 --seed 7",
+    "event": "cycles:P",
+    "event_count": 7217575629,
+    "samples": 2595,
+    "lost_samples": 0,
+    "top_self_time": {
+      "symbol": "pari_core::minhash::MinHash32::update",
+      "percent": 35.57,
+      "call_path": "pari_bench::workload::build_signature -> MinHash32::update -> update_hashed"
+    },
+    "phase_metrics": {
+      "signature_elapsed_ms": 1498.532882,
+      "index_build_elapsed_ms": 298.741847,
+      "grouping_elapsed_ms": 112.138364,
+      "query_elapsed_ms": 0.007296,
+      "ground_truth_elapsed_ms": 30.905037
+    }
+  },
+  "allocation_profile": {
+    "tool": "heaptrack 1.5.0",
+    "command": "heaptrack pari-bench run --items 100000 --queries 1 --set-size 32 --overlap 29 --threshold 0.8 --num-perm 128 --seed 7",
+    "runtime_seconds": 6.97,
+    "allocation_calls": 1513879,
+    "temporary_allocations": 3011,
+    "peak_heap_display": "277.99M",
+    "peak_rss_with_profiler_display": "312.35M",
+    "leaked_bytes": 896,
+    "signature_call_stack": {
+      "allocation_calls": 300003,
+      "peak_heap_display": "153.60M",
+      "minhash_new_signature_allocations": 99999,
+      "minhash_new_signature_bytes_display": "51.20M",
+      "cause": "each sketch owned one signature, one multiplier, and one offset allocation"
+    }
+  },
+  "decision": {
+    "selected_target": "ordered batch MinHash32 signature construction",
+    "excluded_targets": [
+      "index mutation",
+      "query execution",
+      "grouping"
+    ],
+    "reason": "signature construction dominates sampled CPU time and repeats immutable permutation allocations; query work is negligible"
+  }
+}

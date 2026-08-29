@@ -76,6 +76,8 @@ class TextDeduplicationWorkloadTests(unittest.TestCase):
                         "7",
                         "--batch-size",
                         "2",
+                        "--threads",
+                        "2",
                     ]
                 ),
                 0,
@@ -97,6 +99,7 @@ class TextDeduplicationWorkloadTests(unittest.TestCase):
             report = json.loads(metrics.read_text(encoding="utf-8"))
             self.assertEqual(report["schema_version"], 1)
             self.assertEqual(report["workload"], "text-deduplication")
+            self.assertEqual(report["config"]["threads"], 2)
             self.assertEqual(report["metrics"]["input_items"]["value"], 3)
             self.assertEqual(report["metrics"]["duplicate_count"]["value"], 1)
             self.assertGreaterEqual(

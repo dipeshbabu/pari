@@ -1,4 +1,12 @@
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    num::NonZeroUsize,
+    sync::{Arc, Mutex, OnceLock},
+    thread,
+};
+
+use rayon::prelude::*;
 
 use crate::hash::{sha1_hash32, sha1_hash64};
 
@@ -6,6 +14,49 @@ use crate::hash::{sha1_hash32, sha1_hash64};
 pub const AFFINE32_SCHEME: &str = "pari-affine32-v1";
 /// Stable identifier for Pari's 64-bit affine `MinHash` scheme.
 pub const AFFINE64_SCHEME: &str = "pari-affine64-v1";
+
+/// Small batches stay sequential to avoid initializing or scheduling a thread pool.
+pub const PARALLEL_BATCH_MIN_ROWS: usize = 256;
+/// Automatic batch construction uses at most this many worker tasks.
+pub const AUTO_BATCH_MAX_THREADS: usize = 8;
+
+type CachedBatchPool = Option<(usize, Arc<rayon::ThreadPool>)>;
+static BATCH_POOL: OnceLock<Mutex<CachedBatchPool>> = OnceLock::new();
+
+/// Maximum CPU parallelism for ordered batch signature construction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BatchThreads {
+    /// Use the process-visible CPU limit for sufficiently large batches.
+    #[default]
+    Auto,
+    /// Always use the scalar batch path.
+    Sequential,
+    /// Use at most this many process-visible CPUs.
+    Max(NonZeroUsize),
+}
+
+impl BatchThreads {
+    /// Construct an explicit positive thread limit.
+    #[must_use]
+    pub const fn max(threads: NonZeroUsize) -> Self {
+        Self::Max(threads)
+    }
+
+    /// Resolve the maximum worker count for one batch.
+    #[must_use]
+    pub fn effective_threads(self, rows: usize) -> usize {
+        if rows < PARALLEL_BATCH_MIN_ROWS || matches!(self, Self::Sequential) {
+            return 1;
+        }
+        let available = thread::available_parallelism().map_or(1, NonZeroUsize::get);
+        let requested = match self {
+            Self::Auto => available.min(AUTO_BATCH_MAX_THREADS),
+            Self::Sequential => 1,
+            Self::Max(threads) => threads.get(),
+        };
+        requested.min(available).min(rows).max(1)
+    }
+}
 
 /// Errors returned by `MinHash` construction and compatibility checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +69,8 @@ pub enum MinHashError {
     IncompatibleSeed { left: u64, right: u64 },
     /// Two sketches contain different numbers of permutations.
     IncompatiblePermutationCount { left: usize, right: usize },
+    /// The bounded batch worker pool could not be initialized or reused.
+    BatchPoolUnavailable { message: String },
 }
 
 impl fmt::Display for MinHashError {
@@ -35,6 +88,12 @@ impl fmt::Display for MinHashError {
                 formatter,
                 "incompatible MinHash permutation counts: {left} != {right}"
             ),
+            Self::BatchPoolUnavailable { message } => {
+                write!(
+                    formatter,
+                    "MinHash batch worker pool is unavailable: {message}"
+                )
+            }
         }
     }
 }
@@ -52,8 +111,8 @@ impl Error for MinHashError {}
 pub struct MinHash32 {
     seed: u64,
     hashvalues: Vec<u32>,
-    multipliers: Vec<u32>,
-    offsets: Vec<u32>,
+    multipliers: Arc<[u32]>,
+    offsets: Arc<[u32]>,
 }
 
 impl MinHash32 {
@@ -75,9 +134,65 @@ impl MinHash32 {
         Ok(Self {
             seed,
             hashvalues: vec![u32::MAX; num_perm],
-            multipliers,
-            offsets,
+            multipliers: multipliers.into(),
+            offsets: offsets.into(),
         })
+    }
+
+    /// Construct an ordered batch of sketches from byte-like feature rows.
+    ///
+    /// Permutation arrays are built once and shared by every returned sketch.
+    /// `threads` is capped by [`std::thread::available_parallelism`], and batches
+    /// smaller than [`PARALLEL_BATCH_MIN_ROWS`] stay sequential.
+    pub fn from_batch<R, T>(
+        rows: &[R],
+        num_perm: usize,
+        seed: u64,
+        threads: BatchThreads,
+    ) -> Result<Vec<Self>, MinHashError>
+    where
+        R: AsRef<[T]> + Sync,
+        T: AsRef<[u8]> + Sync,
+    {
+        Self::from_batch_with(rows, num_perm, seed, threads, |sketch, row| {
+            sketch.update_many(row.as_ref());
+        })
+    }
+
+    /// Construct an ordered batch using a caller-supplied row update function.
+    ///
+    /// This avoids temporary feature conversion for structured Rust workloads
+    /// while retaining the same bounded thread policy as [`Self::from_batch`].
+    pub fn from_batch_with<R, F>(
+        rows: &[R],
+        num_perm: usize,
+        seed: u64,
+        threads: BatchThreads,
+        update: F,
+    ) -> Result<Vec<Self>, MinHashError>
+    where
+        R: Sync,
+        F: Fn(&mut Self, &R) + Sync,
+    {
+        let template = Self::new(num_perm, seed)?;
+        let build = |row: &R| {
+            let mut sketch = template.clone();
+            update(&mut sketch, row);
+            sketch
+        };
+        let effective_threads = threads.effective_threads(rows.len());
+        if effective_threads == 1 {
+            return Ok(rows.iter().map(build).collect());
+        }
+
+        let chunk_size = rows.len().div_ceil(effective_threads);
+        let pool = batch_pool(effective_threads)?;
+        let chunks = pool.install(|| {
+            rows.par_chunks(chunk_size)
+                .map(|chunk| chunk.iter().map(&build).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        });
+        Ok(chunks.into_iter().flatten().collect())
     }
 
     /// Reconstruct a sketch from an already computed Pari affine32 signature.
@@ -146,7 +261,7 @@ impl MinHash32 {
     /// Borrow the stable affine multiplier and offset arrays for interoperability.
     #[must_use]
     pub fn permutations(&self) -> (&[u32], &[u32]) {
-        (&self.multipliers, &self.offsets)
+        (self.multipliers.as_ref(), self.offsets.as_ref())
     }
 
     /// Return the deterministic permutation seed.
@@ -172,8 +287,8 @@ impl MinHash32 {
         for ((current, multiplier), offset) in self
             .hashvalues
             .iter_mut()
-            .zip(&self.multipliers)
-            .zip(&self.offsets)
+            .zip(self.multipliers.iter())
+            .zip(self.offsets.iter())
         {
             let permuted = multiplier.wrapping_mul(mixed).wrapping_add(*offset);
             if permuted < *current {
@@ -197,6 +312,30 @@ impl MinHash32 {
         }
         Ok(())
     }
+}
+
+fn batch_pool(threads: usize) -> Result<Arc<rayon::ThreadPool>, MinHashError> {
+    let pool = BATCH_POOL.get_or_init(|| Mutex::new(None));
+    let mut cached = pool
+        .lock()
+        .map_err(|_| MinHashError::BatchPoolUnavailable {
+            message: "worker-pool cache lock is poisoned".into(),
+        })?;
+    if let Some((cached_threads, pool)) = cached.as_ref() {
+        if *cached_threads == threads {
+            return Ok(Arc::clone(pool));
+        }
+    }
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(move |index| format!("pari-minhash-{threads}-{index}"))
+        .build()
+        .map_err(|error| MinHashError::BatchPoolUnavailable {
+            message: error.to_string(),
+        })?;
+    let pool = Arc::new(pool);
+    *cached = Some((threads, Arc::clone(&pool)));
+    Ok(pool)
 }
 
 /// A 64-bit `MinHash` using affine permutations modulo `2^64`.
@@ -404,9 +543,14 @@ fn fmix64(mut value: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::{num::NonZeroUsize, sync::Arc};
+
     use serde::Deserialize;
 
-    use super::{MinHash32, MinHash64, MinHashError, AFFINE32_SCHEME, AFFINE64_SCHEME};
+    use super::{
+        BatchThreads, MinHash32, MinHash64, MinHashError, AFFINE32_SCHEME, AFFINE64_SCHEME,
+        AUTO_BATCH_MAX_THREADS, PARALLEL_BATCH_MIN_ROWS,
+    };
 
     #[derive(Debug, Deserialize)]
     struct DatasketchFixture {
@@ -464,6 +608,84 @@ mod tests {
         let minhash64 = MinHash64::new(8, 42).expect("valid sketch");
         assert_eq!(minhash32.scheme(), AFFINE32_SCHEME);
         assert_eq!(minhash64.scheme(), AFFINE64_SCHEME);
+    }
+
+    #[test]
+    fn ordered_batch_is_deterministic_across_thread_limits() {
+        let rows = (0_u64..512)
+            .map(|row| {
+                (0_u64..32)
+                    .map(|value| {
+                        row.wrapping_mul(1_000_003)
+                            .wrapping_add(value)
+                            .to_le_bytes()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let sequential =
+            MinHash32::from_batch(&rows, 128, 7, BatchThreads::Sequential).expect("batch");
+        for threads in [2, 4, 8] {
+            let parallel = MinHash32::from_batch(
+                &rows,
+                128,
+                7,
+                BatchThreads::max(NonZeroUsize::new(threads).expect("positive threads")),
+            )
+            .expect("parallel batch");
+            assert_eq!(parallel, sequential);
+        }
+        assert!(sequential
+            .windows(2)
+            .all(|window| Arc::ptr_eq(&window[0].multipliers, &window[1].multipliers)));
+        assert!(sequential
+            .windows(2)
+            .all(|window| Arc::ptr_eq(&window[0].offsets, &window[1].offsets)));
+    }
+
+    #[test]
+    fn batch_thread_policy_keeps_small_workloads_scalar_and_caps_large_ones() {
+        assert_eq!(
+            BatchThreads::Auto.effective_threads(PARALLEL_BATCH_MIN_ROWS - 1),
+            1
+        );
+        let available = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+        let requested = BatchThreads::max(NonZeroUsize::new(usize::MAX).expect("positive"));
+        assert_eq!(
+            requested.effective_threads(PARALLEL_BATCH_MIN_ROWS),
+            available.min(PARALLEL_BATCH_MIN_ROWS)
+        );
+        assert_eq!(
+            BatchThreads::Auto.effective_threads(PARALLEL_BATCH_MIN_ROWS),
+            available
+                .min(AUTO_BATCH_MAX_THREADS)
+                .min(PARALLEL_BATCH_MIN_ROWS)
+        );
+    }
+
+    #[test]
+    fn concurrent_batches_with_different_limits_remain_deterministic() {
+        let rows = (0_u64..512)
+            .map(|row| vec![row.to_le_bytes(), row.wrapping_add(1).to_le_bytes()])
+            .collect::<Vec<_>>();
+        let expected =
+            MinHash32::from_batch(&rows, 32, 7, BatchThreads::Sequential).expect("batch");
+        std::thread::scope(|scope| {
+            for threads in [2, 4, 8] {
+                let rows = &rows;
+                let expected = &expected;
+                scope.spawn(move || {
+                    let actual = MinHash32::from_batch(
+                        rows,
+                        32,
+                        7,
+                        BatchThreads::max(NonZeroUsize::new(threads).expect("positive")),
+                    )
+                    .expect("parallel batch");
+                    assert_eq!(&actual, expected);
+                });
+            }
+        });
     }
 
     #[test]

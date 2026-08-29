@@ -8,13 +8,14 @@
 use std::{
     error::Error,
     fs,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     process::Command,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use pari_core::MinHash32;
+use pari_core::{BatchThreads, MinHash32};
 use pari_index::LshIndex32;
 use pari_store::PersistentIndex32;
 use pari_store_build::{build_external, BuildOptions};
@@ -37,14 +38,21 @@ pub fn run_storage_benchmark(config: &BenchmarkConfig) -> Result<BenchmarkReport
         return Err("storage benchmark corpus is empty".into());
     }
     let queries = build_queries(&corpus, config.queries, config.overlap, config.seed);
-    let signatures = corpus
-        .iter()
-        .map(|features| build_signature(features, config.num_perm, config.seed))
-        .collect::<Result<Vec<_>, _>>()?;
-    let query_signatures = queries
-        .iter()
-        .map(|features| build_signature(features, config.num_perm, config.seed))
-        .collect::<Result<Vec<_>, _>>()?;
+    let batch_threads = batch_threads(config.threads)?;
+    let signatures = MinHash32::from_batch_with(
+        &corpus,
+        config.num_perm,
+        config.seed,
+        batch_threads,
+        |sketch, features| update_signature(sketch, features),
+    )?;
+    let query_signatures = MinHash32::from_batch_with(
+        &queries,
+        config.num_perm,
+        config.seed,
+        batch_threads,
+        |sketch, features| update_signature(sketch, features),
+    )?;
     let indexed_signatures = signatures
         .iter()
         .enumerate()
@@ -341,19 +349,26 @@ fn validate_config(config: &BenchmarkConfig) -> Result<(), Box<dyn Error>> {
     if config.num_perm == 0 || config.num_perm > 4_096 {
         return Err("num_perm must be in 1..=4096 for the benchmark harness".into());
     }
+    if config.threads == Some(0) {
+        return Err("threads must be positive when supplied".into());
+    }
     Ok(())
 }
 
-fn build_signature(
-    features: &[u64],
-    num_perm: usize,
-    seed: u64,
-) -> Result<MinHash32, pari_core::MinHashError> {
-    let mut signature = MinHash32::new(num_perm, seed)?;
+fn batch_threads(threads: Option<usize>) -> Result<BatchThreads, Box<dyn Error>> {
+    match threads {
+        None => Ok(BatchThreads::Auto),
+        Some(1) => Ok(BatchThreads::Sequential),
+        Some(threads) => NonZeroUsize::new(threads)
+            .map(BatchThreads::max)
+            .ok_or_else(|| "threads must be positive when supplied".into()),
+    }
+}
+
+fn update_signature(signature: &mut MinHash32, features: &[u64]) {
     for feature in features {
         signature.update(&feature.to_le_bytes());
     }
-    Ok(signature)
 }
 
 fn synthetic_corpus(items: usize, set_size: usize, seed: u64) -> Vec<Vec<u64>> {
@@ -614,6 +629,7 @@ mod tests {
             threshold: 0.8,
             num_perm: 32,
             seed: 7,
+            threads: None,
             dataset: None,
         };
         let report = run_storage_benchmark(&config).expect("storage benchmark");

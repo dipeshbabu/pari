@@ -11,13 +11,14 @@ use std::{
     collections::HashSet,
     error::Error,
     fs,
+    num::NonZeroUsize,
     path::Path,
     process::Command,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use pari_core::MinHash32;
+use pari_core::{BatchThreads, MinHash32};
 use pari_index::{group_pairs, LshIndex32};
 
 use crate::{
@@ -42,12 +43,17 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
     let mut report =
         BenchmarkReport::new("pari", generated_unix_seconds, environment, config.clone());
 
+    let batch_threads = batch_threads(config.threads)?;
+    let signature_threads = batch_threads.effective_threads(corpus.len());
     let signature_sampler = RssSampler::start();
     let signature_started = Instant::now();
-    let signatures: Vec<_> = corpus
-        .iter()
-        .map(|features| build_signature(features, config.num_perm, config.seed))
-        .collect::<Result<_, _>>()?;
+    let signatures = MinHash32::from_batch_with(
+        &corpus,
+        config.num_perm,
+        config.seed,
+        batch_threads,
+        |sketch, features| update_signature(sketch, features),
+    )?;
     let signature_elapsed = signature_started.elapsed();
     let signature_rss = signature_sampler.finish();
     insert_throughput(
@@ -58,12 +64,31 @@ pub fn run_benchmark(config: BenchmarkConfig) -> Result<BenchmarkReport, Box<dyn
     );
     insert_elapsed(&mut report, "signature.elapsed_ms", signature_elapsed);
     insert_rss_metrics(&mut report, "signature", signature_rss, signatures.len());
+    report.insert_metric(
+        "signature.threads",
+        Metric::new(
+            f64::from(u32::try_from(signature_threads)?),
+            "threads",
+            MetricDirection::Neutral,
+        ),
+    );
+    report.insert_metric(
+        "signature.parallel",
+        Metric::new(
+            f64::from(u8::from(signature_threads > 1)),
+            "boolean",
+            MetricDirection::Neutral,
+        ),
+    );
 
     let query_signature_started = Instant::now();
-    let query_signatures: Vec<_> = queries
-        .iter()
-        .map(|features| build_signature(features, config.num_perm, config.seed))
-        .collect::<Result<_, _>>()?;
+    let query_signatures = MinHash32::from_batch_with(
+        &queries,
+        config.num_perm,
+        config.seed,
+        batch_threads,
+        |sketch, features| update_signature(sketch, features),
+    )?;
     let query_signature_elapsed = query_signature_started.elapsed();
     insert_throughput(
         &mut report,
@@ -261,19 +286,26 @@ fn validate_config(config: &BenchmarkConfig) -> Result<(), Box<dyn Error>> {
     if config.num_perm == 0 || config.num_perm > 4_096 {
         return Err("num_perm must be in 1..=4096 for the benchmark harness".into());
     }
+    if config.threads == Some(0) {
+        return Err("threads must be positive when supplied".into());
+    }
     Ok(())
 }
 
-fn build_signature(
-    features: &[u64],
-    num_perm: usize,
-    seed: u64,
-) -> Result<MinHash32, pari_core::MinHashError> {
-    let mut signature = MinHash32::new(num_perm, seed)?;
+fn batch_threads(threads: Option<usize>) -> Result<BatchThreads, Box<dyn Error>> {
+    match threads {
+        None => Ok(BatchThreads::Auto),
+        Some(1) => Ok(BatchThreads::Sequential),
+        Some(threads) => NonZeroUsize::new(threads)
+            .map(BatchThreads::max)
+            .ok_or_else(|| "threads must be positive when supplied".into()),
+    }
+}
+
+fn update_signature(signature: &mut MinHash32, features: &[u64]) {
     for feature in features {
         signature.update(&feature.to_le_bytes());
     }
-    Ok(signature)
 }
 
 fn synthetic_corpus(items: usize, set_size: usize, seed: u64) -> Vec<Vec<u64>> {

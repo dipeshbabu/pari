@@ -29,6 +29,7 @@ python examples/text_workload.py dedupe \
   --num-perm 128 \
   --seed 7 \
   --batch-size 2048 \
+  --threads 8 \
   --exact \
   --exact-threshold 0.8
 ```
@@ -59,7 +60,8 @@ python examples/text_workload.py build-reference \
   --shingle-size 3 \
   --num-perm 128 \
   --seed 7 \
-  --batch-size 2048
+  --batch-size 2048 \
+  --threads 8
 ```
 
 This creates, beside the manifest:
@@ -79,6 +81,7 @@ python examples/text_workload.py audit \
   --output contamination.jsonl \
   --metrics-output contamination-metrics.json \
   --batch-size 2048 \
+  --threads 8 \
   --exact \
   --exact-threshold 0.8
 ```

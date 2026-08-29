@@ -72,6 +72,10 @@ pub struct BenchmarkConfig {
     pub num_perm: usize,
     /// Deterministic workload and signature seed.
     pub seed: u64,
+    /// Optional maximum signature-construction threads. `None` uses the
+    /// process-visible CPU limit for sufficiently large batches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<usize>,
     /// Optional real-dataset path used instead of the synthetic corpus.
     pub dataset: Option<String>,
 }
@@ -221,6 +225,7 @@ mod tests {
                 threshold: 0.8,
                 num_perm: 16,
                 seed: 1,
+                threads: None,
                 dataset: None,
             },
         )

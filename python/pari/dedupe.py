@@ -84,6 +84,7 @@ class DedupeIndex(Generic[T]):
         "num_perm",
         "seed",
         "threshold",
+        "threads",
     )
 
     def __init__(
@@ -94,6 +95,7 @@ class DedupeIndex(Generic[T]):
         num_perm: int = 128,
         seed: int = 1,
         batch_size: int = 1024,
+        threads: int | None = None,
         path: PathInput | None = None,
         backend: Backend | None = None,
         exact: ExactVerifier[T] | None = None,
@@ -107,6 +109,10 @@ class DedupeIndex(Generic[T]):
             or batch_size <= 0
         ):
             raise ConfigurationError("batch_size must be a positive integer")
+        if threads is not None and (
+            isinstance(threads, bool) or not isinstance(threads, int) or threads <= 0
+        ):
+            raise ConfigurationError("threads must be a positive integer or None")
         if exact is not None and not callable(exact):
             raise ConfigurationError("exact must be callable or None")
         if representative is not None and not callable(representative):
@@ -125,6 +131,7 @@ class DedupeIndex(Generic[T]):
         self.threshold = threshold
         self.num_perm = num_perm
         self.seed = seed
+        self.threads = threads
         self.backend = selected_backend
         self._batch_size = batch_size
         self._feature = feature
@@ -135,6 +142,7 @@ class DedupeIndex(Generic[T]):
             threshold=threshold,
             num_perm=num_perm,
             seed=seed,
+            threads=threads,
             path=path,
         )
 
@@ -313,6 +321,7 @@ def deduplicate(
     num_perm: int = 128,
     seed: int = 1,
     batch_size: int = 1024,
+    threads: int | None = None,
     path: PathInput | None = None,
     backend: Backend | None = None,
     exact: ExactVerifier[T] | None = None,
@@ -326,6 +335,7 @@ def deduplicate(
         num_perm=num_perm,
         seed=seed,
         batch_size=batch_size,
+        threads=threads,
         path=path,
         backend=backend,
         exact=exact,
