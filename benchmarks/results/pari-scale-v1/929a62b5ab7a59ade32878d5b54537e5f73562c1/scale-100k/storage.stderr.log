@@ -1,0 +1,2 @@
+    Finished `release` profile [optimized] target(s) in 0.37s
+     Running `/root/.cache/pari-target-issue47/release/pari-bench storage --items 100000 --queries 100 --set-size 32 --overlap 29 --threshold 0.8 --num-perm 128 --seed 7 --output /mnt/d/pari/benchmarks/results/pari-scale-v1/929a62b5ab7a59ade32878d5b54537e5f73562c1/.scale-100k.partial-2z7h5ign/storage.json`

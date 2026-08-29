@@ -1,0 +1,13 @@
+   Compiling serde_core v1.0.229
+   Compiling quote v1.0.47
+   Compiling serde v1.0.229
+   Compiling syn v3.0.4
+   Compiling serde_derive v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling pari-format v0.1.0 (/mnt/d/pari/crates/pari-format)
+   Compiling pari-store v0.1.0 (/mnt/d/pari/crates/pari-store)
+   Compiling pari-store-lazy v0.1.0 (/mnt/d/pari/crates/pari-store-lazy)
+   Compiling pari-store-build v0.1.0 (/mnt/d/pari/crates/pari-store-build)
+   Compiling pari-bench v0.1.0 (/mnt/d/pari/crates/pari-bench)
+    Finished `release` profile [optimized] target(s) in 12.52s
+     Running `/root/.cache/pari-target-issue47/release/pari-bench run --items 100000 --queries 100 --set-size 32 --overlap 29 --threshold 0.8 --num-perm 128 --seed 7 --output /mnt/d/pari/benchmarks/results/pari-scale-v1/929a62b5ab7a59ade32878d5b54537e5f73562c1/.scale-100k.partial-2z7h5ign/synthetic.json`
