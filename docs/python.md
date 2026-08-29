@@ -157,6 +157,8 @@ print(first.jaccard(second))
 
 `update_many` performs the CPU-heavy hashing and permutation loop through `Python::detach`, so the Python interpreter is not held while Rust performs the batch computation.
 
+`MinHash.from_batch(..., threads=None)` automatically uses bounded CPU parallelism for batches of at least 256 rows. Pass `threads=1` for scalar execution or a larger positive integer to set a maximum. `DedupeIndex` and `deduplicate` accept the same `threads` option. See [CPU parallelism](parallelism.md) for crossover results and memory behavior.
+
 `MinHash.from_signature` reconstructs a sketch only when the caller has already established `pari-affine32-v1` compatibility. `MinHash.permutations` exposes the stable multiplier and offset arrays used by the optional, conservatively checked [Datasketch 2.x adapter](datasketch-v2.md). Ordinary Datasketch equal-seed signatures are not compatible and must be rebuilt from source features.
 
 ## Create and query a persistent index

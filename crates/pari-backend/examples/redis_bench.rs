@@ -118,6 +118,7 @@ fn build_report(
             threshold: 0.8,
             num_perm,
             seed,
+            threads: None,
             dataset: None,
         },
     );

@@ -166,11 +166,14 @@ class DedupeIndexTests(unittest.TestCase):
         with self.assertRaises(ConfigurationError):
             DedupeIndex(text_features, batch_size=0)
         with self.assertRaises(ConfigurationError):
+            DedupeIndex(text_features, threads=0)
+        with self.assertRaises(ConfigurationError):
             DedupeIndex(text_features, backend="local")
         with self.assertRaises(ConfigurationError):
             DedupeIndex(text_features, backend="memory", path="unexpected.pari")
 
-        index = DedupeIndex(text_features, num_perm=32)
+        index = DedupeIndex(text_features, num_perm=32, threads=4)
+        self.assertEqual(index.threads, 4)
         index.close()
         index.close()
         self.assertTrue(index.closed)

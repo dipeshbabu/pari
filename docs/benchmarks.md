@@ -248,6 +248,8 @@ The weekly workflow uploads bundles under an artifact name containing both the p
 
 The current selected 100K and 1M results, bottleneck summary, and decision gates are published in [benchmark evidence](benchmark-evidence.md).
 
+Signature thread-count and small-batch crossover measurements use `scripts/parallel_benchmark.py`. The implementation policy and profiler evidence are documented in [CPU parallelism](parallelism.md).
+
 ## Profiling CPU, allocations, and I/O
 
 Build the profiled binary once, then collect profiles on a dedicated Linux host. Keep the generated profiler files beside the bundle and state whether caches were warm or cold.

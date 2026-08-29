@@ -89,6 +89,7 @@ mod tests {
                 threshold: 0.8,
                 num_perm: 16,
                 seed: 1,
+                threads: None,
                 dataset: None,
             },
         );

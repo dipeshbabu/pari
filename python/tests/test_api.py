@@ -7,6 +7,7 @@ from pathlib import Path
 from pari import (
     ClosedIndexError,
     CompatibilityError,
+    ConfigurationError,
     DuplicateKeyError,
     Index,
     MinHash,
@@ -50,6 +51,24 @@ class MinHashTests(unittest.TestCase):
             [sketch.signature for sketch in batch],
             [sketch.signature for sketch in scalar],
         )
+
+    def test_parallel_batch_is_ordered_and_deterministic(self) -> None:
+        rows = [
+            [f"row-{row}-value-{value}".encode() for value in range(8)]
+            for row in range(512)
+        ]
+        expected = MinHash.from_batch(rows, num_perm=32, seed=11, threads=1)
+        expected_signatures = [sketch.signature for sketch in expected]
+        for threads in (2, 4, None):
+            actual = MinHash.from_batch(
+                rows, num_perm=32, seed=11, threads=threads
+            )
+            self.assertEqual(
+                [sketch.signature for sketch in actual], expected_signatures
+            )
+
+        with self.assertRaises(ConfigurationError):
+            MinHash.from_batch(rows, num_perm=32, seed=11, threads=0)
 
     def test_clear_and_merge(self) -> None:
         left = MinHash.from_values([b"a", b"b"], num_perm=32, seed=1)

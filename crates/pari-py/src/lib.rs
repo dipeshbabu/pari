@@ -2,11 +2,12 @@
 //! `PyO3` bindings for Pari's stable Rust APIs.
 
 use std::{
+    num::NonZeroUsize,
     path::PathBuf,
     sync::{Arc, Mutex, TryLockError},
 };
 
-use pari_core::{MinHash32, MinHashError};
+use pari_core::{BatchThreads, MinHash32, MinHashError};
 use pari_index::{DuplicateGroup, LshError, LshIndex32};
 use pari_store::{PersistentIndex32, StoreError, StoreStats};
 use pyo3::{
@@ -74,9 +75,11 @@ impl BindingError {
                 | LshError::AutomaticTuningTooLarge { .. }
                 | LshError::InvalidParams { .. },
             )) => BindingErrorKind::Configuration,
-            Self::Busy | Self::Poisoned | Self::Index(_) | Self::Store(_) => {
-                BindingErrorKind::Storage
-            }
+            Self::Busy
+            | Self::Poisoned
+            | Self::MinHash(MinHashError::BatchPoolUnavailable { .. })
+            | Self::Index(_)
+            | Self::Store(_) => BindingErrorKind::Storage,
         }
     }
 
@@ -162,17 +165,22 @@ fn collect_feature_rows(py: Python<'_>, rows: &Bound<'_, PyAny>) -> PyResult<Vec
 }
 
 fn build_sketches(
-    rows: Vec<Vec<Vec<u8>>>,
+    rows: &[Vec<Vec<u8>>],
     num_perm: usize,
     seed: u64,
+    threads: BatchThreads,
 ) -> Result<Vec<MinHash32>, BindingError> {
-    rows.into_iter()
-        .map(|values| {
-            let mut sketch = MinHash32::new(num_perm, seed).map_err(BindingError::from)?;
-            sketch.update_many(values);
-            Ok(sketch)
-        })
-        .collect()
+    MinHash32::from_batch(rows, num_perm, seed, threads).map_err(BindingError::from)
+}
+
+fn batch_threads(threads: Option<usize>) -> PyResult<BatchThreads> {
+    match threads {
+        None => Ok(BatchThreads::Auto),
+        Some(1) => Ok(BatchThreads::Sequential),
+        Some(threads) => NonZeroUsize::new(threads)
+            .map(BatchThreads::max)
+            .ok_or_else(|| ConfigurationError::new_err("threads must be a positive integer")),
+    }
 }
 
 fn owned_groups(groups: Vec<DuplicateGroup>) -> Vec<(u64, Vec<u64>)> {
@@ -219,16 +227,18 @@ impl PyMinHash {
 
     /// Construct a batch of sketches after copying all Python feature buffers.
     #[staticmethod]
-    #[pyo3(signature = (rows, *, num_perm = 128, seed = 1))]
+    #[pyo3(signature = (rows, *, num_perm = 128, seed = 1, threads = None))]
     fn from_batch(
         py: Python<'_>,
         rows: &Bound<'_, PyAny>,
         num_perm: usize,
         seed: u64,
+        threads: Option<usize>,
     ) -> PyResult<Vec<Py<Self>>> {
         let rows = collect_feature_rows(py, rows)?;
+        let threads = batch_threads(threads)?;
         let sketches = py
-            .detach(move || build_sketches(rows, num_perm, seed))
+            .detach(move || build_sketches(&rows, num_perm, seed, threads))
             .map_err(binding_error)?;
         sketches
             .into_iter()
@@ -587,6 +597,7 @@ struct PyDedupeEngine {
     inner: SharedDedupe,
     num_perm: usize,
     seed: u64,
+    threads: BatchThreads,
 }
 
 impl PyDedupeEngine {
@@ -622,14 +633,16 @@ impl PyDedupeEngine {
 #[pymethods]
 impl PyDedupeEngine {
     #[new]
-    #[pyo3(signature = (*, threshold = 0.8, num_perm = 128, seed = 1, path = None))]
+    #[pyo3(signature = (*, threshold = 0.8, num_perm = 128, seed = 1, threads = None, path = None))]
     fn new(
         py: Python<'_>,
         threshold: f64,
         num_perm: usize,
         seed: u64,
+        threads: Option<usize>,
         path: Option<PathBuf>,
     ) -> PyResult<Self> {
+        let threads = batch_threads(threads)?;
         let state = py
             .detach(move || {
                 let index =
@@ -648,6 +661,7 @@ impl PyDedupeEngine {
             inner: Arc::new(Mutex::new(Some(state))),
             num_perm,
             seed,
+            threads,
         })
     }
 
@@ -669,8 +683,9 @@ impl PyDedupeEngine {
 
         let num_perm = self.num_perm;
         let seed = self.seed;
+        let threads = self.threads;
         let sketches = py
-            .detach(move || build_sketches(rows, num_perm, seed))
+            .detach(move || build_sketches(&rows, num_perm, seed, threads))
             .map_err(binding_error)?;
 
         self.run_write(py, move |state| {

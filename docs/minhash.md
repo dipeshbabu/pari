@@ -37,6 +37,7 @@ Both `MinHash32` and `MinHash64` support:
 - deterministic construction from `num_perm` and `seed`
 - `update`
 - `update_many`
+- ordered `from_batch` and `from_batch_with` construction with bounded CPU parallelism
 - `jaccard`
 - `merge`
 - `clear`
@@ -44,3 +45,5 @@ Both `MinHash32` and `MinHash64` support:
 - stable multiplier and offset access for checked interoperability
 
 Comparison and merge fail before producing a result when seeds or permutation counts differ.
+
+Batch construction builds each permutation family once and shares those immutable arrays across the returned sketches. See [CPU parallelism](parallelism.md) for the thread policy, crossover evidence, and configuration API.

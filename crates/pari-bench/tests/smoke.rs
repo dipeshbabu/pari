@@ -10,6 +10,7 @@ fn quick_end_to_end_benchmark_preserves_correctness() {
         threshold: 0.8,
         num_perm: 128,
         seed: 7,
+        threads: None,
         dataset: None,
     })
     .expect("quick benchmark should run");
@@ -18,6 +19,8 @@ fn quick_end_to_end_benchmark_preserves_correctness() {
     assert!((report.metrics["index.live_items"].value - 64.0).abs() < f64::EPSILON);
     assert!((report.metrics["candidate.recall"].value - 1.0).abs() < f64::EPSILON);
     assert!((report.metrics["query.scalar_batch_parity"].value - 1.0).abs() < f64::EPSILON);
+    assert!((report.metrics["signature.threads"].value - 1.0).abs() < f64::EPSILON);
+    assert!(report.metrics["signature.parallel"].value.abs() < f64::EPSILON);
     assert!(report.metrics["candidate.rate"].value > 0.0);
     assert!(report.metrics["candidate.rate"].value <= 1.0);
     assert!(report.metrics["candidate.reduction"].value >= 0.0);

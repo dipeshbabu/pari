@@ -173,6 +173,7 @@ mod tests {
             threshold: 0.8,
             num_perm: 32,
             seed: 7,
+            threads: None,
             dataset: None,
         };
         let mut report = BenchmarkReport::new(

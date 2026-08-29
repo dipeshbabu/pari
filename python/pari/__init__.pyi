@@ -44,7 +44,11 @@ class MinHash:
     ) -> MinHash: ...
     @staticmethod
     def from_batch(
-        rows: Iterable[Iterable[ReadableBuffer]], *, num_perm: int = 128, seed: int = 1
+        rows: Iterable[Iterable[ReadableBuffer]],
+        *,
+        num_perm: int = 128,
+        seed: int = 1,
+        threads: int | None = None,
     ) -> list[MinHash]: ...
     @staticmethod
     def from_signature(signature: Iterable[int], *, seed: int = 1) -> MinHash: ...
@@ -119,6 +123,7 @@ class DedupeIndex(Generic[_T]):
     threshold: float
     num_perm: int
     seed: int
+    threads: int | None
     backend: _Backend
     def __init__(
         self,
@@ -128,6 +133,7 @@ class DedupeIndex(Generic[_T]):
         num_perm: int = 128,
         seed: int = 1,
         batch_size: int = 1024,
+        threads: int | None = None,
         path: PathInput | None = None,
         backend: _Backend | None = None,
         exact: _ExactVerifier[_T] | None = None,
@@ -162,6 +168,7 @@ def deduplicate(
     num_perm: int = 128,
     seed: int = 1,
     batch_size: int = 1024,
+    threads: int | None = None,
     path: PathInput | None = None,
     backend: _Backend | None = None,
     exact: _ExactVerifier[_T] | None = None,
