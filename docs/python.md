@@ -157,6 +157,8 @@ print(first.jaccard(second))
 
 `update_many` performs the CPU-heavy hashing and permutation loop through `Python::detach`, so the Python interpreter is not held while Rust performs the batch computation.
 
+`MinHash.from_signature` reconstructs a sketch only when the caller has already established `pari-affine32-v1` compatibility. `MinHash.permutations` exposes the stable multiplier and offset arrays used by the optional, conservatively checked [Datasketch 2.x adapter](datasketch-v2.md). Ordinary Datasketch equal-seed signatures are not compatible and must be rebuilt from source features.
+
 ## Create and query a persistent index
 
 ```python

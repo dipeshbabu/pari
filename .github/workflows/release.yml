@@ -10,7 +10,13 @@ on:
       - "crates/**/Cargo.toml"
       - "crates/**/LICENSE"
       - "crates/**/NOTICE"
+      - "crates/pari-core/src/minhash.rs"
+      - "crates/pari-core/testdata/**"
+      - "benchmarks/datasketch_interop.py"
       - "examples/text_workload.py"
+      - "python/pari/datasketch.py"
+      - "python/pari/datasketch.pyi"
+      - "scripts/generate_datasketch_v2_golden.py"
       - "scripts/release.py"
       - "scripts/tests/**"
       - "CHANGELOG.md"
@@ -179,8 +185,14 @@ jobs:
           tar -tzf "$archive" > "$listing"
           grep -Eq '^[^/]+/LICENSE$' "$listing"
           grep -Eq '^[^/]+/NOTICE$' "$listing"
+          grep -Eq '^[^/]+/benchmarks/datasketch_interop.py$' "$listing"
+          grep -Eq '^[^/]+/crates/pari-core/testdata/datasketch_v2_affine.json$' "$listing"
+          grep -Eq '^[^/]+/docs/datasketch-v2.md$' "$listing"
           grep -Eq '^[^/]+/docs/text-workloads.md$' "$listing"
           grep -Eq '^[^/]+/examples/text_workload.py$' "$listing"
+          grep -Eq '^[^/]+/scripts/generate_datasketch_v2_golden.py$' "$listing"
+          grep -Eq '^[^/]+/python/pari/datasketch.py$' "$listing"
+          grep -Eq '^[^/]+/python/pari/datasketch.pyi$' "$listing"
       - name: Install source distribution
         run: python -m pip install --force-reinstall dist/*.tar.gz
       - name: Smoke installed source distribution outside checkout

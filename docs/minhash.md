@@ -15,14 +15,16 @@ The upstream copyright and license notice are preserved in `NOTICE`.
 
 ## Intentional compatibility difference
 
-Pari does **not** attempt byte-for-byte signature compatibility with datasketch. Datasketch uses NumPy's legacy `RandomState` mapping from a seed to permutation parameters. Pari specifies SplitMix64 as part of its own scheme so the seed-to-permutation mapping is independent of NumPy and stable for Rust, Python bindings, the CLI, and persisted Pari indexes.
+Pari does **not** treat equal Datasketch seeds as byte-for-byte compatibility. Datasketch uses NumPy's legacy `RandomState` mapping from a seed to permutation parameters. Pari specifies SplitMix64 as part of its own scheme so the seed-to-permutation mapping is independent of NumPy and stable for Rust, Python bindings, the CLI, and persisted Pari indexes.
+
+Datasketch 2.x uses the same SHA-1 widths, MurmurHash3 pre-mix, and wrapping affine arithmetic. Signatures are therefore exact when Datasketch is constructed with Pari's explicit multiplier and offset arrays. The optional adapter verifies those complete arrays and rejects ordinary equal-seed sketches; see [Datasketch 2.x interoperability](datasketch-v2.md).
 
 The scheme identifiers are therefore explicit:
 
 - `pari-affine32-v1`
 - `pari-affine64-v1`
 
-A future datasketch migration layer, if needed, should be implemented as an explicit compatibility feature rather than silently changing these scheme semantics.
+The migration layer is explicit and does not change either Pari scheme identifier or seed mapping.
 
 ## Why no legacy mode
 
@@ -39,5 +41,6 @@ Both `MinHash32` and `MinHash64` support:
 - `merge`
 - `clear`
 - zero-copy signature access
+- stable multiplier and offset access for checked interoperability
 
 Comparison and merge fail before producing a result when seeds or permutation counts differ.

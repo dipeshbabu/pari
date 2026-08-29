@@ -236,6 +236,15 @@ impl PyMinHash {
             .collect()
     }
 
+    /// Reconstruct a Pari affine32 sketch from a compatible signature.
+    #[staticmethod]
+    #[pyo3(signature = (signature, *, seed = 1))]
+    fn from_signature(signature: Vec<u32>, seed: u64) -> PyResult<Self> {
+        MinHash32::from_signature(signature, seed)
+            .map(|inner| Self { inner })
+            .map_err(|error| binding_error(error.into()))
+    }
+
     /// Update from one bytes or byte-buffer value.
     fn update(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<()> {
         if let Ok(bytes) = value.cast::<PyBytes>() {
@@ -296,6 +305,12 @@ impl PyMinHash {
     #[getter]
     fn signature(&self) -> Vec<u32> {
         self.inner.signature().to_vec()
+    }
+
+    #[getter]
+    fn permutations(&self) -> (Vec<u32>, Vec<u32>) {
+        let (multipliers, offsets) = self.inner.permutations();
+        (multipliers.to_vec(), offsets.to_vec())
     }
 
     #[getter]

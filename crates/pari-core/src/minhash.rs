@@ -143,6 +143,12 @@ impl MinHash32 {
         &self.hashvalues
     }
 
+    /// Borrow the stable affine multiplier and offset arrays for interoperability.
+    #[must_use]
+    pub fn permutations(&self) -> (&[u32], &[u32]) {
+        (&self.multipliers, &self.offsets)
+    }
+
     /// Return the deterministic permutation seed.
     #[must_use]
     pub const fn seed(&self) -> u64 {
@@ -279,6 +285,12 @@ impl MinHash64 {
         &self.hashvalues
     }
 
+    /// Borrow the stable affine multiplier and offset arrays for interoperability.
+    #[must_use]
+    pub fn permutations(&self) -> (&[u64], &[u64]) {
+        (&self.multipliers, &self.offsets)
+    }
+
     /// Return the deterministic permutation seed.
     #[must_use]
     pub const fn seed(&self) -> u64 {
@@ -392,7 +404,43 @@ fn fmix64(mut value: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use serde::Deserialize;
+
     use super::{MinHash32, MinHash64, MinHashError, AFFINE32_SCHEME, AFFINE64_SCHEME};
+
+    #[derive(Debug, Deserialize)]
+    struct DatasketchFixture {
+        datasketch_version: String,
+        num_perm: usize,
+        schema_version: u32,
+        schemes: DatasketchSchemes,
+        seed: u64,
+        values_hex: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct DatasketchSchemes {
+        affine32: DatasketchAffine32,
+        affine64: DatasketchAffine64,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct DatasketchAffine32 {
+        datasketch_default_signature: Vec<u32>,
+        multipliers: Vec<u32>,
+        offsets: Vec<u32>,
+        pari_compatible_signature: Vec<u32>,
+        width: u32,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct DatasketchAffine64 {
+        datasketch_default_signature: Vec<u64>,
+        multipliers: Vec<u64>,
+        offsets: Vec<u64>,
+        pari_compatible_signature: Vec<u64>,
+        width: u32,
+    }
 
     #[test]
     fn rejects_zero_permutations() {
@@ -473,6 +521,62 @@ mod tests {
             ]
         );
         assert!(sketch.multipliers.iter().all(|value| value & 1 == 1));
+    }
+
+    #[test]
+    fn datasketch_v2_affine_fixture_matches_only_with_pari_permutations() {
+        let fixture: DatasketchFixture =
+            serde_json::from_str(include_str!("../testdata/datasketch_v2_affine.json"))
+                .expect("valid Datasketch fixture");
+        assert_eq!(fixture.schema_version, 1);
+        assert_eq!(fixture.datasketch_version, "2.0.0");
+        assert_eq!(fixture.schemes.affine32.width, 32);
+        assert_eq!(fixture.schemes.affine64.width, 64);
+        let values = fixture
+            .values_hex
+            .iter()
+            .map(|value| decode_hex(value))
+            .collect::<Vec<_>>();
+
+        let mut affine32 = MinHash32::new(fixture.num_perm, fixture.seed).expect("valid sketch");
+        affine32.update_many(&values);
+        let (multipliers32, offsets32) = affine32.permutations();
+        assert_eq!(multipliers32, fixture.schemes.affine32.multipliers);
+        assert_eq!(offsets32, fixture.schemes.affine32.offsets);
+        assert_eq!(
+            affine32.signature(),
+            fixture.schemes.affine32.pari_compatible_signature
+        );
+        assert_ne!(
+            affine32.signature(),
+            fixture.schemes.affine32.datasketch_default_signature
+        );
+
+        let mut affine64 = MinHash64::new(fixture.num_perm, fixture.seed).expect("valid sketch");
+        affine64.update_many(&values);
+        let (multipliers64, offsets64) = affine64.permutations();
+        assert_eq!(multipliers64, fixture.schemes.affine64.multipliers);
+        assert_eq!(offsets64, fixture.schemes.affine64.offsets);
+        assert_eq!(
+            affine64.signature(),
+            fixture.schemes.affine64.pari_compatible_signature
+        );
+        assert_ne!(
+            affine64.signature(),
+            fixture.schemes.affine64.datasketch_default_signature
+        );
+    }
+
+    fn decode_hex(value: &str) -> Vec<u8> {
+        assert_eq!(value.len() % 2, 0, "hex fixture width");
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|chunk| {
+                let digits = std::str::from_utf8(chunk).expect("ASCII hex");
+                u8::from_str_radix(digits, 16).expect("valid hex byte")
+            })
+            .collect()
     }
 
     #[test]
