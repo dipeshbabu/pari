@@ -1,0 +1,1306 @@
+{
+  "config": {
+    "num_perm": 128,
+    "overlap": 29,
+    "repeats": 3,
+    "seed": 7,
+    "set_size": 32,
+    "sizes": [
+      64,
+      128,
+      256,
+      512,
+      1024,
+      2048,
+      8192,
+      100000
+    ],
+    "thread_limits": [
+      1,
+      2,
+      4,
+      8,
+      12
+    ],
+    "threshold": 0.8
+  },
+  "environment": {
+    "architecture": "x86_64",
+    "logical_cpus": 12,
+    "operating_system": "Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "generated_unix_seconds": 1787983035,
+  "git_sha": "09a83147fba6b800d0e3783c3c15ff2db14f1a73",
+  "results": [
+    {
+      "effective_threads": 1,
+      "items": 64,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 0.93349,
+        "median": 0.923848,
+        "minimum": 0.858751
+      },
+      "requested_threads": 1,
+      "signature_elapsed_ms": {
+        "maximum": 0.700187,
+        "median": 0.6966060000000001,
+        "minimum": 0.683752
+      },
+      "signature_items_per_second": {
+        "maximum": 93601.18873509693,
+        "median": 91874.02922168342,
+        "minimum": 91404.1534618609
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 2994176.0,
+        "median": 2985984.0,
+        "minimum": 2908160.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 64,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 0.995597,
+        "median": 0.9049340000000001,
+        "minimum": 0.8649950000000001
+      },
+      "requested_threads": 2,
+      "signature_elapsed_ms": {
+        "maximum": 0.722498,
+        "median": 0.681548,
+        "minimum": 0.681181
+      },
+      "signature_items_per_second": {
+        "maximum": 93954.47025093184,
+        "median": 93903.87764324743,
+        "minimum": 88581.56008736356
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3018752.0,
+        "median": 2965504.0,
+        "minimum": 2924544.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 64,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 1.109002,
+        "median": 1.0248220000000001,
+        "minimum": 0.9557009999999999
+      },
+      "requested_threads": 4,
+      "signature_elapsed_ms": {
+        "maximum": 0.899611,
+        "median": 0.783672,
+        "minimum": 0.753563
+      },
+      "signature_items_per_second": {
+        "maximum": 84929.8598790015,
+        "median": 81666.81979195378,
+        "minimum": 71141.86020402152
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3026944.0,
+        "median": 2990080.0,
+        "minimum": 2924544.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 64,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 1.6436259999999998,
+        "median": 1.0480470000000002,
+        "minimum": 0.955516
+      },
+      "requested_threads": 8,
+      "signature_elapsed_ms": {
+        "maximum": 1.3934799999999998,
+        "median": 0.772656,
+        "minimum": 0.734009
+      },
+      "signature_items_per_second": {
+        "maximum": 87192.39137394773,
+        "median": 82831.16936903357,
+        "minimum": 45928.17980882395
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3031040.0,
+        "median": 2973696.0,
+        "minimum": 2957312.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 64,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 0.9711230000000001,
+        "median": 0.9053019999999999,
+        "minimum": 0.858944
+      },
+      "requested_threads": 12,
+      "signature_elapsed_ms": {
+        "maximum": 0.7072050000000001,
+        "median": 0.686551,
+        "minimum": 0.680308
+      },
+      "signature_items_per_second": {
+        "maximum": 94075.03660106892,
+        "median": 93219.58601764472,
+        "minimum": 90497.09772979545
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 2977792.0,
+        "median": 2936832.0,
+        "minimum": 2920448.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 128,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 2.0958209999999995,
+        "median": 1.761954,
+        "minimum": 1.713211
+      },
+      "requested_threads": 1,
+      "signature_elapsed_ms": {
+        "maximum": 1.671258,
+        "median": 1.379985,
+        "minimum": 1.377508
+      },
+      "signature_items_per_second": {
+        "maximum": 92921.4204200629,
+        "median": 92754.63139092091,
+        "minimum": 76589.01258812225
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3018752.0,
+        "median": 3006464.0,
+        "minimum": 2973696.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 128,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 2.173296,
+        "median": 1.8361249999999998,
+        "minimum": 1.752773
+      },
+      "requested_threads": 2,
+      "signature_elapsed_ms": {
+        "maximum": 1.788391,
+        "median": 1.414961,
+        "minimum": 1.413859
+      },
+      "signature_items_per_second": {
+        "maximum": 90532.36567437064,
+        "median": 90461.85725260273,
+        "minimum": 71572.7153625801
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3039232.0,
+        "median": 2981888.0,
+        "minimum": 2936832.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 128,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 2.620899,
+        "median": 1.7463479999999998,
+        "minimum": 1.700816
+      },
+      "requested_threads": 4,
+      "signature_elapsed_ms": {
+        "maximum": 2.256097,
+        "median": 1.41698,
+        "minimum": 1.372183
+      },
+      "signature_items_per_second": {
+        "maximum": 93282.01850627796,
+        "median": 90332.96165083487,
+        "minimum": 56735.14924225333
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3031040.0,
+        "median": 2977792.0,
+        "minimum": 2936832.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 128,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 1.76746,
+        "median": 1.7431329999999998,
+        "minimum": 1.738913
+      },
+      "requested_threads": 8,
+      "signature_elapsed_ms": {
+        "maximum": 1.426986,
+        "median": 1.419275,
+        "minimum": 1.404679
+      },
+      "signature_items_per_second": {
+        "maximum": 91124.0219295654,
+        "median": 90186.89119444788,
+        "minimum": 89699.54855899076
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3035136.0,
+        "median": 3010560.0,
+        "minimum": 2895872.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 128,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 2.329809,
+        "median": 1.9079110000000001,
+        "minimum": 1.8509980000000001
+      },
+      "requested_threads": 12,
+      "signature_elapsed_ms": {
+        "maximum": 1.986214,
+        "median": 1.552105,
+        "minimum": 1.488123
+      },
+      "signature_items_per_second": {
+        "maximum": 86014.395315441,
+        "median": 82468.64741753941,
+        "minimum": 64444.213966873656
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3014656.0,
+        "median": 3006464.0,
+        "minimum": 2940928.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 256,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 3.8432699999999995,
+        "median": 3.75698,
+        "minimum": 3.4817720000000003
+      },
+      "requested_threads": 1,
+      "signature_elapsed_ms": {
+        "maximum": 3.177006,
+        "median": 3.142032,
+        "minimum": 2.868384
+      },
+      "signature_items_per_second": {
+        "maximum": 89248.85928801724,
+        "median": 81475.93659135235,
+        "minimum": 80579.01055270276
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3100672.0,
+        "median": 3076096.0,
+        "minimum": 3022848.0
+      }
+    },
+    {
+      "effective_threads": 2,
+      "items": 256,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 2.800087,
+        "median": 2.4659470000000003,
+        "minimum": 2.438498
+      },
+      "requested_threads": 2,
+      "signature_elapsed_ms": {
+        "maximum": 1.975933,
+        "median": 1.799499,
+        "minimum": 1.799132
+      },
+      "signature_items_per_second": {
+        "maximum": 142290.83802633715,
+        "median": 142261.81842835146,
+        "minimum": 129559.04881390209
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3043328.0,
+        "median": 3014656.0,
+        "minimum": 3010560.0
+      }
+    },
+    {
+      "effective_threads": 4,
+      "items": 256,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 2.298965,
+        "median": 2.233943,
+        "minimum": 2.230731
+      },
+      "requested_threads": 4,
+      "signature_elapsed_ms": {
+        "maximum": 1.672084,
+        "median": 1.631128,
+        "minimum": 1.600841
+      },
+      "signature_items_per_second": {
+        "maximum": 159915.9441818394,
+        "median": 156946.6038226307,
+        "minimum": 153102.35610172697
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 5144576.0,
+        "median": 3043328.0,
+        "minimum": 3014656.0
+      }
+    },
+    {
+      "effective_threads": 8,
+      "items": 256,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 2.980121,
+        "median": 2.600883,
+        "minimum": 2.555454
+      },
+      "requested_threads": 8,
+      "signature_elapsed_ms": {
+        "maximum": 2.239635,
+        "median": 1.924644,
+        "minimum": 1.759713
+      },
+      "signature_items_per_second": {
+        "maximum": 145478.2683312563,
+        "median": 133011.61149802248,
+        "minimum": 114304.33976964997
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 5201920.0,
+        "median": 3080192.0,
+        "minimum": 3031040.0
+      }
+    },
+    {
+      "effective_threads": 12,
+      "items": 256,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 3.0437259999999995,
+        "median": 2.9536900000000004,
+        "minimum": 2.9401070000000002
+      },
+      "requested_threads": 12,
+      "signature_elapsed_ms": {
+        "maximum": 2.4353119999999997,
+        "median": 2.2986500000000003,
+        "minimum": 2.264692
+      },
+      "signature_items_per_second": {
+        "maximum": 113039.65395735932,
+        "median": 111369.71700780893,
+        "minimum": 105120.00105120002
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 5144576.0,
+        "median": 5124096.0,
+        "minimum": 2981888.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 512,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 7.6137690000000005,
+        "median": 6.897511000000001,
+        "minimum": 6.844736999999999
+      },
+      "requested_threads": 1,
+      "signature_elapsed_ms": {
+        "maximum": 6.41814,
+        "median": 5.704269,
+        "minimum": 5.639838
+      },
+      "signature_items_per_second": {
+        "maximum": 90782.74943358301,
+        "median": 89757.33788150594,
+        "minimum": 79773.89087804254
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3641344.0,
+        "median": 3510272.0,
+        "minimum": 3477504.0
+      }
+    },
+    {
+      "effective_threads": 2,
+      "items": 512,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 5.226641999999999,
+        "median": 4.735795999999999,
+        "minimum": 4.545536
+      },
+      "requested_threads": 2,
+      "signature_elapsed_ms": {
+        "maximum": 3.757506,
+        "median": 3.436274,
+        "minimum": 3.436273
+      },
+      "signature_items_per_second": {
+        "maximum": 148998.6389323549,
+        "median": 148998.5955718316,
+        "minimum": 136260.59412812648
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3125248.0,
+        "median": 3112960.0,
+        "minimum": 3063808.0
+      }
+    },
+    {
+      "effective_threads": 4,
+      "items": 512,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 3.7713639999999997,
+        "median": 3.4723450000000007,
+        "minimum": 3.3382509999999996
+      },
+      "requested_threads": 4,
+      "signature_elapsed_ms": {
+        "maximum": 2.53214,
+        "median": 2.3586750000000003,
+        "minimum": 2.21155
+      },
+      "signature_items_per_second": {
+        "maximum": 231511.835590423,
+        "median": 217071.0250458414,
+        "minimum": 202200.51024035006
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 5214208.0,
+        "median": 3125248.0,
+        "minimum": 3080192.0
+      }
+    },
+    {
+      "effective_threads": 8,
+      "items": 512,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 4.244037,
+        "median": 3.696103,
+        "minimum": 3.691791
+      },
+      "requested_threads": 8,
+      "signature_elapsed_ms": {
+        "maximum": 2.9783779999999997,
+        "median": 2.512683,
+        "minimum": 2.481845
+      },
+      "signature_items_per_second": {
+        "maximum": 206298.1370714126,
+        "median": 203766.25304505185,
+        "minimum": 171905.6479734943
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 5242880.0,
+        "median": 5193728.0,
+        "minimum": 3080192.0
+      }
+    },
+    {
+      "effective_threads": 12,
+      "items": 512,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 4.090643,
+        "median": 3.9203249999999996,
+        "minimum": 3.757229
+      },
+      "requested_threads": 12,
+      "signature_elapsed_ms": {
+        "maximum": 2.758498,
+        "median": 2.7291939999999997,
+        "minimum": 2.619424
+      },
+      "signature_items_per_second": {
+        "maximum": 195462.81930683999,
+        "median": 187601.17455922885,
+        "minimum": 185608.2549271379
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3190784.0,
+        "median": 3174400.0,
+        "minimum": 3080192.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 1024,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 16.166438,
+        "median": 15.929667,
+        "minimum": 15.348994
+      },
+      "requested_threads": 1,
+      "signature_elapsed_ms": {
+        "maximum": 13.150544,
+        "median": 13.054733,
+        "minimum": 12.752383
+      },
+      "signature_items_per_second": {
+        "maximum": 80298.7175024464,
+        "median": 78438.98454300061,
+        "minimum": 77867.50114672062
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 4005888.0,
+        "median": 3989504.0,
+        "minimum": 3928064.0
+      }
+    },
+    {
+      "effective_threads": 2,
+      "items": 1024,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 13.301307999999999,
+        "median": 12.740668000000001,
+        "minimum": 9.079724
+      },
+      "requested_threads": 2,
+      "signature_elapsed_ms": {
+        "maximum": 10.553814,
+        "median": 10.146161000000001,
+        "minimum": 6.685149
+      },
+      "signature_items_per_second": {
+        "maximum": 153175.34433413527,
+        "median": 100924.87197867251,
+        "minimum": 97026.53467267852
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3862528.0,
+        "median": 3809280.0,
+        "minimum": 3723264.0
+      }
+    },
+    {
+      "effective_threads": 4,
+      "items": 1024,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 8.445988000000002,
+        "median": 6.762474,
+        "minimum": 6.519028
+      },
+      "requested_threads": 4,
+      "signature_elapsed_ms": {
+        "maximum": 5.698094,
+        "median": 4.383957,
+        "minimum": 4.044713
+      },
+      "signature_items_per_second": {
+        "maximum": 253170.00242044366,
+        "median": 233578.93337001253,
+        "minimum": 179709.21504629444
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3289088.0,
+        "median": 3239936.0,
+        "minimum": 3207168.0
+      }
+    },
+    {
+      "effective_threads": 8,
+      "items": 1024,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 6.597009,
+        "median": 6.4731819999999995,
+        "minimum": 6.08839
+      },
+      "requested_threads": 8,
+      "signature_elapsed_ms": {
+        "maximum": 4.07124,
+        "median": 3.8915569999999997,
+        "minimum": 3.670433
+      },
+      "signature_items_per_second": {
+        "maximum": 278986.15776394773,
+        "median": 263133.7534051281,
+        "minimum": 251520.42129670567
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 3616768.0,
+        "median": 3596288.0,
+        "minimum": 3538944.0
+      }
+    },
+    {
+      "effective_threads": 12,
+      "items": 1024,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 16.599377999999998,
+        "median": 8.647394,
+        "minimum": 6.748963
+      },
+      "requested_threads": 12,
+      "signature_elapsed_ms": {
+        "maximum": 11.725622999999999,
+        "median": 5.754352,
+        "minimum": 4.397271
+      },
+      "signature_items_per_second": {
+        "maximum": 232871.70611044893,
+        "median": 177952.26986461726,
+        "minimum": 87330.11457045823
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 5746688.0,
+        "median": 3579904.0,
+        "minimum": 3547136.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 2048,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 33.630396000000005,
+        "median": 31.232857999999997,
+        "minimum": 30.846865
+      },
+      "requested_threads": 1,
+      "signature_elapsed_ms": {
+        "maximum": 28.405283,
+        "median": 25.791125,
+        "minimum": 25.715849
+      },
+      "signature_items_per_second": {
+        "maximum": 79639.60279903651,
+        "median": 79407.16040886157,
+        "minimum": 72099.26406999712
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 4841472.0,
+        "median": 4833280.0,
+        "minimum": 4833280.0
+      }
+    },
+    {
+      "effective_threads": 2,
+      "items": 2048,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 22.289064999999997,
+        "median": 19.443371,
+        "minimum": 19.059445
+      },
+      "requested_threads": 2,
+      "signature_elapsed_ms": {
+        "maximum": 15.987756999999998,
+        "median": 14.126965,
+        "minimum": 13.982318000000001
+      },
+      "signature_items_per_second": {
+        "maximum": 146470.70678838802,
+        "median": 144970.9827977913,
+        "minimum": 128098.01900291581
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 4706304.0,
+        "median": 4648960.0,
+        "minimum": 4636672.0
+      }
+    },
+    {
+      "effective_threads": 4,
+      "items": 2048,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 18.377532,
+        "median": 17.173934,
+        "minimum": 13.413982
+      },
+      "requested_threads": 4,
+      "signature_elapsed_ms": {
+        "maximum": 12.035407,
+        "median": 10.251628,
+        "minimum": 7.810492
+      },
+      "signature_items_per_second": {
+        "maximum": 262211.3946214912,
+        "median": 199773.14822582324,
+        "minimum": 170164.581887426
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 4943872.0,
+        "median": 4919296.0,
+        "minimum": 4866048.0
+      }
+    },
+    {
+      "effective_threads": 8,
+      "items": 2048,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 16.810015,
+        "median": 13.580951,
+        "minimum": 13.148118
+      },
+      "requested_threads": 8,
+      "signature_elapsed_ms": {
+        "maximum": 7.831773999999999,
+        "median": 7.66845,
+        "minimum": 7.2308140000000005
+      },
+      "signature_items_per_second": {
+        "maximum": 283232.2889234877,
+        "median": 267068.3123708181,
+        "minimum": 261498.8634758868
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 5947392.0,
+        "median": 3899392.0,
+        "minimum": 3846144.0
+      }
+    },
+    {
+      "effective_threads": 12,
+      "items": 2048,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 14.657798999999999,
+        "median": 14.551904,
+        "minimum": 14.178878999999997
+      },
+      "requested_threads": 12,
+      "signature_elapsed_ms": {
+        "maximum": 8.896767,
+        "median": 8.296043,
+        "minimum": 8.113482999999999
+      },
+      "signature_items_per_second": {
+        "maximum": 252419.3370467406,
+        "median": 246864.67994440242,
+        "minimum": 230195.98018021602
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 6082560.0,
+        "median": 4071424.0,
+        "minimum": 4067328.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 8192,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 135.183521,
+        "median": 130.09257800000003,
+        "minimum": 128.591968
+      },
+      "requested_threads": 1,
+      "signature_elapsed_ms": {
+        "maximum": 110.99730600000001,
+        "median": 106.72127300000001,
+        "minimum": 105.649337
+      },
+      "signature_items_per_second": {
+        "maximum": 77539.53060775006,
+        "median": 76760.70355719989,
+        "minimum": 73803.59303495167
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 10493952.0,
+        "median": 10428416.0,
+        "minimum": 10342400.0
+      }
+    },
+    {
+      "effective_threads": 2,
+      "items": 8192,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 103.098111,
+        "median": 87.693761,
+        "minimum": 85.446828
+      },
+      "requested_threads": 2,
+      "signature_elapsed_ms": {
+        "maximum": 78.689401,
+        "median": 64.912672,
+        "minimum": 63.081441000000005
+      },
+      "signature_items_per_second": {
+        "maximum": 129863.86915289395,
+        "median": 126200.32033190683,
+        "minimum": 104105.5071698919
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 10747904.0,
+        "median": 10502144.0,
+        "minimum": 10473472.0
+      }
+    },
+    {
+      "effective_threads": 4,
+      "items": 8192,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 61.290824,
+        "median": 59.961311,
+        "minimum": 57.734911000000004
+      },
+      "requested_threads": 4,
+      "signature_elapsed_ms": {
+        "maximum": 36.627183,
+        "median": 35.755317000000005,
+        "minimum": 33.488386
+      },
+      "signature_items_per_second": {
+        "maximum": 244622.12063609157,
+        "median": 229112.77782825977,
+        "minimum": 223659.02395496808
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 9998336.0,
+        "median": 9969664.0,
+        "minimum": 9936896.0
+      }
+    },
+    {
+      "effective_threads": 8,
+      "items": 8192,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 58.074569,
+        "median": 58.010919,
+        "minimum": 56.642373
+      },
+      "requested_threads": 8,
+      "signature_elapsed_ms": {
+        "maximum": 30.921523999999998,
+        "median": 28.783489999999997,
+        "minimum": 28.080454
+      },
+      "signature_items_per_second": {
+        "maximum": 291733.17496932205,
+        "median": 284607.599703858,
+        "minimum": 264928.72731628624
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 12484608.0,
+        "median": 10342400.0,
+        "minimum": 10338304.0
+      }
+    },
+    {
+      "effective_threads": 12,
+      "items": 8192,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 57.990905,
+        "median": 57.703767000000006,
+        "minimum": 57.149763
+      },
+      "requested_threads": 12,
+      "signature_elapsed_ms": {
+        "maximum": 31.126281,
+        "median": 29.387052,
+        "minimum": 28.894306
+      },
+      "signature_items_per_second": {
+        "maximum": 283516.06714485545,
+        "median": 278762.2249417873,
+        "minimum": 263185.9553025304
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 9404416.0,
+        "median": 9334784.0,
+        "minimum": 9334784.0
+      }
+    },
+    {
+      "effective_threads": 1,
+      "items": 100000,
+      "parallel": false,
+      "product_phase_elapsed_ms": {
+        "maximum": 1783.4351809999998,
+        "median": 1756.255785,
+        "minimum": 1756.150338
+      },
+      "requested_threads": 1,
+      "signature_elapsed_ms": {
+        "maximum": 1403.211741,
+        "median": 1370.416235,
+        "minimum": 1326.0431839999999
+      },
+      "signature_items_per_second": {
+        "maximum": 75412.32533494927,
+        "median": 72970.53073805712,
+        "minimum": 71265.08215270129
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 91873280.0,
+        "median": 91844608.0,
+        "minimum": 91815936.0
+      }
+    },
+    {
+      "effective_threads": 2,
+      "items": 100000,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 1194.7056360000001,
+        "median": 1097.5330480000002,
+        "minimum": 1077.8901540000002
+      },
+      "requested_threads": 2,
+      "signature_elapsed_ms": {
+        "maximum": 819.5858350000001,
+        "median": 798.628048,
+        "minimum": 789.168675
+      },
+      "signature_items_per_second": {
+        "maximum": 126715.62261388543,
+        "median": 125214.73575894245,
+        "minimum": 122012.84567100894
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 93839360.0,
+        "median": 93745152.0,
+        "minimum": 92184576.0
+      }
+    },
+    {
+      "effective_threads": 4,
+      "items": 100000,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 867.061388,
+        "median": 861.347184,
+        "minimum": 852.586646
+      },
+      "requested_threads": 4,
+      "signature_elapsed_ms": {
+        "maximum": 522.6962189999999,
+        "median": 516.260626,
+        "minimum": 509.57907
+      },
+      "signature_items_per_second": {
+        "maximum": 196240.39896301078,
+        "median": 193700.61353468394,
+        "minimum": 191315.7133436238
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 92762112.0,
+        "median": 91791360.0,
+        "minimum": 91144192.0
+      }
+    },
+    {
+      "effective_threads": 8,
+      "items": 100000,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 834.681033,
+        "median": 750.798946,
+        "minimum": 704.928177
+      },
+      "requested_threads": 8,
+      "signature_elapsed_ms": {
+        "maximum": 412.45043,
+        "median": 390.171767,
+        "minimum": 385.788049
+      },
+      "signature_items_per_second": {
+        "maximum": 259209.68847845256,
+        "median": 256297.37581704624,
+        "minimum": 242453.37797320276
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 95436800.0,
+        "median": 91742208.0,
+        "minimum": 91406336.0
+      }
+    },
+    {
+      "effective_threads": 12,
+      "items": 100000,
+      "parallel": true,
+      "product_phase_elapsed_ms": {
+        "maximum": 1006.7221549999999,
+        "median": 946.703774,
+        "minimum": 799.357249
+      },
+      "requested_threads": 12,
+      "signature_elapsed_ms": {
+        "maximum": 572.804512,
+        "median": 570.758076,
+        "minimum": 459.532791
+      },
+      "signature_items_per_second": {
+        "maximum": 217612.3270384855,
+        "median": 175205.58044631156,
+        "minimum": 174579.63040626326
+      },
+      "signature_peak_rss_bytes": {
+        "maximum": 95596544.0,
+        "median": 94093312.0,
+        "minimum": 92405760.0
+      }
+    }
+  ],
+  "schema_version": 1,
+  "speedups": [
+    {
+      "effective_threads": 1,
+      "items": 64,
+      "product_phase_speedup": 1.0209009717835775,
+      "requested_threads": 2,
+      "signature_speedup": 1.0220938217117503
+    },
+    {
+      "effective_threads": 1,
+      "items": 64,
+      "product_phase_speedup": 0.9014716702022398,
+      "requested_threads": 4,
+      "signature_speedup": 0.8888999479374025
+    },
+    {
+      "effective_threads": 1,
+      "items": 64,
+      "product_phase_speedup": 0.881494818457569,
+      "requested_threads": 8,
+      "signature_speedup": 0.9015732745232031
+    },
+    {
+      "effective_threads": 1,
+      "items": 64,
+      "product_phase_speedup": 1.0204859814735856,
+      "requested_threads": 12,
+      "signature_speedup": 1.0146456708969909
+    },
+    {
+      "effective_threads": 1,
+      "items": 128,
+      "product_phase_speedup": 0.9596046020831916,
+      "requested_threads": 2,
+      "signature_speedup": 0.9752812975057263
+    },
+    {
+      "effective_threads": 1,
+      "items": 128,
+      "product_phase_speedup": 1.0089363631990875,
+      "requested_threads": 4,
+      "signature_speedup": 0.97389165690412
+    },
+    {
+      "effective_threads": 1,
+      "items": 128,
+      "product_phase_speedup": 1.0107972254555448,
+      "requested_threads": 8,
+      "signature_speedup": 0.9723168519138292
+    },
+    {
+      "effective_threads": 1,
+      "items": 128,
+      "product_phase_speedup": 0.9234990521046317,
+      "requested_threads": 12,
+      "signature_speedup": 0.8891054406757275
+    },
+    {
+      "effective_threads": 2,
+      "items": 256,
+      "product_phase_speedup": 1.523544504403379,
+      "requested_threads": 2,
+      "signature_speedup": 1.7460593198440233
+    },
+    {
+      "effective_threads": 4,
+      "items": 256,
+      "product_phase_speedup": 1.6817707524319108,
+      "requested_threads": 4,
+      "signature_speedup": 1.9262939511797972
+    },
+    {
+      "effective_threads": 8,
+      "items": 256,
+      "product_phase_speedup": 1.4445017326807856,
+      "requested_threads": 8,
+      "signature_speedup": 1.6325263269466976
+    },
+    {
+      "effective_threads": 12,
+      "items": 256,
+      "product_phase_speedup": 1.27196151254871,
+      "requested_threads": 12,
+      "signature_speedup": 1.3669031823026556
+    },
+    {
+      "effective_threads": 2,
+      "items": 512,
+      "product_phase_speedup": 1.4564628628429102,
+      "requested_threads": 2,
+      "signature_speedup": 1.6600157612576878
+    },
+    {
+      "effective_threads": 4,
+      "items": 512,
+      "product_phase_speedup": 1.98641292843885,
+      "requested_threads": 4,
+      "signature_speedup": 2.4184209354828448
+    },
+    {
+      "effective_threads": 8,
+      "items": 512,
+      "product_phase_speedup": 1.8661576801295854,
+      "requested_threads": 8,
+      "signature_speedup": 2.270190469709072
+    },
+    {
+      "effective_threads": 12,
+      "items": 512,
+      "product_phase_speedup": 1.7594232621019945,
+      "requested_threads": 12,
+      "signature_speedup": 2.0900928992222614
+    },
+    {
+      "effective_threads": 2,
+      "items": 1024,
+      "product_phase_speedup": 1.2503007691590424,
+      "requested_threads": 2,
+      "signature_speedup": 1.28666724291089
+    },
+    {
+      "effective_threads": 4,
+      "items": 1024,
+      "product_phase_speedup": 2.355597522445188,
+      "requested_threads": 4,
+      "signature_speedup": 2.9778423921585
+    },
+    {
+      "effective_threads": 8,
+      "items": 1024,
+      "product_phase_speedup": 2.4608711758760995,
+      "requested_threads": 8,
+      "signature_speedup": 3.3546297792888558
+    },
+    {
+      "effective_threads": 12,
+      "items": 1024,
+      "product_phase_speedup": 1.8421349830943288,
+      "requested_threads": 12,
+      "signature_speedup": 2.2686712595962155
+    },
+    {
+      "effective_threads": 2,
+      "items": 2048,
+      "product_phase_speedup": 1.6063499482677155,
+      "requested_threads": 2,
+      "signature_speedup": 1.825666376323577
+    },
+    {
+      "effective_threads": 4,
+      "items": 2048,
+      "product_phase_speedup": 1.8186198922157264,
+      "requested_threads": 4,
+      "signature_speedup": 2.515807733171746
+    },
+    {
+      "effective_threads": 8,
+      "items": 2048,
+      "product_phase_speedup": 2.2997548551644136,
+      "requested_threads": 8,
+      "signature_speedup": 3.3632774550267657
+    },
+    {
+      "effective_threads": 12,
+      "items": 2048,
+      "product_phase_speedup": 2.146307314836601,
+      "requested_threads": 12,
+      "signature_speedup": 3.1088465910796272
+    },
+    {
+      "effective_threads": 2,
+      "items": 8192,
+      "product_phase_speedup": 1.4834872688377458,
+      "requested_threads": 2,
+      "signature_speedup": 1.6440745652867288
+    },
+    {
+      "effective_threads": 4,
+      "items": 8192,
+      "product_phase_speedup": 2.1696086331401263,
+      "requested_threads": 4,
+      "signature_speedup": 2.9847665173825755
+    },
+    {
+      "effective_threads": 8,
+      "items": 8192,
+      "product_phase_speedup": 2.242553302767019,
+      "requested_threads": 8,
+      "signature_speedup": 3.7077252619470404
+    },
+    {
+      "effective_threads": 12,
+      "items": 8192,
+      "product_phase_speedup": 2.2544902137844836,
+      "requested_threads": 12,
+      "signature_speedup": 3.631574647228991
+    },
+    {
+      "effective_threads": 2,
+      "items": 100000,
+      "product_phase_speedup": 1.6001848766197697,
+      "requested_threads": 2,
+      "signature_speedup": 1.7159630674528974
+    },
+    {
+      "effective_threads": 4,
+      "items": 100000,
+      "product_phase_speedup": 2.0389638668627725,
+      "requested_threads": 4,
+      "signature_speedup": 2.6545046551739158
+    },
+    {
+      "effective_threads": 8,
+      "items": 100000,
+      "product_phase_speedup": 2.3391825392892867,
+      "requested_threads": 8,
+      "signature_speedup": 3.5123408480757656
+    },
+    {
+      "effective_threads": 12,
+      "items": 100000,
+      "product_phase_speedup": 1.8551270558260182,
+      "requested_threads": 12,
+      "signature_speedup": 2.401045719062239
+    }
+  ],
+  "workload": "parallel-signatures-v1",
+  "worktree_clean": true
+}

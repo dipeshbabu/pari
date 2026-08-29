@@ -20,6 +20,19 @@ python scripts/parallel_benchmark.py \
 
 The runner builds the current `pari-bench` release binary, rejects dirty worktrees by default, checks every report's Git SHA and scalar/batch candidate parity, then records signature and product-phase speedups in versioned JSON.
 
+The selected clean-SHA result is stored in [the signature scaling artifact](../benchmarks/results/parallel-cpu/09a83147fba6b800d0e3783c3c15ff2db14f1a73/signature-scaling.json). Median results from the one- and eight-worker rows are:
+
+| Rows | Scalar ms | Eight-worker ms | Signature speedup | Product-phase speedup |
+| ---: | ---: | ---: | ---: | ---: |
+| 64 | 0.697 | 0.773 (scalar policy) | 0.90x | 0.88x |
+| 128 | 1.380 | 1.419 (scalar policy) | 0.97x | 1.01x |
+| 256 | 3.142 | 1.925 | 1.63x | 1.44x |
+| 512 | 5.704 | 2.513 | 2.27x | 1.87x |
+| 2,048 | 25.791 | 7.668 | 3.36x | 2.30x |
+| 100,000 | 1,370.416 | 390.172 | 3.51x | 2.34x |
+
+At 100K rows, twelve workers reached 175.2K signatures/s versus 256.3K/s with eight. One-worker signature peak RSS fell from 191.3 MiB in the profiled baseline to 87.6 MiB with shared permutations, a 54.2% reduction.
+
 ## Execution policy
 
 - Batches below 256 rows use the scalar loop and do not initialize a worker pool.
