@@ -2,6 +2,8 @@
 
 `pari-index` provides Pari's first approximate candidate index: an in-memory threshold LSH for `MinHash32` signatures.
 
+Use the canonical [planner and explain API](planning.md) to select bands, rows, and storage capacity without reproducing Pari's probability formulas.
+
 ## Why batch first
 
 The scalar `insert` and `query` methods are convenience APIs. The engine also exposes `insert_many` and `query_many`, and the batch paths are designed to avoid repeated setup work. `query_many` reuses its candidate scratch set across queries, while batch insertion validates the complete batch before mutating buckets.

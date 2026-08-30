@@ -16,7 +16,9 @@ use pari_format::{
     decode_bucket_segment, read_bucket_members, validate_global_bucket_order, FileLayout,
     SectionKind,
 };
-use pari_index::{BucketDistribution, LshIndex32, QueryMetrics};
+use pari_index::{
+    plan_lsh, BucketDistribution, LshIndex32, LshPlan, LshPlanOptions, QueryMetrics, StorageMode,
+};
 use pari_store::PersistentIndex32;
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +41,10 @@ enum Commands {
     Search(SearchArgs),
     /// Emit candidate pairs or connected duplicate groups from JSONL records.
     Dedup(DedupArgs),
+    /// Recommend LSH parameters, capacity, and storage from analytical models.
+    Plan(PlanArgs),
+    /// Explain an existing index without scanning bucket memberships.
+    Explain(ExplainArgs),
     /// Print index metadata and storage statistics.
     Stats(StatsArgs),
     /// Validate index structure and all persisted checksums.
@@ -119,6 +125,36 @@ struct DedupArgs {
     batch_size: usize,
     #[command(flatten)]
     progress: ProgressArgs,
+}
+
+#[derive(Debug, clap::Args)]
+struct PlanArgs {
+    /// Expected number of indexed items.
+    #[arg(long)]
+    items: u64,
+    #[arg(long, default_value_t = 0.8)]
+    threshold: f64,
+    #[arg(long, default_value_t = 128)]
+    num_perm: usize,
+    /// Local resident-memory budget in MiB.
+    #[arg(long)]
+    memory_budget_mib: Option<u64>,
+    /// Storage preference: auto, memory, persistent, lazy, or redis.
+    #[arg(long, default_value = "auto")]
+    storage: StorageMode,
+    /// Emit the complete plan as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct ExplainArgs {
+    /// Existing `.pari` index file.
+    #[arg(short, long)]
+    index: PathBuf,
+    /// Emit the complete explanation as JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -327,6 +363,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         Commands::Index(args) => index(args),
         Commands::Search(args) => search(args),
         Commands::Dedup(args) => dedup(args),
+        Commands::Plan(args) => plan(args),
+        Commands::Explain(args) => explain(args),
         Commands::Stats(args) => stats(args),
         Commands::Verify(args) => verify(args),
         Commands::Completion(args) => {
@@ -336,6 +374,139 @@ fn run() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
     }
+}
+
+fn plan(args: &PlanArgs) -> Result<(), Box<dyn Error>> {
+    let mut options =
+        LshPlanOptions::new(args.items, args.threshold, args.num_perm).storage_mode(args.storage);
+    if let Some(mebibytes) = args.memory_budget_mib {
+        let bytes = mebibytes
+            .checked_mul(1024 * 1024)
+            .ok_or("--memory-budget-mib is too large")?;
+        options = options.memory_budget_bytes(bytes);
+    }
+    print_plan(plan_lsh(options)?, args.json);
+    Ok(())
+}
+
+fn explain(args: &ExplainArgs) -> Result<(), Box<dyn Error>> {
+    let store = PersistentIndex32::open(&args.index)?;
+    print_plan(store.explain()?, args.json);
+    Ok(())
+}
+
+fn print_plan(plan: LshPlan, json: bool) {
+    if json {
+        println!("{}", lsh_plan_json(plan));
+        return;
+    }
+
+    println!(
+        "model: {} (analytical/model-based, not a measured guarantee)",
+        plan.model
+    );
+    println!("items: {}", plan.expected_items);
+    println!("threshold: {}", plan.threshold);
+    println!("num perm: {}", plan.num_perm);
+    println!(
+        "parameters: {} bands x {} rows ({})",
+        plan.params.bands,
+        plan.params.rows,
+        plan.parameter_source.as_str()
+    );
+    println!(
+        "permutations: {} used, {} unused",
+        plan.used_permutations, plan.unused_permutations
+    );
+    println!(
+        "candidate probability at threshold: {:.6}",
+        plan.candidate_probability_at_threshold
+    );
+    println!(
+        "50% candidate similarity: {:.6}",
+        plan.similarity_at_50_percent_candidates
+    );
+    println!("false-positive area: {:.6}", plan.false_positive_area);
+    println!("false-negative area: {:.6}", plan.false_negative_area);
+    println!(
+        "signature bytes/item: {}",
+        plan.sizes.signature_bytes_per_item
+    );
+    println!(
+        "bucket memberships/item: {}",
+        plan.bucket_memberships_per_item
+    );
+    println!(
+        "modeled index metadata bytes: {}",
+        plan.sizes.index_metadata_bytes
+    );
+    println!(
+        "modeled in-memory index bytes: {}",
+        plan.sizes.in_memory_index_bytes
+    );
+    println!(
+        "modeled persistent index bytes: {}",
+        plan.sizes.persistent_index_bytes
+    );
+    println!(
+        "modeled lazy resident bytes: {}",
+        plan.sizes.lazy_resident_bytes
+    );
+    if let Some(budget) = plan.memory_budget_bytes {
+        println!("memory budget bytes: {budget}");
+        println!(
+            "in-memory fits with 50% headroom: {}",
+            plan.in_memory_fits_budget.unwrap_or(false)
+        );
+        println!(
+            "persistent/lazy fits with 50% headroom: {}",
+            plan.persistent_fits_budget.unwrap_or(false)
+        );
+    }
+    println!("requested storage: {}", plan.requested_storage);
+    println!("recommended storage: {}", plan.recommended_storage);
+    println!("recommendation: {}", plan.recommendation_guidance());
+}
+
+fn lsh_plan_json(plan: LshPlan) -> serde_json::Value {
+    serde_json::json!({
+        "model": plan.model,
+        "estimate_semantics": "analytical/model-based, not a measured guarantee",
+        "items": plan.expected_items,
+        "threshold": plan.threshold,
+        "num_perm": plan.num_perm,
+        "bands": plan.params.bands,
+        "rows": plan.params.rows,
+        "parameter_source": plan.parameter_source.as_str(),
+        "used_permutations": plan.used_permutations,
+        "unused_permutations": plan.unused_permutations,
+        "candidate_probability_at_threshold": plan.candidate_probability_at_threshold,
+        "similarity_at_50_percent_candidates": plan.similarity_at_50_percent_candidates,
+        "false_positive_area": plan.false_positive_area,
+        "false_negative_area": plan.false_negative_area,
+        "bucket_memberships_per_item": plan.bucket_memberships_per_item,
+        "sizes": {
+            "signature_bytes_per_item": plan.sizes.signature_bytes_per_item,
+            "signature_bytes": plan.sizes.signature_bytes,
+            "index_metadata_bytes_per_item": plan.sizes.index_metadata_bytes_per_item,
+            "index_metadata_bytes": plan.sizes.index_metadata_bytes,
+            "in_memory_index_bytes_per_item": plan.sizes.in_memory_index_bytes_per_item,
+            "in_memory_index_bytes": plan.sizes.in_memory_index_bytes,
+            "persistent_index_bytes_per_item": plan.sizes.persistent_index_bytes_per_item,
+            "persistent_index_bytes": plan.sizes.persistent_index_bytes,
+            "lazy_resident_bytes_per_item": plan.sizes.lazy_resident_bytes_per_item,
+            "lazy_resident_bytes": plan.sizes.lazy_resident_bytes,
+            "in_memory_with_headroom_bytes": plan.sizes.in_memory_with_headroom_bytes,
+            "lazy_with_headroom_bytes": plan.sizes.lazy_with_headroom_bytes,
+        },
+        "memory_budget_bytes": plan.memory_budget_bytes,
+        "in_memory_fits_budget": plan.in_memory_fits_budget,
+        "persistent_fits_budget": plan.persistent_fits_budget,
+        "requested_storage": plan.requested_storage.as_str(),
+        "recommended_storage": plan.recommended_storage.as_str(),
+        "recommendation_reason": plan.recommendation_reason.as_str(),
+        "recommendation": plan.recommendation_guidance(),
+    })
 }
 
 fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {

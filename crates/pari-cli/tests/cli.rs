@@ -42,6 +42,28 @@ fn signature(values: &[&str]) -> Vec<u32> {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn index_search_stats_verify_and_dedup_work_end_to_end() {
+    let output = pari()
+        .args([
+            "plan",
+            "--items",
+            "1000000",
+            "--memory-budget-mib",
+            "2048",
+            "--storage",
+            "auto",
+            "--json",
+        ])
+        .output()
+        .expect("plan command");
+    assert_success(&output);
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout).expect("plan JSON");
+    assert_eq!(plan["model"], "pari-lsh-planner-v1");
+    assert_eq!(plan["bands"], 9);
+    assert_eq!(plan["rows"], 13);
+    assert_eq!(plan["parameter_source"], "tuned");
+    assert_eq!(plan["sizes"]["persistent_index_bytes"], 440_000_736_u64);
+    assert_eq!(plan["recommended_storage"], "memory");
+
     let records = temp_path("records", "jsonl");
     let queries = temp_path("queries", "jsonl");
     let index = temp_path("index", "pari");
@@ -152,6 +174,24 @@ fn index_search_stats_verify_and_dedup_work_end_to_end() {
 
     let output = pari()
         .args([
+            "explain",
+            "--index",
+            index.to_str().expect("path"),
+            "--json",
+        ])
+        .output()
+        .expect("explain command");
+    assert_success(&output);
+    let explanation: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("explain JSON");
+    assert_eq!(explanation["items"], 3);
+    assert_eq!(explanation["parameter_source"], "existing");
+    assert_eq!(explanation["requested_storage"], "persistent");
+    assert_eq!(explanation["bands"], stats["bands"]);
+    assert_eq!(explanation["rows"], stats["rows"]);
+
+    let output = pari()
+        .args([
             "verify",
             "--index",
             index.to_str().expect("path"),
@@ -256,5 +296,7 @@ fn completion_is_generated_from_command_definition() {
     let text = String::from_utf8(output.stdout).expect("utf8 completion");
     assert!(text.contains("pari"));
     assert!(text.contains("dedup"));
+    assert!(text.contains("plan"));
+    assert!(text.contains("explain"));
     assert!(text.contains("verify"));
 }

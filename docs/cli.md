@@ -33,6 +33,8 @@ Machine-readable output revision 1 is pinned by compiled CLI integration tests. 
 - `stats --json`: `items`, `file_bytes`, `dirty`, `bands`, `rows`, `committed_buckets`, `overlay_buckets`, `suppressed_base_keys`, `committed_bucket_distribution`, `overlay_bucket_distribution`, `query_metrics`, `num_perm`, `seed`, `threshold`
 - `verify --json`: `valid`, `sections`, `bucket_sections`, `buckets`, `members_checked`
 
+The experimental `plan --json` and `explain --json` commands share the model-labeled field set documented in [planning.md](planning.md). Compiled tests pin their current shape, but the planner model may be versioned at a future 0.x minor release as workload evidence improves.
+
 Revision-1 consumers should ignore unknown output fields so future releases can add information without breaking existing parsers. Removing, renaming, retyping, or changing the meaning of an existing field requires a new documented output revision.
 
 ## JSONL record format
@@ -133,6 +135,17 @@ Example group:
 The CLI streams JSONL records into `LshIndex32`; it does not retain the original corpus. Group construction uses Pari's native union-find path from `pari-index`.
 
 ## Inspect and verify
+
+Plan settings before a build, or explain the configuration of an existing index:
+
+```bash
+pari plan --items 1000000 --memory-budget-mib 2048 --storage auto --json
+pari explain --index documents.pari --json
+```
+
+Planning is deterministic and does not read a corpus. Explanation reads persisted configuration and item-count metadata without scanning bucket memberships. All estimates are labeled analytical/model-based; see [LSH planning and explanation](planning.md) for formulas, calibration, policy, and limitations.
+
+Inspect exact current storage state or verify all persisted data:
 
 ```bash
 pari stats --index documents.pari --json

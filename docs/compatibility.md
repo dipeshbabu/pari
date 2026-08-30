@@ -59,6 +59,9 @@ Experimental interfaces are usable, tested, and documented, but may change at a 
 - optional `pari.datasketch` interoperability adapters
 - Redis namespace layout and descriptor bytes
 - advanced low-level LSH parameter APIs
+- `pari_index` planner types, `pari.LshPlan`, `pari.plan_lsh`, and `Index.explain`
+- the CLI `plan` and `explain` commands and planner JSON fields
+- planner model coefficients and storage recommendation policy; outputs carry an explicit model version
 - direct use of `pari-store-lazy` and `pari-store-build`
 
 A 0.1.x patch release should still avoid unnecessary breakage to experimental APIs. If a security or correctness fix requires a break, the release notes must state it explicitly.

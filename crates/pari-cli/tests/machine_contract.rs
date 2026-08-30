@@ -149,6 +149,81 @@ fn assert_stats_contract(fixture: &Fixture) {
     );
 }
 
+fn assert_plan_shape(value: &serde_json::Value) {
+    assert_exact_keys(
+        value,
+        &[
+            "bands",
+            "bucket_memberships_per_item",
+            "candidate_probability_at_threshold",
+            "estimate_semantics",
+            "false_negative_area",
+            "false_positive_area",
+            "in_memory_fits_budget",
+            "items",
+            "memory_budget_bytes",
+            "model",
+            "num_perm",
+            "parameter_source",
+            "persistent_fits_budget",
+            "recommendation",
+            "recommendation_reason",
+            "recommended_storage",
+            "requested_storage",
+            "rows",
+            "similarity_at_50_percent_candidates",
+            "sizes",
+            "threshold",
+            "unused_permutations",
+            "used_permutations",
+        ],
+    );
+    assert_exact_keys(
+        &value["sizes"],
+        &[
+            "in_memory_index_bytes",
+            "in_memory_index_bytes_per_item",
+            "in_memory_with_headroom_bytes",
+            "index_metadata_bytes",
+            "index_metadata_bytes_per_item",
+            "lazy_resident_bytes",
+            "lazy_resident_bytes_per_item",
+            "lazy_with_headroom_bytes",
+            "persistent_index_bytes",
+            "persistent_index_bytes_per_item",
+            "signature_bytes",
+            "signature_bytes_per_item",
+        ],
+    );
+}
+
+fn assert_plan_contract() {
+    let output = pari()
+        .args(["plan", "--items", "1000", "--json"])
+        .output()
+        .expect("plan command");
+    assert_success(&output);
+    let value = parse_json(&output);
+    assert_plan_shape(&value);
+    assert_eq!(value["parameter_source"], "tuned");
+}
+
+fn assert_explain_contract(fixture: &Fixture) {
+    let output = pari()
+        .args([
+            "explain",
+            "--index",
+            fixture.index.to_str().expect("index path"),
+            "--json",
+        ])
+        .output()
+        .expect("explain command");
+    assert_success(&output);
+    let value = parse_json(&output);
+    assert_plan_shape(&value);
+    assert_eq!(value["parameter_source"], "existing");
+}
+
 fn assert_verify_contract(fixture: &Fixture) {
     let output = pari()
         .args([
@@ -191,9 +266,11 @@ fn assert_dedup_contract(fixture: &Fixture, emit: &str, expected: &[&str]) {
 #[test]
 fn v01_json_output_fields_are_pinned() {
     let fixture = Fixture::new();
+    assert_plan_contract();
     assert_index_contract(&fixture);
     assert_search_contract(&fixture);
     assert_stats_contract(&fixture);
+    assert_explain_contract(&fixture);
     assert_verify_contract(&fixture);
     assert_dedup_contract(&fixture, "groups", &["members", "representative"]);
     assert_dedup_contract(&fixture, "pairs", &["left", "right"]);

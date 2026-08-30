@@ -10,7 +10,7 @@ Owns hashing, signatures, similarity estimation, and compatibility metadata. It 
 
 ### `pari-index`
 
-Owns approximate candidate generation such as MinHash LSH. Batch insertion and batch query are the primary implementation paths. Scalar APIs are convenience wrappers.
+Owns approximate candidate generation such as MinHash LSH. Batch insertion and batch query are the primary implementation paths. Scalar APIs are convenience wrappers. The canonical planner also lives here so storage, CLI, and Python surfaces share one probability and capacity model.
 
 ### `pari-store`
 

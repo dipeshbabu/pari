@@ -25,7 +25,10 @@ use pari_format::{
     SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
     BUCKET_SEGMENT_TARGET_BYTES,
 };
-use pari_index::{BucketDistribution, LshError, LshIndex32, LshParams, QueryMetrics};
+use pari_index::{
+    explain_lsh, BucketDistribution, LshError, LshIndex32, LshParams, LshPlan, LshPlanError,
+    LshPlanOptions, QueryMetrics, StorageMode,
+};
 
 const U64_BYTES: usize = 8;
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
@@ -257,6 +260,19 @@ impl LazyIndex32 {
     /// Enable or disable process-local query observation.
     pub fn set_observability(&mut self, enabled: bool) {
         self.query_metrics = enabled.then(QueryMetrics::default);
+    }
+
+    /// Explain this index's persisted configuration without scanning buckets.
+    pub fn explain(&self) -> Result<LshPlan, LshPlanError> {
+        explain_lsh(
+            LshPlanOptions::new(
+                u64::try_from(self.item_count).unwrap_or(u64::MAX),
+                self.layout.metadata().threshold(),
+                self.num_perm,
+            )
+            .storage_mode(StorageMode::Lazy),
+            self.params,
+        )
     }
 
     /// Return compact in-memory directory and file statistics.
@@ -766,6 +782,10 @@ mod tests {
         let initial = lazy.stats();
         assert!(initial.distribution.memberships > 0);
         assert!(initial.queries.is_none());
+        let explanation = lazy.explain().expect("explain");
+        assert_eq!(explanation.expected_items, 4);
+        assert_eq!(explanation.parameter_source.as_str(), "existing");
+        assert_eq!(explanation.requested_storage.as_str(), "lazy");
         lazy.set_observability(true);
         for query in &sketches {
             assert_eq!(

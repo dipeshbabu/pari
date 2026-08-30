@@ -11,10 +11,12 @@ from ._native import (
     DuplicateKeyError,
     Index,
     IndexStats,
+    LshPlan,
     MinHash,
     PariError,
     StorageError,
     __version__,
+    plan_lsh,
 )
 from .dedupe import (
     DedupeError,
@@ -39,6 +41,7 @@ __all__ = [
     "Index",
     "IndexStats",
     "InvalidRepresentativeError",
+    "LshPlan",
     "MinHash",
     "PariError",
     "ProgressCancelledError",
@@ -46,4 +49,5 @@ __all__ = [
     "StorageError",
     "__version__",
     "deduplicate",
+    "plan_lsh",
 ]

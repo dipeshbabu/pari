@@ -133,7 +133,7 @@ Source users evaluating shared memory or Redis backends can follow the [storage 
 - [Compatibility policy](docs/compatibility.md)
 - [Python guide](docs/python.md), [CLI guide](docs/cli.md), and [text workload guide](docs/text-workloads.md)
 - [Datasketch 2.x interoperability and migration](docs/datasketch-v2.md)
-- [Benchmark methodology](docs/benchmarks.md), [versioned evidence](docs/benchmark-evidence.md), [CPU parallelism](docs/parallelism.md), [observability](docs/observability.md), and [workload roadmap](https://github.com/dipeshbabu/pari/issues)
+- [Benchmark methodology](docs/benchmarks.md), [versioned evidence](docs/benchmark-evidence.md), [CPU parallelism](docs/parallelism.md), [LSH planning](docs/planning.md), [observability](docs/observability.md), and [workload roadmap](https://github.com/dipeshbabu/pari/issues)
 
 ## Design goals
 
