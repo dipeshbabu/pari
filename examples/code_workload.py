@@ -622,7 +622,9 @@ def dedupe_command(args: argparse.Namespace) -> None:
             "skipped_binary": metric(stats.skipped_binary, "files", "neutral"),
             "skipped_empty": metric(stats.skipped_empty, "files", "neutral"),
             "skipped_extension": metric(stats.skipped_extension, "files", "neutral"),
-            "skipped_hidden": metric(stats.skipped_hidden, "files", "neutral"),
+            "skipped_hidden_entries": metric(
+                stats.skipped_hidden, "entries", "neutral"
+            ),
             "skipped_oversize": metric(stats.skipped_oversize, "files", "neutral"),
             "tokens": metric(stats.tokens, "tokens", "neutral"),
             "tokens_per_item": metric(

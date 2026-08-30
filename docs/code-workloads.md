@@ -34,7 +34,7 @@ Repeat `--root REPOSITORY=PATH` to scan multiple repositories. Repository names 
 {"key":0,"path":"src/checksum.py","repository":"repo-alpha"}
 ```
 
-The default extension allowlist covers common C/C++, C#, Go, Java, JavaScript/TypeScript, Kotlin, PHP, Python, Ruby, Rust, Scala, shell, and Swift files. Repeat `--extension py` or `--extension .rs` to replace that list. Hidden entries, symlinks, files larger than 1 MiB, NUL-containing files, and token-empty files are skipped and counted. Use `--include-hidden` or `--max-file-bytes` when the corpus needs a different policy.
+The default extension allowlist covers common C/C++, C#, Go, Java, JavaScript/TypeScript, Kotlin, PHP, Python, Ruby, Rust, Scala, shell, and Swift files. Repeat `--extension py` or `--extension .rs` to replace that list. Hidden entries, symlinks, files larger than 1 MiB, NUL-containing files, and token-empty files are skipped. The report counts each applied skip policy except symlinks, which traversal never follows. Use `--include-hidden` or `--max-file-bytes` when the corpus needs a different policy.
 
 Traversal sorts one directory at a time and reads one accepted file at a time. It does not build a repository-wide path list or retain raw file contents after their features enter a batch. Each accepted file must be UTF-8. A file that changes while it is read, or before exact verification reloads it, fails the run.
 
