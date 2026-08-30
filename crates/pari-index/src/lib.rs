@@ -325,7 +325,7 @@ pub struct LshIndex32 {
     key_to_id: HashMap<u64, u32>,
     id_to_key: Vec<Option<u64>>,
     band_hashes: Vec<Option<Vec<u64>>>,
-    query_observer: Option<QueryObserver>,
+    query_observer: Option<Box<QueryObserver>>,
 }
 
 impl LshIndex32 {
@@ -524,7 +524,7 @@ impl LshIndex32 {
 
     /// Enable or disable process-local query observation.
     pub fn set_observability(&mut self, enabled: bool) {
-        self.query_observer = enabled.then(QueryObserver::default);
+        self.query_observer = enabled.then(|| Box::new(QueryObserver::default()));
     }
 
     /// Return exact on-demand bucket diagnostics and optional query metrics.
@@ -539,7 +539,10 @@ impl LshIndex32 {
                     .iter()
                     .flat_map(|table| table.values().map(Vec::len)),
             ),
-            queries: self.query_observer.as_ref().map(QueryObserver::snapshot),
+            queries: self
+                .query_observer
+                .as_ref()
+                .map(|observer| observer.snapshot()),
         }
     }
 
