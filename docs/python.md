@@ -210,6 +210,10 @@ Mutations are visible through the same Python handle immediately. `flush`, `sync
 
 All persistent index operations that may perform Rust compute or filesystem work run outside the Python GIL. The Python binding keeps the Rust index behind a synchronized handle so scalar and batch calls share the same safety contract.
 
+Create or open an index with `observability=True` to collect process-local query counts, candidate rate, and wall-clock latency. `IndexStats` also exposes exact committed bucket percentiles and overlay membership counts. Observation can be reset or disabled with `set_observability()`; it is never persisted into the index file.
+
+High-level deduplication accepts a batch progress callback. Callbacks receive `ProgressEvent` after each completed native batch. Returning `False` raises `ProgressCancelledError` with the committed item count, while callback exceptions propagate unchanged. See [observability](observability.md) for examples and metric semantics.
+
 ## Exceptions
 
 All Pari-specific Python exceptions derive from `PariError`:
@@ -219,6 +223,7 @@ All Pari-specific Python exceptions derive from `PariError`:
 - `DuplicateKeyError`: an insert would reuse an existing key.
 - `StorageError`: filesystem, format, checksum, or persistence failures.
 - `ClosedIndexError`: an operation requires a handle that has already been closed.
+- `ProgressCancelledError`: a progress callback returned `False` after a completed batch; its `completed` field reports committed items.
 
 These exception classes are stable API surface; callers do not need to parse Rust error strings.
 

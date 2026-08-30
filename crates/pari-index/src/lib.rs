@@ -10,6 +10,8 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     fmt,
+    sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
+    time::{Duration, Instant},
 };
 
 use pari_core::MinHash32;
@@ -46,6 +48,196 @@ impl LshParams {
     pub const fn used_permutations(self) -> Option<usize> {
         self.bands.checked_mul(self.rows)
     }
+}
+
+/// Exact on-demand summary of stored LSH bucket sizes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BucketDistribution {
+    /// Number of non-empty buckets.
+    pub buckets: u64,
+    /// Total `(bucket, key)` memberships.
+    pub memberships: u64,
+    /// Smallest non-empty bucket size.
+    pub minimum: u64,
+    /// Nearest-rank median bucket size.
+    pub p50: u64,
+    /// Nearest-rank 95th-percentile bucket size.
+    pub p95: u64,
+    /// Nearest-rank 99th-percentile bucket size.
+    pub p99: u64,
+    /// Largest bucket size.
+    pub maximum: u64,
+}
+
+impl BucketDistribution {
+    /// Summarize exact bucket sizes supplied by an index implementation.
+    #[must_use]
+    pub fn from_sizes(sizes: impl IntoIterator<Item = usize>) -> Self {
+        let mut sizes = sizes
+            .into_iter()
+            .map(|size| u64::try_from(size).unwrap_or(u64::MAX))
+            .filter(|size| *size > 0)
+            .collect::<Vec<_>>();
+        if sizes.is_empty() {
+            return Self::default();
+        }
+        sizes.sort_unstable();
+        Self {
+            buckets: u64::try_from(sizes.len()).unwrap_or(u64::MAX),
+            memberships: sizes.iter().copied().fold(0_u64, u64::saturating_add),
+            minimum: sizes.first().copied().unwrap_or(0),
+            p50: nearest_rank(&sizes, 50),
+            p95: nearest_rank(&sizes, 95),
+            p99: nearest_rank(&sizes, 99),
+            maximum: sizes.last().copied().unwrap_or(0),
+        }
+    }
+
+    /// Exact membership count divided by the exact non-empty bucket count.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn average_members(&self) -> f64 {
+        if self.buckets == 0 {
+            0.0
+        } else {
+            self.memberships as f64 / self.buckets as f64
+        }
+    }
+}
+
+/// Opt-in process-local query counters and wall-clock latency observations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueryMetrics {
+    /// Scalar or batch query calls.
+    pub operations: u64,
+    /// Individual query signatures processed.
+    pub queries: u64,
+    /// Candidate keys returned across all queries.
+    pub candidates: u64,
+    /// Live item opportunities across all queries.
+    pub possible_candidates: u64,
+    /// Summed observed operation latency in nanoseconds.
+    pub total_latency_ns: u64,
+    /// Largest observed operation latency in nanoseconds.
+    pub max_latency_ns: u64,
+}
+
+impl QueryMetrics {
+    /// Record one scalar or batch query operation.
+    pub fn record(
+        &mut self,
+        queries: usize,
+        candidates: usize,
+        possible_candidates: usize,
+        elapsed: Duration,
+    ) {
+        self.operations = self.operations.saturating_add(1);
+        self.queries = self
+            .queries
+            .saturating_add(u64::try_from(queries).unwrap_or(u64::MAX));
+        self.candidates = self
+            .candidates
+            .saturating_add(u64::try_from(candidates).unwrap_or(u64::MAX));
+        self.possible_candidates = self
+            .possible_candidates
+            .saturating_add(u64::try_from(possible_candidates).unwrap_or(u64::MAX));
+        let elapsed = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        self.total_latency_ns = self.total_latency_ns.saturating_add(elapsed);
+        self.max_latency_ns = self.max_latency_ns.max(elapsed);
+    }
+
+    /// Exact aggregate candidate rate for the observed queries.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn candidate_rate(&self) -> f64 {
+        if self.possible_candidates == 0 {
+            0.0
+        } else {
+            self.candidates as f64 / self.possible_candidates as f64
+        }
+    }
+
+    /// Mean observed latency per scalar or batch operation in milliseconds.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn average_operation_ms(&self) -> f64 {
+        if self.operations == 0 {
+            0.0
+        } else {
+            self.total_latency_ns as f64 / self.operations as f64 / 1_000_000.0
+        }
+    }
+}
+
+/// On-demand in-memory index diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LshStats {
+    /// Number of live external keys.
+    pub items: usize,
+    /// Number of configured bands.
+    pub bands: usize,
+    /// Number of signature rows per band.
+    pub rows: usize,
+    /// Exact non-empty bucket distribution at observation time.
+    pub buckets: BucketDistribution,
+    /// Process-local query metrics when observability is enabled.
+    pub queries: Option<QueryMetrics>,
+}
+
+#[derive(Debug, Default)]
+struct QueryObserver {
+    operations: AtomicU64,
+    queries: AtomicU64,
+    candidates: AtomicU64,
+    possible_candidates: AtomicU64,
+    total_latency_ns: AtomicU64,
+    max_latency_ns: AtomicU64,
+}
+
+impl QueryObserver {
+    fn record(
+        &self,
+        queries: usize,
+        candidates: usize,
+        possible_candidates: usize,
+        elapsed: Duration,
+    ) {
+        self.operations.fetch_add(1, AtomicOrdering::Relaxed);
+        self.queries.fetch_add(
+            u64::try_from(queries).unwrap_or(u64::MAX),
+            AtomicOrdering::Relaxed,
+        );
+        self.candidates.fetch_add(
+            u64::try_from(candidates).unwrap_or(u64::MAX),
+            AtomicOrdering::Relaxed,
+        );
+        self.possible_candidates.fetch_add(
+            u64::try_from(possible_candidates).unwrap_or(u64::MAX),
+            AtomicOrdering::Relaxed,
+        );
+        let elapsed = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        self.total_latency_ns
+            .fetch_add(elapsed, AtomicOrdering::Relaxed);
+        self.max_latency_ns
+            .fetch_max(elapsed, AtomicOrdering::Relaxed);
+    }
+
+    fn snapshot(&self) -> QueryMetrics {
+        QueryMetrics {
+            operations: self.operations.load(AtomicOrdering::Relaxed),
+            queries: self.queries.load(AtomicOrdering::Relaxed),
+            candidates: self.candidates.load(AtomicOrdering::Relaxed),
+            possible_candidates: self.possible_candidates.load(AtomicOrdering::Relaxed),
+            total_latency_ns: self.total_latency_ns.load(AtomicOrdering::Relaxed),
+            max_latency_ns: self.max_latency_ns.load(AtomicOrdering::Relaxed),
+        }
+    }
+}
+
+fn nearest_rank(sorted: &[u64], percentile: usize) -> u64 {
+    let span = sorted.len().saturating_sub(1);
+    let index = span.saturating_mul(percentile).div_ceil(100).min(span);
+    sorted[index]
 }
 
 /// Errors returned by the in-memory LSH index.
@@ -133,6 +325,7 @@ pub struct LshIndex32 {
     key_to_id: HashMap<u64, u32>,
     id_to_key: Vec<Option<u64>>,
     band_hashes: Vec<Option<Vec<u64>>>,
+    query_observer: Option<QueryObserver>,
 }
 
 impl LshIndex32 {
@@ -178,6 +371,7 @@ impl LshIndex32 {
             key_to_id: HashMap::new(),
             id_to_key: Vec::new(),
             band_hashes: Vec::new(),
+            query_observer: None,
         })
     }
 
@@ -213,10 +407,15 @@ impl LshIndex32 {
 
     /// Query approximate candidates for one signature.
     pub fn query(&self, sketch: &MinHash32) -> Result<Vec<u64>, LshError> {
+        let started = self.query_observer.as_ref().map(|_| Instant::now());
         self.ensure_compatible(sketch)?;
         let mut candidates = HashSet::new();
         self.collect_candidate_ids(sketch.signature(), &mut candidates);
-        Ok(self.keys_for_candidates(&candidates))
+        let output = self.keys_for_candidates(&candidates);
+        if let (Some(observer), Some(started)) = (&self.query_observer, started) {
+            observer.record(1, output.len(), self.len(), started.elapsed());
+        }
+        Ok(output)
     }
 
     /// Query many signatures while reusing the candidate scratch set.
@@ -224,14 +423,26 @@ impl LshIndex32 {
         &self,
         sketches: impl IntoIterator<Item = &'a MinHash32>,
     ) -> Result<Vec<Vec<u64>>, LshError> {
+        let started = self.query_observer.as_ref().map(|_| Instant::now());
         let mut output = Vec::new();
         let mut candidates = HashSet::new();
+        let mut candidate_count = 0_usize;
 
         for sketch in sketches {
             self.ensure_compatible(sketch)?;
             candidates.clear();
             self.collect_candidate_ids(sketch.signature(), &mut candidates);
-            output.push(self.keys_for_candidates(&candidates));
+            let keys = self.keys_for_candidates(&candidates);
+            candidate_count = candidate_count.saturating_add(keys.len());
+            output.push(keys);
+        }
+        if let (Some(observer), Some(started)) = (&self.query_observer, started) {
+            observer.record(
+                output.len(),
+                candidate_count,
+                output.len().saturating_mul(self.len()),
+                started.elapsed(),
+            );
         }
         Ok(output)
     }
@@ -309,6 +520,27 @@ impl LshIndex32 {
     #[must_use]
     pub const fn params(&self) -> LshParams {
         self.params
+    }
+
+    /// Enable or disable process-local query observation.
+    pub fn set_observability(&mut self, enabled: bool) {
+        self.query_observer = enabled.then(QueryObserver::default);
+    }
+
+    /// Return exact on-demand bucket diagnostics and optional query metrics.
+    #[must_use]
+    pub fn stats(&self) -> LshStats {
+        LshStats {
+            items: self.len(),
+            bands: self.params.bands,
+            rows: self.params.rows,
+            buckets: BucketDistribution::from_sizes(
+                self.buckets
+                    .iter()
+                    .flat_map(|table| table.values().map(Vec::len)),
+            ),
+            queries: self.query_observer.as_ref().map(QueryObserver::snapshot),
+        }
     }
 
     fn ensure_compatible(&self, sketch: &MinHash32) -> Result<(), LshError> {
@@ -500,7 +732,56 @@ mod tests {
 
     use pari_core::MinHash32;
 
-    use super::{LshError, LshIndex32, LshParams};
+    use super::{BucketDistribution, LshError, LshIndex32, LshParams};
+
+    #[test]
+    fn bucket_distribution_uses_exact_nearest_rank_summaries() {
+        let distribution = BucketDistribution::from_sizes([1, 2, 3, 4, 100]);
+        assert_eq!(distribution.buckets, 5);
+        assert_eq!(distribution.memberships, 110);
+        assert_eq!(distribution.minimum, 1);
+        assert_eq!(distribution.p50, 3);
+        assert_eq!(distribution.p95, 100);
+        assert_eq!(distribution.p99, 100);
+        assert_eq!(distribution.maximum, 100);
+        assert!((distribution.average_members() - 22.0).abs() < f64::EPSILON);
+        assert_eq!(BucketDistribution::from_sizes([]).buckets, 0);
+    }
+
+    #[test]
+    fn query_observation_is_opt_in_and_batch_aggregated() {
+        let first = sketch(0..40, 64, 7);
+        let near = sketch(0..35, 64, 7);
+        let far = sketch(100..140, 64, 7);
+        let mut index = LshIndex32::new(0.8, 64, 7).expect("index");
+        index
+            .insert_many([(1, &first), (2, &near), (3, &far)])
+            .expect("insert");
+        assert!(index.stats().queries.is_none());
+
+        index.set_observability(true);
+        let scalar = index.query(&first).expect("scalar query");
+        let batch = index.query_many([&first, &far]).expect("batch query");
+        let stats = index.stats();
+        let queries = stats.queries.expect("observability enabled");
+        assert_eq!(queries.operations, 2);
+        assert_eq!(queries.queries, 3);
+        assert_eq!(
+            queries.candidates,
+            u64::try_from(scalar.len() + batch.iter().map(Vec::len).sum::<usize>())
+                .expect("small count")
+        );
+        assert_eq!(queries.possible_candidates, 9);
+        assert!(queries.candidate_rate() > 0.0);
+        assert!(queries.total_latency_ns > 0);
+        assert_eq!(
+            stats.buckets.memberships,
+            3 * u64::try_from(index.params().bands).expect("small band count")
+        );
+
+        index.set_observability(false);
+        assert!(index.stats().queries.is_none());
+    }
 
     fn sketch(values: impl IntoIterator<Item = u64>, num_perm: usize, seed: u64) -> MinHash32 {
         let mut sketch = MinHash32::new(num_perm, seed).expect("valid test sketch");

@@ -14,6 +14,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use pari_core::MinHash32;
@@ -24,7 +25,7 @@ use pari_format::{
     SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
     BUCKET_SEGMENT_TARGET_BYTES,
 };
-use pari_index::{LshError, LshIndex32, LshParams};
+use pari_index::{BucketDistribution, LshError, LshIndex32, LshParams, QueryMetrics};
 
 const U64_BYTES: usize = 8;
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
@@ -140,6 +141,10 @@ pub struct LazyStats {
     pub rows: usize,
     /// Total persisted file bytes.
     pub file_bytes: u64,
+    /// Exact stored bucket membership distribution.
+    pub distribution: BucketDistribution,
+    /// Process-local query metrics when observability is enabled.
+    pub queries: Option<QueryMetrics>,
 }
 
 /// Read-only lazy LSH index backed by checksummed bucket segments.
@@ -153,6 +158,7 @@ pub struct LazyIndex32 {
     num_perm: usize,
     seed: u64,
     params: LshParams,
+    query_metrics: Option<QueryMetrics>,
 }
 
 impl LazyIndex32 {
@@ -201,16 +207,21 @@ impl LazyIndex32 {
             num_perm,
             seed,
             params,
+            query_metrics: None,
         })
     }
 
     /// Query approximate candidates while paging only matching member ranges.
     pub fn query(&mut self, sketch: &MinHash32) -> Result<Vec<u64>, LazyStoreError> {
+        let started = self.query_metrics.as_ref().map(|_| Instant::now());
         let hashes = self.band_hashes(sketch)?;
         let mut candidates = HashSet::new();
         self.collect_candidates(&hashes, &mut candidates)?;
         let mut output: Vec<_> = candidates.into_iter().collect();
         output.sort_unstable();
+        if let (Some(metrics), Some(started)) = (&mut self.query_metrics, started) {
+            metrics.record(1, output.len(), self.item_count, started.elapsed());
+        }
         Ok(output)
     }
 
@@ -219,17 +230,33 @@ impl LazyIndex32 {
         &mut self,
         sketches: impl IntoIterator<Item = &'a MinHash32>,
     ) -> Result<Vec<Vec<u64>>, LazyStoreError> {
+        let started = self.query_metrics.as_ref().map(|_| Instant::now());
         let mut results = Vec::new();
         let mut candidates = HashSet::new();
+        let mut candidate_count = 0_usize;
         for sketch in sketches {
             candidates.clear();
             let hashes = self.band_hashes(sketch)?;
             self.collect_candidates(&hashes, &mut candidates)?;
             let mut output: Vec<_> = candidates.iter().copied().collect();
             output.sort_unstable();
+            candidate_count = candidate_count.saturating_add(output.len());
             results.push(output);
         }
+        if let (Some(metrics), Some(started)) = (&mut self.query_metrics, started) {
+            metrics.record(
+                results.len(),
+                candidate_count,
+                results.len().saturating_mul(self.item_count),
+                started.elapsed(),
+            );
+        }
         Ok(results)
+    }
+
+    /// Enable or disable process-local query observation.
+    pub fn set_observability(&mut self, enabled: bool) {
+        self.query_metrics = enabled.then(QueryMetrics::default);
     }
 
     /// Return compact in-memory directory and file statistics.
@@ -241,6 +268,12 @@ impl LazyIndex32 {
             bands: self.params.bands,
             rows: self.params.rows,
             file_bytes: self.layout.file_length(),
+            distribution: BucketDistribution::from_sizes(
+                self.directory
+                    .iter()
+                    .map(|bucket| usize::try_from(bucket.member_count()).unwrap_or(usize::MAX)),
+            ),
+            queries: self.query_metrics,
         }
     }
 
@@ -730,6 +763,10 @@ mod tests {
             )
             .expect("insert memory");
         let mut lazy = LazyIndex32::open(&lazy_path).expect("open lazy");
+        let initial = lazy.stats();
+        assert!(initial.distribution.memberships > 0);
+        assert!(initial.queries.is_none());
+        lazy.set_observability(true);
         for query in &sketches {
             assert_eq!(
                 lazy.query(query).expect("lazy query"),
@@ -740,6 +777,10 @@ mod tests {
                 memory.query(query).expect("memory query")
             );
         }
+        let observed = lazy.stats().queries.expect("query metrics");
+        assert_eq!(observed.operations, 8);
+        assert_eq!(observed.queries, 8);
+        assert!(observed.candidates > 0);
         lazy.verify().expect("verify");
         cleanup(&source);
         cleanup(&lazy_path);

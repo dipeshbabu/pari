@@ -30,7 +30,7 @@ Machine-readable output revision 1 is pinned by compiled CLI integration tests. 
 - `search --json`: `query`, optional `id`, `candidates`
 - `dedup --emit pairs --json`: `left`, `right`
 - `dedup --emit groups --json`: `representative`, `members`
-- `stats --json`: `items`, `file_bytes`, `dirty`, `bands`, `rows`, `committed_buckets`, `overlay_buckets`, `suppressed_base_keys`, `num_perm`, `seed`, `threshold`
+- `stats --json`: `items`, `file_bytes`, `dirty`, `bands`, `rows`, `committed_buckets`, `overlay_buckets`, `suppressed_base_keys`, `committed_bucket_distribution`, `overlay_bucket_distribution`, `query_metrics`, `num_perm`, `seed`, `threshold`
 - `verify --json`: `valid`, `sections`, `bucket_sections`, `buckets`, `members_checked`
 
 Revision-1 consumers should ignore unknown output fields so future releases can add information without breaking existing parsers. Removing, renaming, retyping, or changing the meaning of an existing field requires a new documented output revision.
@@ -84,6 +84,8 @@ pari index \
 
 The command inserts records in bounded input batches and commits between batches. Existing destination files are never overwritten implicitly.
 
+Add `--progress` for human batch updates on stderr, or `--progress json` for structured schema-1 events. Machine-readable summaries remain on stdout.
+
 ## Search
 
 ```bash
@@ -101,6 +103,8 @@ Example result:
 
 Candidates are approximate LSH matches. Application-level exact verification remains the caller's responsibility.
 
+Search progress is emitted every 1,000 queries by default. Use `--progress-every N` to change the interval. Final JSON progress includes the exact process-local candidate count and rate.
+
 ## Deduplicate
 
 Emit unique LSH candidate pairs:
@@ -116,6 +120,7 @@ pari dedup \
   --input documents.jsonl \
   --emit groups \
   --min-size 2 \
+  --batch-size 10000 \
   --json
 ```
 
@@ -135,6 +140,10 @@ pari verify --index documents.pari --json
 ```
 
 `verify` validates the container header, every outer section checksum, bucket directory invariants, global bucket ordering, and each bucket member checksum. A corrupt or unsupported index returns a nonzero exit code and an actionable error on stderr.
+
+`stats` computes exact committed and overlay bucket distributions on demand. Query metrics are process-local and therefore `null` in a fresh `stats` process. Applications that keep an index open can enable query observation through the Rust or Python API. See [observability](observability.md).
+
+`index`, `search`, `dedup`, and `verify` accept `--progress [human|json]`. All progress is written to stderr so stdout JSON and JSONL contracts remain clean.
 
 ## Shell completion
 

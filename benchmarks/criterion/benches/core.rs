@@ -46,6 +46,14 @@ fn bench_lsh_query(criterion: &mut Criterion) {
     criterion.bench_function("lsh32_query_1000_items", |bencher| {
         bencher.iter(|| black_box(index.query(black_box(query)).expect("valid query")));
     });
+
+    index.set_observability(true);
+    criterion.bench_function("lsh32_query_1000_items_observed", |bencher| {
+        bencher.iter(|| black_box(index.query(black_box(query)).expect("valid query")));
+    });
+    criterion.bench_function("lsh32_stats_1000_items", |bencher| {
+        bencher.iter(|| black_box(index.stats()));
+    });
 }
 
 fn bench_grouping(criterion: &mut Criterion) {

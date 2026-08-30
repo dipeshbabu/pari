@@ -339,6 +339,8 @@ impl StorageBackend for RedisBackend {
             bucket_memberships: memberships,
             round_trips: self.round_trips,
             ttl_seconds_remaining,
+            bucket_distribution: None,
+            queries: None,
         })
     }
 

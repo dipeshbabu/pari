@@ -93,7 +93,13 @@ class IndexTests(unittest.TestCase):
             near = sketch(4)
             far = sketch(10_000)
 
-            index = Index.create(path, threshold=0.8, num_perm=64, seed=7)
+            index = Index.create(
+                path,
+                threshold=0.8,
+                num_perm=64,
+                seed=7,
+                observability=True,
+            )
             index.add(10, first)
             index.add_many([(20, near), (30, far)])
 
@@ -111,17 +117,31 @@ class IndexTests(unittest.TestCase):
             self.assertGreater(stats.bands, 0)
             self.assertGreater(stats.rows, 0)
             self.assertTrue(stats.dirty)
+            self.assertGreater(stats.overlay_memberships, 0)
+            self.assertIsNotNone(stats.query_operations)
+            self.assertEqual(stats.query_operations, 2)
+            self.assertEqual(stats.query_count, 3)
+            self.assertGreater(stats.candidate_count or 0, 0)
+            self.assertGreater(stats.candidate_rate or 0.0, 0.0)
+            self.assertGreater(stats.average_query_ms or 0.0, 0.0)
 
             self.assertTrue(index.remove(20))
             self.assertFalse(index.remove(20))
             index.sync()
-            self.assertFalse(index.stats().dirty)
+            synced_stats = index.stats()
+            self.assertFalse(synced_stats.dirty)
+            self.assertGreater(synced_stats.committed_memberships, 0)
+            self.assertGreaterEqual(synced_stats.committed_bucket_p95, 1)
+            self.assertGreaterEqual(synced_stats.committed_bucket_maximum, 1)
             index.close()
             self.assertTrue(index.closed)
 
             reopened = Index.open(path)
+            self.assertIsNone(reopened.stats().query_operations)
+            reopened.set_observability()
             self.assertEqual(len(reopened), 2)
             self.assertIn(10, reopened.search(first))
+            self.assertEqual(reopened.stats().query_operations, 1)
             self.assertNotIn(20, reopened.search(near))
             reopened.close()
 

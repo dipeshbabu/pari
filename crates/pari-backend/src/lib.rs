@@ -10,12 +10,12 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     error::Error,
     fmt,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use pari_core::MinHash32;
 use pari_format::{BucketKey, CodecError, KeyCodec, U64Codec};
-use pari_index::{LshError, LshIndex32, LshParams};
+use pari_index::{BucketDistribution, LshError, LshIndex32, LshParams, QueryMetrics};
 
 #[cfg(feature = "redis")]
 mod redis_backend;
@@ -217,6 +217,12 @@ pub struct BackendStats {
     pub round_trips: u64,
     /// Remaining namespace retention time when supported and active.
     pub ttl_seconds_remaining: Option<u64>,
+    /// Exact bucket distribution when the backend can provide it without an
+    /// additional scan or round trip.
+    pub bucket_distribution: Option<BucketDistribution>,
+    /// Process-local application query metrics when observation is enabled on
+    /// [`BackendIndex32`].
+    pub queries: Option<QueryMetrics>,
 }
 
 /// Errors produced by pluggable storage implementations.
@@ -374,6 +380,8 @@ pub trait StorageBackend {
 pub struct BackendIndex32<B> {
     backend: B,
     descriptor: IndexDescriptor,
+    query_metrics: Option<QueryMetrics>,
+    known_items: Option<usize>,
 }
 
 impl<B: StorageBackend> BackendIndex32<B> {
@@ -411,6 +419,8 @@ impl<B: StorageBackend> BackendIndex32<B> {
         Ok(Self {
             backend,
             descriptor,
+            query_metrics: None,
+            known_items: Some(0),
         })
     }
 
@@ -427,6 +437,8 @@ impl<B: StorageBackend> BackendIndex32<B> {
         Ok(Self {
             backend,
             descriptor,
+            query_metrics: None,
+            known_items: None,
         })
     }
 
@@ -450,6 +462,9 @@ impl<B: StorageBackend> BackendIndex32<B> {
             stored.push(StoredItem::new(key, self.band_hashes(sketch)?));
         }
         self.backend.insert_many(&stored)?;
+        if let Some(known_items) = &mut self.known_items {
+            *known_items = known_items.saturating_add(stored.len());
+        }
         Ok(())
     }
 
@@ -464,6 +479,7 @@ impl<B: StorageBackend> BackendIndex32<B> {
         &mut self,
         sketches: impl IntoIterator<Item = &'a MinHash32>,
     ) -> Result<Vec<Vec<u64>>, BackendIndexError> {
+        let started = self.query_metrics.as_ref().map(|_| Instant::now());
         let mut unique_positions = BTreeMap::<BucketKey, usize>::new();
         let mut unique_buckets = Vec::new();
         let mut query_positions = Vec::new();
@@ -505,6 +521,7 @@ impl<B: StorageBackend> BackendIndex32<B> {
 
         let mut candidates = HashSet::new();
         let mut output = Vec::with_capacity(query_positions.len());
+        let mut candidate_count = 0_usize;
         for positions in query_positions {
             candidates.clear();
             for position in positions {
@@ -512,14 +529,27 @@ impl<B: StorageBackend> BackendIndex32<B> {
             }
             let mut keys: Vec<_> = candidates.iter().copied().collect();
             keys.sort_unstable();
+            candidate_count = candidate_count.saturating_add(keys.len());
             output.push(keys);
+        }
+        if let (Some(metrics), Some(started)) = (&mut self.query_metrics, started) {
+            let possible = self
+                .known_items
+                .map_or(0, |items| items.saturating_mul(output.len()));
+            metrics.record(output.len(), candidate_count, possible, started.elapsed());
         }
         Ok(output)
     }
 
     /// Remove one key, returning whether it existed.
     pub fn remove(&mut self, key: u64) -> Result<bool, BackendIndexError> {
-        Ok(self.backend.delete_many(&[key])? == 1)
+        let removed = self.backend.delete_many(&[key])? == 1;
+        if removed {
+            if let Some(known_items) = &mut self.known_items {
+                *known_items = known_items.saturating_sub(1);
+            }
+        }
+        Ok(removed)
     }
 
     /// Remove a batch of keys, returning the number that existed.
@@ -529,7 +559,11 @@ impl<B: StorageBackend> BackendIndex32<B> {
     ) -> Result<usize, BackendIndexError> {
         let keys: BTreeSet<_> = keys.into_iter().collect();
         let keys: Vec<_> = keys.into_iter().collect();
-        Ok(self.backend.delete_many(&keys)?)
+        let removed = self.backend.delete_many(&keys)?;
+        if let Some(known_items) = &mut self.known_items {
+            *known_items = known_items.saturating_sub(removed);
+        }
+        Ok(removed)
     }
 
     /// Return whether one key exists.
@@ -573,7 +607,15 @@ impl<B: StorageBackend> BackendIndex32<B> {
 
     /// Return backend statistics.
     pub fn stats(&mut self) -> Result<BackendStats, BackendIndexError> {
-        Ok(self.backend.stats()?)
+        let mut stats = self.backend.stats()?;
+        self.known_items = usize::try_from(stats.items).ok();
+        stats.queries = self.query_metrics;
+        Ok(stats)
+    }
+
+    /// Enable or disable process-local query observation.
+    pub fn set_observability(&mut self, enabled: bool) {
+        self.query_metrics = enabled.then(QueryMetrics::default);
     }
 
     /// Return the configured index descriptor.
@@ -785,6 +827,10 @@ impl StorageBackend for MemoryBackend {
             bucket_memberships: memberships,
             round_trips: 0,
             ttl_seconds_remaining: None,
+            bucket_distribution: Some(BucketDistribution::from_sizes(
+                self.buckets.values().map(BTreeSet::len),
+            )),
+            queries: None,
         })
     }
 

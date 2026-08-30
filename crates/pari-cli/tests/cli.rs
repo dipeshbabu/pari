@@ -40,6 +40,7 @@ fn signature(values: &[&str]) -> Vec<u32> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn index_search_stats_verify_and_dedup_work_end_to_end() {
     let records = temp_path("records", "jsonl");
     let queries = temp_path("queries", "jsonl");
@@ -75,6 +76,8 @@ fn index_search_stats_verify_and_dedup_work_end_to_end() {
             index.to_str().expect("path"),
             "--batch-size",
             "2",
+            "--progress",
+            "json",
             "--json",
         ])
         .output()
@@ -82,6 +85,17 @@ fn index_search_stats_verify_and_dedup_work_end_to_end() {
     assert_success(&output);
     let summary: serde_json::Value = serde_json::from_slice(&output.stdout).expect("summary JSON");
     assert_eq!(summary["items"], 3);
+    let progress = output
+        .stderr
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<serde_json::Value>(line).expect("progress JSON"))
+        .collect::<Vec<_>>();
+    assert_eq!(progress.len(), 2);
+    assert_eq!(progress[0]["phase"], "index");
+    assert_eq!(progress[0]["completed"], 2);
+    assert_eq!(progress[1]["completed"], 3);
+    assert_eq!(progress[1]["final_event"], true);
 
     let output = pari()
         .args([
@@ -91,6 +105,10 @@ fn index_search_stats_verify_and_dedup_work_end_to_end() {
             "--input",
             queries.to_str().expect("path"),
             "--json",
+            "--progress",
+            "json",
+            "--progress-every",
+            "1",
         ])
         .output()
         .expect("search command");
@@ -100,6 +118,22 @@ fn index_search_stats_verify_and_dedup_work_end_to_end() {
     let candidates = result["candidates"].as_array().expect("candidates");
     assert!(candidates.contains(&serde_json::json!(1)));
     assert!(candidates.contains(&serde_json::json!(2)));
+    let search_progress = output
+        .stderr
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<serde_json::Value>(line).expect("progress JSON"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        search_progress.last().expect("final progress")["final_event"],
+        true
+    );
+    assert!(
+        search_progress.last().expect("final progress")["candidate_rate"]
+            .as_f64()
+            .unwrap_or(0.0)
+            > 0.0
+    );
 
     let output = pari()
         .args(["stats", "--index", index.to_str().expect("path"), "--json"])
@@ -108,15 +142,32 @@ fn index_search_stats_verify_and_dedup_work_end_to_end() {
     assert_success(&output);
     let stats: serde_json::Value = serde_json::from_slice(&output.stdout).expect("stats JSON");
     assert_eq!(stats["items"], 3);
+    assert_eq!(stats["committed_bucket_distribution"]["exact"], true);
+    assert!(
+        stats["committed_bucket_distribution"]["memberships"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
 
     let output = pari()
-        .args(["verify", "--index", index.to_str().expect("path"), "--json"])
+        .args([
+            "verify",
+            "--index",
+            index.to_str().expect("path"),
+            "--json",
+            "--progress",
+            "json",
+            "--progress-every",
+            "1",
+        ])
         .output()
         .expect("verify command");
     assert_success(&output);
     let verified: serde_json::Value = serde_json::from_slice(&output.stdout).expect("verify JSON");
     assert_eq!(verified["valid"], true);
     assert!(verified["members_checked"].as_u64().unwrap_or(0) > 0);
+    assert!(!output.stderr.is_empty());
 
     let output = pari()
         .args([
@@ -126,6 +177,10 @@ fn index_search_stats_verify_and_dedup_work_end_to_end() {
             "--emit",
             "groups",
             "--json",
+            "--batch-size",
+            "2",
+            "--progress",
+            "json",
         ])
         .output()
         .expect("dedup command");

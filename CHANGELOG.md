@@ -10,6 +10,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 - Release automation and packaging hardening for future alpha releases.
 - Deterministic, bounded CPU parallelism for batch MinHash construction in Rust and Python.
+- Opt-in query metrics, exact bucket diagnostics, and batch-granular CLI/Python progress reporting.
 
 ## [0.1.0] - 2026-08-27
 

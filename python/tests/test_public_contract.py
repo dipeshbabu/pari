@@ -19,6 +19,8 @@ V01_PUBLIC_EXPORTS = {
     "InvalidRepresentativeError",
     "MinHash",
     "PariError",
+    "ProgressCancelledError",
+    "ProgressEvent",
     "StorageError",
     "__version__",
     "deduplicate",
@@ -39,6 +41,7 @@ class PublicContractTests(unittest.TestCase):
             pari.DuplicateKeyError,
             pari.DedupeError,
             pari.InvalidRepresentativeError,
+            pari.ProgressCancelledError,
             pari.StorageError,
         ):
             self.assertTrue(issubclass(error_type, pari.PariError), error_type.__name__)
