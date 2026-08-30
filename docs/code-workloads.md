@@ -101,3 +101,5 @@ PARI_GIT_SHA=$(git rev-parse HEAD) python examples/code_workload.py ...
 Raw content is bounded by `--max-file-bytes` and only the current feature batch is materialized. The native index, lightweight repository/path references, and duplicate-group state necessarily scale with accepted items. Exact verification retains at most `--cache-size` shingle sets. Persistent mode mirrors the same batches into a `.pari` index but does not make group construction constant-memory.
 
 For very large corpora, use [LSH planning](planning.md) before the run, start with a representative sample, and inspect candidate rates through this report and Pari's [observability](observability.md) interfaces.
+
+The checked-in fixture result for this implementation is [`fixture-report.json`](../benchmarks/results/code-corpus/c6873aa48dfa041f8c3721e4bd7fa07349f29cf7/fixture-report.json). It is a correctness and schema record; the three-file timing is not a throughput baseline.

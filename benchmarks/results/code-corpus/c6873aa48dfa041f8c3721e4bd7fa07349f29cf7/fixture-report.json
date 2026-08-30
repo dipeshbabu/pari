@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "git_sha": "c6873aa48dfa041f8c3721e4bd7fa07349f29cf7",
+  "worktree_clean": true,
+  "workload": "code-corpus-deduplication",
+  "fixture": "examples/code_corpus_fixture",
+  "command": "python examples/code_workload.py --root repo-alpha=examples/code_corpus_fixture/repo-alpha --root repo-beta=examples/code_corpus_fixture/repo-beta --groups-output groups.jsonl --decisions-output decisions.jsonl --metrics-output metrics.json --index code-corpus.pari --shingle-size 3 --num-perm 64 --seed 7 --batch-size 2 --exact --exact-threshold 1.0",
+  "environment": {
+    "architecture": "x86_64",
+    "operating_system": "Linux",
+    "pari_version": "0.1.0",
+    "python_version": "3.12.3"
+  },
+  "config": {
+    "batch_size": 2,
+    "exact": true,
+    "exact_threshold": 1.0,
+    "max_file_bytes": 1048576,
+    "num_perm": 64,
+    "seed": 7,
+    "shingle_size": 3,
+    "threshold": 0.8
+  },
+  "correctness": {
+    "accepted_items": 3,
+    "candidate_groups": 1,
+    "duplicate_groups": 1,
+    "duplicates": 1,
+    "exact_pairs_checked": 1,
+    "exact_pairs_accepted": 1,
+    "memory_persistent_group_output_parity": true,
+    "memory_persistent_decision_output_parity": true,
+    "representative": {
+      "repository": "repo-alpha",
+      "path": "src/checksum.py"
+    },
+    "duplicate": {
+      "repository": "repo-beta",
+      "path": "lib/checksum_copy.py"
+    }
+  },
+  "metrics": {
+    "candidate_item_rate": 0.6666666666666666,
+    "duplicate_rate": 0.3333333333333333,
+    "elapsed_seconds": 0.830463199999997,
+    "index_bytes": 760,
+    "items_per_second": 3.6124418276451156,
+    "output_bytes": 668,
+    "process_peak_rss_bytes": 17752064,
+    "tokens": 109,
+    "tokens_per_item": 36.333333333333336
+  },
+  "interpretation": "This tiny fixture is a deterministic correctness and reporting check, not a throughput baseline. Timing and RSS are recorded because the workload contract requires them, but larger representative corpora are needed for performance decisions."
+}
