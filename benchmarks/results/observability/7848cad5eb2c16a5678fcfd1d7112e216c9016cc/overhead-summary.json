@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "workload": "query-observability-overhead-v1",
+  "git_sha": "7848cad5eb2c16a5678fcfd1d7112e216c9016cc",
+  "baseline_git_sha": "3aa27e7fef459e1d87fc61e2b4b35dc070aeb5e0",
+  "worktree_clean": true,
+  "environment": {
+    "architecture": "x86_64",
+    "logical_cpus": 12,
+    "operating_system": "Linux 5.15.167.4-microsoft-standard-WSL2",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "config": {
+    "items": 1000,
+    "num_perm": 128,
+    "bands": 32,
+    "rows": 4,
+    "sample_size": 100,
+    "warm_up_seconds": 3.0,
+    "measurement_seconds": 5.0
+  },
+  "command": "cargo bench --manifest-path benchmarks/criterion/Cargo.toml --bench core lsh32_ -- --noplot",
+  "results": {
+    "baseline_disabled_query_us": {
+      "lower": 1.7168,
+      "estimate": 1.7509,
+      "upper": 1.7910
+    },
+    "implementation_disabled_query_us": {
+      "lower": 1.7791,
+      "estimate": 1.8261,
+      "upper": 1.8834
+    },
+    "implementation_observed_query_us": {
+      "lower": 1.8828,
+      "estimate": 1.9193,
+      "upper": 1.9596
+    },
+    "on_demand_stats_us": {
+      "lower": 215.34,
+      "estimate": 220.57,
+      "upper": 227.27
+    }
+  },
+  "derived": {
+    "disabled_absolute_overhead_us": 0.0752,
+    "disabled_relative_overhead_percent": 4.295,
+    "enabled_absolute_overhead_vs_disabled_us": 0.0932,
+    "enabled_relative_overhead_vs_disabled_percent": 5.104
+  },
+  "correctness_evidence": {
+    "disabled_allocates_metric_state": false,
+    "disabled_starts_query_timers": false,
+    "disabled_adds_backend_round_trips": false,
+    "enabled_counter_scope": "process-local",
+    "bucket_distributions_computed": "on stats call only"
+  },
+  "interpretation": "The disabled path adds one option check and 75 ns in this same-host run. Enabled observation adds timers and counters explicitly. On-demand exact bucket statistics are outside query hot loops. Timing is evidence, not a CI threshold."
+}

@@ -101,6 +101,6 @@ Index and dedup progress is emitted once per configured input batch. Search and 
 
 ## Disabled overhead evidence
 
-The Criterion query benchmark compares the pre-change main commit, disabled observation, and enabled observation on the same host. Selected clean-SHA results are stored under `benchmarks/results/observability/`.
+The Criterion query benchmark compares the pre-change main commit, disabled observation, and enabled observation on the same host. The [selected clean-SHA result](../benchmarks/results/observability/7848cad5eb2c16a5678fcfd1d7112e216c9016cc/overhead-summary.json) measured 1.751 µs on the baseline, 1.826 µs with observation disabled, and 1.919 µs with observation enabled. Disabled overhead was 75 ns (4.3%) on this deliberately tiny query; enabled timers and counters added another 93 ns. Exact stats calculation took 221 µs on a 1,000-item index and runs only when requested.
 
 Timing evidence is not a CI threshold. Correctness tests instead verify that disabled mode has no query metrics, backend round-trip behavior is unchanged, progress stays off stdout, and callback cancellation/error behavior is deterministic.
