@@ -10,7 +10,9 @@ from pari import (
     ConfigurationError,
     DuplicateKeyError,
     Index,
+    LshPlan,
     MinHash,
+    plan_lsh,
 )
 
 
@@ -85,6 +87,45 @@ class MinHashTests(unittest.TestCase):
             left.jaccard(right)
 
 
+class PlannerTests(unittest.TestCase):
+    def test_plan_is_deterministic_and_model_labeled(self) -> None:
+        plan = plan_lsh(
+            1_000_000,
+            threshold=0.8,
+            num_perm=128,
+            memory_budget_bytes=2 * 1024**3,
+            storage="auto",
+        )
+        self.assertIsInstance(plan, LshPlan)
+        self.assertEqual(plan.model, "pari-lsh-planner-v1")
+        self.assertIn("not a measured guarantee", plan.estimate_semantics)
+        self.assertEqual((plan.bands, plan.rows), (9, 13))
+        self.assertEqual(plan.parameter_source, "tuned")
+        self.assertEqual(plan.signature_bytes_per_item, 512)
+        self.assertEqual(plan.index_metadata_bytes_per_item, 152)
+        self.assertEqual(plan.persistent_index_bytes, 440_000_736)
+        self.assertEqual(plan.recommended_storage, "memory")
+        self.assertTrue(plan.in_memory_fits_budget)
+        self.assertAlmostEqual(
+            plan.candidate_probability(0.8),
+            plan.candidate_probability_at_threshold,
+        )
+
+    def test_invalid_plan_inputs_raise_configuration_error(self) -> None:
+        for kwargs in (
+            {"expected_items": 0},
+            {"expected_items": 1, "memory_budget_bytes": 0},
+            {"expected_items": 1, "storage": "unknown"},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ConfigurationError):
+                    plan_lsh(**kwargs)
+
+        plan = plan_lsh(1)
+        with self.assertRaises(ConfigurationError):
+            plan.candidate_probability(1.1)
+
+
 class IndexTests(unittest.TestCase):
     def test_create_batch_query_remove_reopen_and_stats(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -124,6 +165,12 @@ class IndexTests(unittest.TestCase):
             self.assertGreater(stats.candidate_count or 0, 0)
             self.assertGreater(stats.candidate_rate or 0.0, 0.0)
             self.assertGreater(stats.average_query_ms or 0.0, 0.0)
+
+            explanation = index.explain()
+            self.assertEqual(explanation.expected_items, 3)
+            self.assertEqual(explanation.parameter_source, "existing")
+            self.assertEqual((explanation.bands, explanation.rows), (stats.bands, stats.rows))
+            self.assertEqual(explanation.requested_storage, "persistent")
 
             self.assertTrue(index.remove(20))
             self.assertFalse(index.remove(20))

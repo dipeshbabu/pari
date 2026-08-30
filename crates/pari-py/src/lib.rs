@@ -8,7 +8,10 @@ use std::{
 };
 
 use pari_core::{BatchThreads, MinHash32, MinHashError};
-use pari_index::{DuplicateGroup, LshError, LshIndex32};
+use pari_index::{
+    plan_lsh, DuplicateGroup, LshError, LshIndex32, LshPlan, LshPlanError, LshPlanOptions,
+    StorageMode,
+};
 use pari_store::{PersistentIndex32, StoreError, StoreStats};
 use pyo3::{
     create_exception,
@@ -39,6 +42,7 @@ enum BindingError {
     Closed,
     Poisoned,
     Index(LshError),
+    Plan(LshPlanError),
     MinHash(MinHashError),
     Store(StoreError),
 }
@@ -74,7 +78,8 @@ impl BindingError {
                 | LshError::InvalidPermutationCount { .. }
                 | LshError::AutomaticTuningTooLarge { .. }
                 | LshError::InvalidParams { .. },
-            )) => BindingErrorKind::Configuration,
+            ))
+            | Self::Plan(_) => BindingErrorKind::Configuration,
             Self::Busy
             | Self::Poisoned
             | Self::MinHash(MinHashError::BatchPoolUnavailable { .. })
@@ -89,6 +94,7 @@ impl BindingError {
             Self::Closed => "index is closed".into(),
             Self::Poisoned => "index state lock is poisoned".into(),
             Self::Index(error) => error.to_string(),
+            Self::Plan(error) => error.to_string(),
             Self::MinHash(error) => error.to_string(),
             Self::Store(error) => error.to_string(),
         }
@@ -113,6 +119,12 @@ impl From<MinHashError> for BindingError {
 impl From<LshError> for BindingError {
     fn from(error: LshError) -> Self {
         Self::Index(error)
+    }
+}
+
+impl From<LshPlanError> for BindingError {
+    fn from(error: LshPlanError) -> Self {
+        Self::Plan(error)
     }
 }
 
@@ -438,6 +450,212 @@ impl PyIndexStats {
     }
 }
 
+/// Model-labeled LSH plan or explanation from Pari's canonical Rust planner.
+#[pyclass(frozen, module = "pari._native", name = "LshPlan", skip_from_py_object)]
+#[derive(Debug, Clone)]
+struct PyLshPlan {
+    inner: LshPlan,
+}
+
+impl From<LshPlan> for PyLshPlan {
+    fn from(inner: LshPlan) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyLshPlan {
+    #[getter]
+    fn model(&self) -> &'static str {
+        self.inner.model
+    }
+
+    #[getter]
+    #[allow(clippy::unused_self)]
+    fn estimate_semantics(&self) -> &'static str {
+        "analytical/model-based, not a measured guarantee"
+    }
+
+    #[getter]
+    fn expected_items(&self) -> u64 {
+        self.inner.expected_items
+    }
+
+    #[getter]
+    fn threshold(&self) -> f64 {
+        self.inner.threshold
+    }
+
+    #[getter]
+    fn num_perm(&self) -> usize {
+        self.inner.num_perm
+    }
+
+    #[getter]
+    fn bands(&self) -> usize {
+        self.inner.params.bands
+    }
+
+    #[getter]
+    fn rows(&self) -> usize {
+        self.inner.params.rows
+    }
+
+    #[getter]
+    fn parameter_source(&self) -> &'static str {
+        self.inner.parameter_source.as_str()
+    }
+
+    #[getter]
+    fn used_permutations(&self) -> usize {
+        self.inner.used_permutations
+    }
+
+    #[getter]
+    fn unused_permutations(&self) -> usize {
+        self.inner.unused_permutations
+    }
+
+    #[getter]
+    fn candidate_probability_at_threshold(&self) -> f64 {
+        self.inner.candidate_probability_at_threshold
+    }
+
+    #[getter]
+    fn similarity_at_50_percent_candidates(&self) -> f64 {
+        self.inner.similarity_at_50_percent_candidates
+    }
+
+    #[getter]
+    fn false_positive_area(&self) -> f64 {
+        self.inner.false_positive_area
+    }
+
+    #[getter]
+    fn false_negative_area(&self) -> f64 {
+        self.inner.false_negative_area
+    }
+
+    #[getter]
+    fn bucket_memberships_per_item(&self) -> u64 {
+        self.inner.bucket_memberships_per_item
+    }
+
+    #[getter]
+    fn signature_bytes_per_item(&self) -> u64 {
+        self.inner.sizes.signature_bytes_per_item
+    }
+
+    #[getter]
+    fn signature_bytes(&self) -> u64 {
+        self.inner.sizes.signature_bytes
+    }
+
+    #[getter]
+    fn index_metadata_bytes_per_item(&self) -> u64 {
+        self.inner.sizes.index_metadata_bytes_per_item
+    }
+
+    #[getter]
+    fn index_metadata_bytes(&self) -> u64 {
+        self.inner.sizes.index_metadata_bytes
+    }
+
+    #[getter]
+    fn in_memory_index_bytes_per_item(&self) -> u64 {
+        self.inner.sizes.in_memory_index_bytes_per_item
+    }
+
+    #[getter]
+    fn in_memory_index_bytes(&self) -> u64 {
+        self.inner.sizes.in_memory_index_bytes
+    }
+
+    #[getter]
+    fn persistent_index_bytes_per_item(&self) -> u64 {
+        self.inner.sizes.persistent_index_bytes_per_item
+    }
+
+    #[getter]
+    fn persistent_index_bytes(&self) -> u64 {
+        self.inner.sizes.persistent_index_bytes
+    }
+
+    #[getter]
+    fn lazy_resident_bytes_per_item(&self) -> u64 {
+        self.inner.sizes.lazy_resident_bytes_per_item
+    }
+
+    #[getter]
+    fn lazy_resident_bytes(&self) -> u64 {
+        self.inner.sizes.lazy_resident_bytes
+    }
+
+    #[getter]
+    fn in_memory_with_headroom_bytes(&self) -> u64 {
+        self.inner.sizes.in_memory_with_headroom_bytes
+    }
+
+    #[getter]
+    fn lazy_with_headroom_bytes(&self) -> u64 {
+        self.inner.sizes.lazy_with_headroom_bytes
+    }
+
+    #[getter]
+    fn memory_budget_bytes(&self) -> Option<u64> {
+        self.inner.memory_budget_bytes
+    }
+
+    #[getter]
+    fn in_memory_fits_budget(&self) -> Option<bool> {
+        self.inner.in_memory_fits_budget
+    }
+
+    #[getter]
+    fn persistent_fits_budget(&self) -> Option<bool> {
+        self.inner.persistent_fits_budget
+    }
+
+    #[getter]
+    fn requested_storage(&self) -> &'static str {
+        self.inner.requested_storage.as_str()
+    }
+
+    #[getter]
+    fn recommended_storage(&self) -> &'static str {
+        self.inner.recommended_storage.as_str()
+    }
+
+    #[getter]
+    fn recommendation_reason(&self) -> &'static str {
+        self.inner.recommendation_reason.as_str()
+    }
+
+    #[getter]
+    fn recommendation(&self) -> &'static str {
+        self.inner.recommendation_guidance()
+    }
+
+    fn candidate_probability(&self, similarity: f64) -> PyResult<f64> {
+        self.inner.candidate_probability(similarity).ok_or_else(|| {
+            ConfigurationError::new_err(format!(
+                "similarity must be finite and in [0, 1], got {similarity}"
+            ))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "LshPlan(items={}, threshold={}, bands={}, rows={}, recommended_storage='{}')",
+            self.inner.expected_items,
+            self.inner.threshold,
+            self.inner.params.bands,
+            self.inner.params.rows,
+            self.inner.recommended_storage
+        )
+    }
+}
+
 type SharedIndex = Arc<Mutex<Option<PersistentIndex32>>>;
 
 /// High-level persistent `MinHash` LSH index.
@@ -567,6 +785,16 @@ impl PyIndex {
             store
                 .stats()
                 .map(PyIndexStats::from)
+                .map_err(BindingError::from)
+        })
+    }
+
+    /// Explain stored LSH parameters without reading bucket memberships.
+    fn explain(&self, py: Python<'_>) -> PyResult<PyLshPlan> {
+        self.run_read(py, |store| {
+            store
+                .explain()
+                .map(PyLshPlan::from)
                 .map_err(BindingError::from)
         })
     }
@@ -852,12 +1080,38 @@ impl PyDedupeEngine {
     }
 }
 
+#[pyfunction(name = "plan_lsh")]
+#[pyo3(signature = (expected_items, *, threshold = 0.8, num_perm = 128, memory_budget_bytes = None, storage = "auto"))]
+fn py_plan_lsh(
+    expected_items: u64,
+    threshold: f64,
+    num_perm: usize,
+    memory_budget_bytes: Option<u64>,
+    storage: &str,
+) -> PyResult<PyLshPlan> {
+    let storage = storage
+        .parse::<StorageMode>()
+        .map_err(BindingError::from)
+        .map_err(binding_error)?;
+    let mut options =
+        LshPlanOptions::new(expected_items, threshold, num_perm).storage_mode(storage);
+    if let Some(bytes) = memory_budget_bytes {
+        options = options.memory_budget_bytes(bytes);
+    }
+    plan_lsh(options)
+        .map(PyLshPlan::from)
+        .map_err(BindingError::from)
+        .map_err(binding_error)
+}
+
 #[pymodule]
 fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMinHash>()?;
     module.add_class::<PyIndex>()?;
     module.add_class::<PyIndexStats>()?;
+    module.add_class::<PyLshPlan>()?;
     module.add_class::<PyDedupeEngine>()?;
+    module.add_function(wrap_pyfunction!(py_plan_lsh, module)?)?;
     module.add("PariError", py.get_type::<PariError>())?;
     module.add("ConfigurationError", py.get_type::<ConfigurationError>())?;
     module.add("CompatibilityError", py.get_type::<CompatibilityError>())?;

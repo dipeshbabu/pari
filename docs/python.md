@@ -2,6 +2,27 @@
 
 Pari ships a small typed Python API backed by the same Rust implementation used by the native crates. The wheel uses Python's stable ABI with a minimum of CPython 3.10.
 
+## Plan and explain LSH settings
+
+```python
+from pari import Index, plan_lsh
+
+plan = plan_lsh(
+    1_000_000,
+    threshold=0.8,
+    num_perm=128,
+    memory_budget_bytes=2 * 1024**3,
+    storage="auto",
+)
+print(plan.bands, plan.rows, plan.recommended_storage)
+
+with Index.open("documents.pari") as index:
+    current = index.explain()
+    print(current.parameter_source, current.candidate_probability_at_threshold)
+```
+
+`LshPlan` is produced by the canonical Rust model used by the CLI. It exposes signature cost, modeled index and resident bytes, budget fit, candidate probabilities, and an explicit storage recommendation reason. Estimates are not measured guarantees. See [LSH planning and explanation](planning.md) for model assumptions and validation evidence.
+
 ## Install the published package
 
 ```bash

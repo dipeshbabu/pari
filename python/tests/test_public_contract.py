@@ -18,12 +18,14 @@ V01_PUBLIC_EXPORTS = {
     "IndexStats",
     "InvalidRepresentativeError",
     "MinHash",
+    "LshPlan",
     "PariError",
     "ProgressCancelledError",
     "ProgressEvent",
     "StorageError",
     "__version__",
     "deduplicate",
+    "plan_lsh",
 }
 
 

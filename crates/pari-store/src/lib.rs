@@ -31,7 +31,10 @@ use pari_format::{
     SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
     BUCKET_SEGMENT_TARGET_BYTES,
 };
-use pari_index::{BucketDistribution, LshError, LshIndex32, LshParams, QueryMetrics};
+use pari_index::{
+    explain_lsh, BucketDistribution, LshError, LshIndex32, LshParams, LshPlan, LshPlanError,
+    LshPlanOptions, QueryMetrics, StorageMode,
+};
 
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
@@ -432,6 +435,19 @@ impl PersistentIndex32 {
     #[must_use]
     pub const fn params(&self) -> LshParams {
         self.params
+    }
+
+    /// Explain this index's persisted configuration without scanning buckets.
+    pub fn explain(&self) -> Result<LshPlan, LshPlanError> {
+        explain_lsh(
+            LshPlanOptions::new(
+                u64::try_from(self.len()).unwrap_or(u64::MAX),
+                self.threshold,
+                self.num_perm,
+            )
+            .storage_mode(StorageMode::Persistent),
+            self.params,
+        )
     }
 
     /// Enable or disable process-local query observation.
@@ -1207,6 +1223,10 @@ mod tests {
         let stats = reopened.stats().expect("stats");
         assert!(stats.committed_buckets > 0);
         assert!(stats.committed_distribution.memberships > 0);
+        let explanation = reopened.explain().expect("explain");
+        assert_eq!(explanation.expected_items, 3);
+        assert_eq!(explanation.parameter_source.as_str(), "existing");
+        assert_eq!(explanation.requested_storage.as_str(), "persistent");
         assert_eq!(
             stats.committed_distribution.buckets,
             u64::try_from(stats.committed_buckets).expect("small bucket count")

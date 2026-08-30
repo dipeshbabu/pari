@@ -17,9 +17,14 @@ use std::{
 use pari_core::MinHash32;
 
 mod grouping;
+mod planner;
 
 pub use grouping::{
     group_pairs, group_pairs_with_representative, CandidatePairs, DuplicateGroup, GroupError,
+};
+pub use planner::{
+    explain_lsh, plan_lsh, LshPlan, LshPlanError, LshPlanOptions, LshSizeEstimates,
+    ParameterSource, RecommendationReason, StorageMode, LSH_PLANNER_MODEL,
 };
 
 const AUTO_TUNE_INTEGRATION_SEGMENTS: u32 = 64;
@@ -47,6 +52,22 @@ impl LshParams {
     #[must_use]
     pub const fn used_permutations(self) -> Option<usize> {
         self.bands.checked_mul(self.rows)
+    }
+
+    /// Choose bands and rows with Pari's canonical threshold optimizer.
+    ///
+    /// This is the same tuning path used by [`LshIndex32::new`] and the public
+    /// planner, so callers never need to reproduce Pari's probability model.
+    pub fn tune(threshold: f64, num_perm: usize) -> Result<Self, LshError> {
+        validate_threshold(threshold)?;
+        validate_num_perm(num_perm)?;
+        if num_perm > MAX_AUTO_TUNE_PERMUTATIONS {
+            return Err(LshError::AutomaticTuningTooLarge {
+                requested: num_perm,
+                max: MAX_AUTO_TUNE_PERMUTATIONS,
+            });
+        }
+        Ok(optimize_params(threshold, num_perm))
     }
 }
 
@@ -335,16 +356,24 @@ impl LshIndex32 {
     /// false-negative probability area, following the same objective used by
     /// datasketch's `MinHash` LSH optimizer without requiring `SciPy` at runtime.
     pub fn new(threshold: f64, num_perm: usize, seed: u64) -> Result<Self, LshError> {
-        validate_threshold(threshold)?;
-        validate_num_perm(num_perm)?;
-        if num_perm > MAX_AUTO_TUNE_PERMUTATIONS {
-            return Err(LshError::AutomaticTuningTooLarge {
-                requested: num_perm,
-                max: MAX_AUTO_TUNE_PERMUTATIONS,
-            });
-        }
-        let params = optimize_params(threshold, num_perm);
+        let params = LshParams::tune(threshold, num_perm)?;
         Self::with_params(threshold, num_perm, seed, params)
+    }
+
+    /// Explain the configured LSH curve and modeled storage implications.
+    ///
+    /// This only uses configuration and the current item count. It does not
+    /// scan bucket memberships.
+    pub fn explain(&self) -> Result<LshPlan, LshPlanError> {
+        explain_lsh(
+            LshPlanOptions::new(
+                u64::try_from(self.len()).unwrap_or(u64::MAX),
+                self.threshold,
+                self.num_perm,
+            )
+            .storage_mode(StorageMode::Memory),
+            self.params,
+        )
     }
 
     /// Create an index with explicit banding parameters.
