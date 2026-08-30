@@ -131,7 +131,7 @@ Source users evaluating shared memory or Redis backends can follow the [storage 
 - [GitHub Release and binary downloads](https://github.com/dipeshbabu/pari/releases/tag/v0.1.0)
 - [0.1.0 release notes](docs/releases/0.1.0.md)
 - [Compatibility policy](docs/compatibility.md)
-- [Python guide](docs/python.md), [CLI guide](docs/cli.md), and [text workload guide](docs/text-workloads.md)
+- [Python guide](docs/python.md), [CLI guide](docs/cli.md), [text workloads](docs/text-workloads.md), and [code corpus deduplication](docs/code-workloads.md)
 - [Datasketch 2.x interoperability and migration](docs/datasketch-v2.md)
 - [Benchmark methodology](docs/benchmarks.md), [versioned evidence](docs/benchmark-evidence.md), [CPU parallelism](docs/parallelism.md), [LSH planning](docs/planning.md), [observability](docs/observability.md), and [workload roadmap](https://github.com/dipeshbabu/pari/issues)
 
