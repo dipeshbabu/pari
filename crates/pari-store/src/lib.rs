@@ -20,6 +20,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     sync::Mutex,
+    time::Instant,
 };
 
 use pari_core::MinHash32;
@@ -30,7 +31,7 @@ use pari_format::{
     SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
     BUCKET_SEGMENT_TARGET_BYTES,
 };
-use pari_index::{LshError, LshIndex32, LshParams};
+use pari_index::{BucketDistribution, LshError, LshIndex32, LshParams, QueryMetrics};
 
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
@@ -159,6 +160,13 @@ pub struct StoreStats {
     pub overlay_buckets: usize,
     /// Number of committed key generations hidden until the next compaction.
     pub suppressed_base_keys: usize,
+    /// Exact distribution of stored committed bucket memberships. Suppressed
+    /// generations remain counted until compaction.
+    pub committed_distribution: BucketDistribution,
+    /// Exact distribution of uncommitted overlay bucket memberships.
+    pub overlay_distribution: BucketDistribution,
+    /// Process-local query metrics when observability is enabled.
+    pub queries: Option<QueryMetrics>,
 }
 
 #[derive(Debug)]
@@ -212,6 +220,7 @@ pub struct PersistentIndex32 {
     suppressed_base_keys: HashSet<u64>,
     key_hashes: BTreeMap<u64, Vec<u64>>,
     dirty: bool,
+    query_metrics: Option<Mutex<QueryMetrics>>,
 }
 
 impl PersistentIndex32 {
@@ -298,6 +307,7 @@ impl PersistentIndex32 {
             suppressed_base_keys: HashSet::new(),
             key_hashes,
             dirty: false,
+            query_metrics: None,
         })
     }
 
@@ -345,11 +355,13 @@ impl PersistentIndex32 {
 
     /// Query approximate candidates for one compatible signature.
     pub fn query(&self, sketch: &MinHash32) -> Result<Vec<u64>, StoreError> {
+        let started = self.query_metrics.as_ref().map(|_| Instant::now());
         let hashes = self.band_hashes(sketch)?;
         let mut candidates = HashSet::new();
         self.collect_candidates(&hashes, &mut candidates)?;
         let mut keys: Vec<_> = candidates.into_iter().collect();
         keys.sort_unstable();
+        self.record_query_metrics(1, keys.len(), self.len(), started);
         Ok(keys)
     }
 
@@ -358,16 +370,25 @@ impl PersistentIndex32 {
         &self,
         sketches: impl IntoIterator<Item = &'a MinHash32>,
     ) -> Result<Vec<Vec<u64>>, StoreError> {
+        let started = self.query_metrics.as_ref().map(|_| Instant::now());
         let mut output = Vec::new();
         let mut candidates = HashSet::new();
+        let mut candidate_count = 0_usize;
         for sketch in sketches {
             let hashes = self.band_hashes(sketch)?;
             candidates.clear();
             self.collect_candidates(&hashes, &mut candidates)?;
             let mut keys: Vec<_> = candidates.iter().copied().collect();
             keys.sort_unstable();
+            candidate_count = candidate_count.saturating_add(keys.len());
             output.push(keys);
         }
+        self.record_query_metrics(
+            output.len(),
+            candidate_count,
+            output.len().saturating_mul(self.len()),
+            started,
+        );
         Ok(output)
     }
 
@@ -413,6 +434,11 @@ impl PersistentIndex32 {
         self.params
     }
 
+    /// Enable or disable process-local query observation.
+    pub fn set_observability(&mut self, enabled: bool) {
+        self.query_metrics = enabled.then(|| Mutex::new(QueryMetrics::default()));
+    }
+
     /// Commit dirty state to an atomic snapshot.
     ///
     /// The snapshot file itself is synced before rename. Use [`Self::sync`] for
@@ -442,6 +468,21 @@ impl PersistentIndex32 {
         };
         let committed_buckets = self.base.as_ref().map_or(0, |base| base.buckets.len());
         let overlay_buckets = self.overlay_buckets.iter().map(HashMap::len).sum::<usize>();
+        let committed_distribution =
+            self.base
+                .as_ref()
+                .map_or_else(BucketDistribution::default, |base| {
+                    BucketDistribution::from_sizes(
+                        base.buckets.iter().map(|bucket| {
+                            usize::try_from(bucket.member_count()).unwrap_or(usize::MAX)
+                        }),
+                    )
+                });
+        let overlay_distribution = BucketDistribution::from_sizes(
+            self.overlay_buckets
+                .iter()
+                .flat_map(|table| table.values().map(Vec::len)),
+        );
         Ok(StoreStats {
             items: self.len(),
             file_bytes,
@@ -451,6 +492,12 @@ impl PersistentIndex32 {
             committed_buckets,
             overlay_buckets,
             suppressed_base_keys: self.suppressed_base_keys.len(),
+            committed_distribution,
+            overlay_distribution,
+            queries: self
+                .query_metrics
+                .as_ref()
+                .and_then(|metrics| metrics.lock().ok().map(|metrics| *metrics)),
         })
     }
 
@@ -467,6 +514,22 @@ impl PersistentIndex32 {
             suppressed_base_keys: HashSet::new(),
             key_hashes: BTreeMap::new(),
             dirty: true,
+            query_metrics: None,
+        }
+    }
+
+    fn record_query_metrics(
+        &self,
+        queries: usize,
+        candidates: usize,
+        possible_candidates: usize,
+        started: Option<Instant>,
+    ) {
+        let (Some(metrics), Some(started)) = (&self.query_metrics, started) else {
+            return;
+        };
+        if let Ok(mut metrics) = metrics.lock() {
+            metrics.record(queries, candidates, possible_candidates, started.elapsed());
         }
     }
 
@@ -1141,8 +1204,25 @@ mod tests {
         let mut reopened = PersistentIndex32::open(&path).expect("reopen snapshot");
         assert!(reopened.base.is_some());
         assert!(reopened.overlay_buckets.iter().all(HashMap::is_empty));
-        assert!(reopened.stats().expect("stats").committed_buckets > 0);
+        let stats = reopened.stats().expect("stats");
+        assert!(stats.committed_buckets > 0);
+        assert!(stats.committed_distribution.memberships > 0);
+        assert_eq!(
+            stats.committed_distribution.buckets,
+            u64::try_from(stats.committed_buckets).expect("small bucket count")
+        );
+        assert!(stats.queries.is_none());
+        reopened.set_observability(true);
         assert_eq!(reopened.query(&first).expect("query reopened"), before);
+        let observed = reopened
+            .stats()
+            .expect("observed stats")
+            .queries
+            .expect("query metrics");
+        assert_eq!(observed.operations, 1);
+        assert_eq!(observed.queries, 1);
+        assert!(observed.candidates > 0);
+        assert!(observed.total_latency_ns > 0);
         assert!(reopened.remove(20));
         reopened.sync().expect("sync deletion");
         drop(reopened);

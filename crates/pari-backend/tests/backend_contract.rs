@@ -40,6 +40,7 @@ fn exercise_backend_contract<B: StorageBackend>(backend: B) -> BackendIndex32<B>
     reference
         .insert_many([(2, &duplicate), (3, &third)])
         .expect("reference batch insert");
+    index.set_observability(true);
 
     assert_eq!(
         index.query(&first).expect("scalar query"),
@@ -69,6 +70,11 @@ fn exercise_backend_contract<B: StorageBackend>(backend: B) -> BackendIndex32<B>
     let stats = index.stats().expect("stats");
     assert_eq!(stats.items, 2);
     assert!(stats.bucket_memberships > 0);
+    let queries = stats.queries.expect("query metrics");
+    assert_eq!(queries.operations, 3);
+    assert_eq!(queries.queries, 4);
+    assert_eq!(queries.possible_candidates, 11);
+    assert!(queries.candidate_rate() > 0.0);
     index
 }
 
@@ -93,12 +99,20 @@ fn public_backend_extension_types_are_constructible() {
 
 #[test]
 fn memory_backend_satisfies_shared_contract() {
-    let index = exercise_backend_contract(MemoryBackend::new());
+    let mut index = exercise_backend_contract(MemoryBackend::new());
     let capabilities = index.backend().capabilities();
     assert!(capabilities.supports(BackendCapability::BatchRead));
     assert!(capabilities.supports(BackendCapability::BatchWrite));
     assert!(!capabilities.supports(BackendCapability::Ttl));
     assert!(!capabilities.supports(BackendCapability::Remote));
+    let stats = index.stats().expect("memory stats");
+    assert!(
+        stats
+            .bucket_distribution
+            .expect("memory distribution")
+            .buckets
+            > 0
+    );
     index.cleanup().expect("memory cleanup");
 }
 

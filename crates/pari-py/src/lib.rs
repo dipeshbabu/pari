@@ -367,6 +367,34 @@ struct PyIndexStats {
     overlay_buckets: usize,
     #[pyo3(get)]
     suppressed_base_keys: usize,
+    #[pyo3(get)]
+    committed_memberships: u64,
+    #[pyo3(get)]
+    committed_bucket_minimum: u64,
+    #[pyo3(get)]
+    committed_bucket_p50: u64,
+    #[pyo3(get)]
+    committed_bucket_p95: u64,
+    #[pyo3(get)]
+    committed_bucket_p99: u64,
+    #[pyo3(get)]
+    committed_bucket_maximum: u64,
+    #[pyo3(get)]
+    committed_bucket_average: f64,
+    #[pyo3(get)]
+    overlay_memberships: u64,
+    #[pyo3(get)]
+    query_operations: Option<u64>,
+    #[pyo3(get)]
+    query_count: Option<u64>,
+    #[pyo3(get)]
+    candidate_count: Option<u64>,
+    #[pyo3(get)]
+    candidate_rate: Option<f64>,
+    #[pyo3(get)]
+    average_query_ms: Option<f64>,
+    #[pyo3(get)]
+    max_query_ms: Option<f64>,
 }
 
 impl From<StoreStats> for PyIndexStats {
@@ -380,6 +408,22 @@ impl From<StoreStats> for PyIndexStats {
             committed_buckets: stats.committed_buckets,
             overlay_buckets: stats.overlay_buckets,
             suppressed_base_keys: stats.suppressed_base_keys,
+            committed_memberships: stats.committed_distribution.memberships,
+            committed_bucket_minimum: stats.committed_distribution.minimum,
+            committed_bucket_p50: stats.committed_distribution.p50,
+            committed_bucket_p95: stats.committed_distribution.p95,
+            committed_bucket_p99: stats.committed_distribution.p99,
+            committed_bucket_maximum: stats.committed_distribution.maximum,
+            committed_bucket_average: stats.committed_distribution.average_members(),
+            overlay_memberships: stats.overlay_distribution.memberships,
+            query_operations: stats.queries.map(|metrics| metrics.operations),
+            query_count: stats.queries.map(|metrics| metrics.queries),
+            candidate_count: stats.queries.map(|metrics| metrics.candidates),
+            candidate_rate: stats.queries.map(|metrics| metrics.candidate_rate()),
+            average_query_ms: stats.queries.map(|metrics| metrics.average_operation_ms()),
+            max_query_ms: stats.queries.map(|metrics| {
+                std::time::Duration::from_nanos(metrics.max_latency_ns).as_secs_f64() * 1_000.0
+            }),
         }
     }
 }
@@ -404,7 +448,8 @@ struct PyIndex {
 }
 
 impl PyIndex {
-    fn from_store(store: PersistentIndex32) -> Self {
+    fn from_store(mut store: PersistentIndex32, observability: bool) -> Self {
+        store.set_observability(observability);
         Self {
             inner: Arc::new(Mutex::new(Some(store))),
         }
@@ -442,25 +487,27 @@ impl PyIndex {
 #[pymethods]
 impl PyIndex {
     #[staticmethod]
-    #[pyo3(signature = (path, *, threshold = 0.8, num_perm = 128, seed = 1))]
+    #[pyo3(signature = (path, *, threshold = 0.8, num_perm = 128, seed = 1, observability = false))]
     fn create(
         py: Python<'_>,
         path: PathBuf,
         threshold: f64,
         num_perm: usize,
         seed: u64,
+        observability: bool,
     ) -> PyResult<Self> {
         py.detach(move || {
             PersistentIndex32::create(path, threshold, num_perm, seed).map_err(BindingError::from)
         })
-        .map(Self::from_store)
+        .map(|store| Self::from_store(store, observability))
         .map_err(binding_error)
     }
 
     #[staticmethod]
-    fn open(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+    #[pyo3(signature = (path, *, observability = false))]
+    fn open(py: Python<'_>, path: PathBuf, observability: bool) -> PyResult<Self> {
         py.detach(move || PersistentIndex32::open(path).map_err(BindingError::from))
-            .map(Self::from_store)
+            .map(|store| Self::from_store(store, observability))
             .map_err(binding_error)
     }
 
@@ -521,6 +568,14 @@ impl PyIndex {
                 .stats()
                 .map(PyIndexStats::from)
                 .map_err(BindingError::from)
+        })
+    }
+
+    #[pyo3(signature = (enabled = true))]
+    fn set_observability(&self, py: Python<'_>, enabled: bool) -> PyResult<()> {
+        self.run_write(py, move |store| {
+            store.set_observability(enabled);
+            Ok(())
         })
     }
 

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence, Sized
 from dataclasses import dataclass
 from itertools import islice
 from os import PathLike
 from typing import Generic, Literal, TypeVar
+from time import perf_counter
 
 from ._native import (
     ClosedIndexError,
@@ -30,6 +31,30 @@ class DedupeError(PariError):  # type: ignore[misc]
 
 class InvalidRepresentativeError(DedupeError):
     """A representative callback returned an object outside its group."""
+
+
+class ProgressCancelledError(DedupeError):
+    """A progress callback cancelled ingestion after a completed batch."""
+
+    def __init__(self, completed: int) -> None:
+        super().__init__(f"progress callback cancelled after {completed} items")
+        self.completed = completed
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressEvent:
+    """One exact batch-level progress observation."""
+
+    phase: Literal["dedupe_index"]
+    completed: int
+    total: int | None
+    batch_size: int
+    elapsed_seconds: float
+    items_per_second: float
+    final: bool
+
+
+ProgressCallback = Callable[[ProgressEvent], bool | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,11 +189,18 @@ class DedupeIndex(Generic[T]):
         feature = self._require_feature()
         return self.add_features(record, feature(record))
 
-    def add_many(self, records: Iterable[T]) -> int:
+    def add_many(
+        self, records: Iterable[T], *, progress: ProgressCallback | None = None
+    ) -> int:
         """Add records in bounded, atomic native batches and return the count."""
 
         feature = self._require_feature()
-        return self.add_many_features((record, feature(record)) for record in records)
+        total = len(records) if isinstance(records, Sized) else None
+        return self._add_many_features(
+            ((record, feature(record)) for record in records),
+            progress=progress,
+            total=total,
+        )
 
     def add_features(self, record: T, features: Iterable[ReadableBuffer]) -> int:
         """Add one record with precomputed features and return its stable index."""
@@ -180,16 +212,45 @@ class DedupeIndex(Generic[T]):
         return key
 
     def add_many_features(
-        self, items: Iterable[tuple[T, Iterable[ReadableBuffer]]]
+        self,
+        items: Iterable[tuple[T, Iterable[ReadableBuffer]]],
+        *,
+        progress: ProgressCallback | None = None,
     ) -> int:
         """Add precomputed feature rows without retaining source payloads."""
+
+        total = len(items) if isinstance(items, Sized) else None
+        return self._add_many_features(items, progress=progress, total=total)
+
+    def _add_many_features(
+        self,
+        items: Iterable[tuple[T, Iterable[ReadableBuffer]]],
+        *,
+        progress: ProgressCallback | None,
+        total: int | None,
+    ) -> int:
+        """Ingest batches and invoke the optional callback after each commit."""
 
         self._ensure_open()
         iterator = iter(items)
         added = 0
+        started = perf_counter() if progress is not None else None
         while True:
             batch = list(islice(iterator, self._batch_size))
             if not batch:
+                if (
+                    progress is not None
+                    and started is not None
+                    and (total is None or added == 0)
+                ):
+                    self._emit_progress(
+                        progress,
+                        completed=added,
+                        total=total,
+                        batch_size=0,
+                        started=started,
+                        final=True,
+                    )
                 return added
 
             start = len(self._records)
@@ -199,6 +260,38 @@ class DedupeIndex(Generic[T]):
             self._engine.add_many(keys, feature_rows)
             self._records.extend(records)
             added += len(batch)
+            if progress is not None and started is not None:
+                self._emit_progress(
+                    progress,
+                    completed=added,
+                    total=total,
+                    batch_size=len(batch),
+                    started=started,
+                    final=total is not None and added == total,
+                )
+
+    @staticmethod
+    def _emit_progress(
+        progress: ProgressCallback,
+        *,
+        completed: int,
+        total: int | None,
+        batch_size: int,
+        started: float,
+        final: bool,
+    ) -> None:
+        elapsed = perf_counter() - started
+        event = ProgressEvent(
+            phase="dedupe_index",
+            completed=completed,
+            total=total,
+            batch_size=batch_size,
+            elapsed_seconds=elapsed,
+            items_per_second=completed / elapsed if elapsed else 0.0,
+            final=final,
+        )
+        if progress(event) is False:
+            raise ProgressCancelledError(completed)
 
     def candidate_groups(self) -> tuple[DuplicateGroup[T], ...]:
         """Return unverified LSH candidate groups for measurement or review."""
@@ -326,6 +419,7 @@ def deduplicate(
     backend: Backend | None = None,
     exact: ExactVerifier[T] | None = None,
     representative: RepresentativeSelector[T] | None = None,
+    progress: ProgressCallback | None = None,
 ) -> DeduplicationResult[T]:
     """Deduplicate an iterable with a concise, typed batch-first API."""
 
@@ -342,7 +436,7 @@ def deduplicate(
         representative=representative,
     )
     try:
-        index.add_many(records)
+        index.add_many(records, progress=progress)
         return index.result()
     finally:
         index.close()

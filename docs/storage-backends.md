@@ -93,6 +93,8 @@ Batch existence checks and bucket queries use Redis pipelines. `BackendIndex32::
 
 `BackendStats.round_trips` reports network round trips made by the current Redis handle. It is intended for benchmark and operational evidence, not billing accounting.
 
+`BackendIndex32::set_observability(true)` adds process-local query counts, candidate totals, and observed operation latency to `BackendStats.queries`. It does not issue another backend request. `MemoryBackend` can return an exact bucket distribution from in-process state; Redis leaves that optional field empty rather than scanning its sorted set. See [observability](observability.md).
+
 ## TTL and retention
 
 Redis can apply one retention duration to all keys owned by a namespace:

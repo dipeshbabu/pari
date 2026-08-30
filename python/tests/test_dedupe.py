@@ -10,6 +10,8 @@ from pari import (
     DedupeIndex,
     Index,
     InvalidRepresentativeError,
+    ProgressCancelledError,
+    ProgressEvent,
     StorageError,
     deduplicate,
 )
@@ -96,6 +98,42 @@ class DeduplicateFunctionTests(unittest.TestCase):
 
 
 class DedupeIndexTests(unittest.TestCase):
+    def test_progress_is_batch_granular_and_reports_exact_total(self) -> None:
+        records = [{"text": f"record {index}"} for index in range(5)]
+        events: list[ProgressEvent] = []
+        index = DedupeIndex(text_features, num_perm=32, batch_size=2, threads=1)
+        try:
+            self.assertEqual(index.add_many(records, progress=events.append), 5)
+            self.assertEqual([event.completed for event in events], [2, 4, 5])
+            self.assertEqual([event.batch_size for event in events], [2, 2, 1])
+            self.assertEqual([event.total for event in events], [5, 5, 5])
+            self.assertEqual([event.final for event in events], [False, False, True])
+            self.assertTrue(all(event.items_per_second > 0 for event in events))
+        finally:
+            index.close()
+
+    def test_progress_cancellation_and_callback_errors_preserve_completed_batches(self) -> None:
+        records = [{"text": f"record {index}"} for index in range(5)]
+        index = DedupeIndex(text_features, num_perm=32, batch_size=2, threads=1)
+        try:
+            with self.assertRaises(ProgressCancelledError) as cancelled:
+                index.add_many(records, progress=lambda _event: False)
+            self.assertEqual(cancelled.exception.completed, 2)
+            self.assertEqual(len(index), 2)
+        finally:
+            index.close()
+
+        failing = DedupeIndex(text_features, num_perm=32, batch_size=2, threads=1)
+        try:
+            def fail(_event: ProgressEvent) -> None:
+                raise RuntimeError("progress failed")
+
+            with self.assertRaisesRegex(RuntimeError, "progress failed"):
+                failing.add_many(records, progress=fail)
+            self.assertEqual(len(failing), 2)
+        finally:
+            failing.close()
+
     def test_scalar_and_batch_ingestion_match(self) -> None:
         records = [
             {"text": "same values"},

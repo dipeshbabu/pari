@@ -46,6 +46,7 @@ include = [
   { path = "NOTICE", format = "sdist" },
   { path = "benchmarks/datasketch_interop.py", format = "sdist" },
   { path = "docs/datasketch-v2.md", format = "sdist" },
+  { path = "docs/observability.md", format = "sdist" },
   { path = "docs/parallelism.md", format = "sdist" },
   { path = "docs/text-workloads.md", format = "sdist" },
   { path = "examples/text_workload.py", format = "sdist" },

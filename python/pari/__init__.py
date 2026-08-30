@@ -22,6 +22,8 @@ from .dedupe import (
     DeduplicationResult,
     DuplicateGroup,
     InvalidRepresentativeError,
+    ProgressCancelledError,
+    ProgressEvent,
     deduplicate,
 )
 
@@ -39,6 +41,8 @@ __all__ = [
     "InvalidRepresentativeError",
     "MinHash",
     "PariError",
+    "ProgressCancelledError",
+    "ProgressEvent",
     "StorageError",
     "__version__",
     "deduplicate",

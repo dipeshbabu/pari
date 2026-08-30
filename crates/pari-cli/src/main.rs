@@ -6,6 +6,7 @@ use std::{
     io::{self, BufRead, BufReader, BufWriter, Write},
     path::PathBuf,
     process::ExitCode,
+    time::Instant,
 };
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -15,7 +16,7 @@ use pari_format::{
     decode_bucket_segment, read_bucket_members, validate_global_bucket_order, FileLayout,
     SectionKind,
 };
-use pari_index::LshIndex32;
+use pari_index::{BucketDistribution, LshIndex32, QueryMetrics};
 use pari_store::PersistentIndex32;
 use serde::{Deserialize, Serialize};
 
@@ -66,6 +67,8 @@ struct IndexArgs {
     /// Print the final summary as JSON.
     #[arg(long)]
     json: bool,
+    #[command(flatten)]
+    progress: ProgressArgs,
 }
 
 #[derive(Debug, clap::Args)]
@@ -79,6 +82,8 @@ struct SearchArgs {
     /// Emit JSONL results instead of tab-separated text.
     #[arg(long)]
     json: bool,
+    #[command(flatten)]
+    progress: ProgressArgs,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -109,6 +114,11 @@ struct DedupArgs {
     /// Emit JSONL instead of tab-separated text.
     #[arg(long)]
     json: bool,
+    /// Records indexed per atomic in-memory batch.
+    #[arg(long, default_value_t = 10_000)]
+    batch_size: usize,
+    #[command(flatten)]
+    progress: ProgressArgs,
 }
 
 #[derive(Debug, clap::Args)]
@@ -125,6 +135,24 @@ struct VerifyArgs {
     index: PathBuf,
     #[arg(long)]
     json: bool,
+    #[command(flatten)]
+    progress: ProgressArgs,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProgressFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, Clone, clap::Args)]
+struct ProgressArgs {
+    /// Emit progress to stderr. Optionally choose `human` or `json`.
+    #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "human")]
+    progress: Option<ProgressFormat>,
+    /// Record interval for search and verification progress.
+    #[arg(long, default_value_t = 1_000)]
+    progress_every: usize,
 }
 
 #[derive(Debug, clap::Args)]
@@ -195,6 +223,94 @@ struct VerifyResult {
     members_checked: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct ProgressEvent {
+    schema_version: u32,
+    phase: &'static str,
+    completed: u64,
+    total: Option<u64>,
+    elapsed_ms: f64,
+    rate_per_second: f64,
+    final_event: bool,
+    candidates: Option<u64>,
+    candidate_rate: Option<f64>,
+}
+
+struct ProgressReporter {
+    format: ProgressFormat,
+    every: usize,
+    started: Instant,
+}
+
+impl ProgressReporter {
+    fn new(args: &ProgressArgs) -> Result<Option<Self>, Box<dyn Error>> {
+        let Some(format) = args.progress else {
+            return Ok(None);
+        };
+        if args.progress_every == 0 {
+            return Err("--progress-every must be positive".into());
+        }
+        Ok(Some(Self {
+            format,
+            every: args.progress_every,
+            started: Instant::now(),
+        }))
+    }
+
+    fn is_due(&self, completed: usize) -> bool {
+        completed > 0 && completed % self.every == 0
+    }
+
+    fn emit(
+        &self,
+        phase: &'static str,
+        completed: usize,
+        total: Option<usize>,
+        final_event: bool,
+        candidates: Option<u64>,
+        candidate_rate: Option<f64>,
+    ) -> Result<(), Box<dyn Error>> {
+        let elapsed = self.started.elapsed();
+        let seconds = elapsed.as_secs_f64();
+        let completed_u64 = u64::try_from(completed)?;
+        let event = ProgressEvent {
+            schema_version: 1,
+            phase,
+            completed: completed_u64,
+            total: total.map(u64::try_from).transpose()?,
+            elapsed_ms: seconds * 1_000.0,
+            rate_per_second: if seconds > 0.0 {
+                u64_to_f64(completed_u64) / seconds
+            } else {
+                0.0
+            },
+            final_event,
+            candidates,
+            candidate_rate,
+        };
+        match self.format {
+            ProgressFormat::Human => {
+                eprintln!(
+                    "{phase}: {}{} ({:.1}/s, {:.1} ms)",
+                    event.completed,
+                    event
+                        .total
+                        .map_or_else(String::new, |total| format!("/{total}")),
+                    event.rate_per_second,
+                    event.elapsed_ms
+                );
+            }
+            ProgressFormat::Json => {
+                let stderr = io::stderr();
+                let mut stderr = stderr.lock();
+                serde_json::to_writer(&mut stderr, &event)?;
+                writeln!(stderr)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -228,8 +344,10 @@ fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
     }
     let mut store =
         PersistentIndex32::create(&args.output, args.threshold, args.num_perm, args.seed)?;
+    let reporter = ProgressReporter::new(&args.progress)?;
     let reader = open_reader(&args.input)?;
     let mut batch = Vec::with_capacity(args.batch_size);
+    let mut completed = 0_usize;
     for_json_lines(reader, |_line, record: Record| {
         batch.push((
             record.key,
@@ -242,16 +360,26 @@ fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
             )?,
         ));
         if batch.len() == args.batch_size {
+            let batch_len = batch.len();
             insert_batch(&mut store, &batch)?;
             store.sync()?;
             batch.clear();
+            completed = completed.saturating_add(batch_len);
+            if let Some(reporter) = &reporter {
+                reporter.emit("index", completed, None, false, None, None)?;
+            }
         }
         Ok(())
     })?;
     if !batch.is_empty() {
+        let batch_len = batch.len();
         insert_batch(&mut store, &batch)?;
+        completed = completed.saturating_add(batch_len);
     }
     store.sync()?;
+    if let Some(reporter) = &reporter {
+        reporter.emit("index", completed, None, true, None, None)?;
+    }
     let current = store.stats()?;
     let summary = IndexSummary {
         items: current.items,
@@ -283,10 +411,13 @@ fn insert_batch(
 }
 
 fn search(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
-    let store = PersistentIndex32::open(&args.index)?;
+    let reporter = ProgressReporter::new(&args.progress)?;
+    let mut store = PersistentIndex32::open(&args.index)?;
+    store.set_observability(reporter.is_some());
     let reader = open_reader(&args.input)?;
     let mut writer = BufWriter::new(io::stdout().lock());
     let mut query_index = 0_usize;
+    let mut candidate_count = 0_u64;
     for_json_lines(reader, |_line, query: QueryRecord| {
         let sketch = make_sketch(
             query.values.as_deref(),
@@ -296,6 +427,9 @@ fn search(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
             store.seed(),
         )?;
         let candidates = store.query(&sketch)?;
+        if reporter.is_some() {
+            candidate_count = candidate_count.saturating_add(u64::try_from(candidates.len())?);
+        }
         if args.json {
             serde_json::to_writer(
                 &mut writer,
@@ -311,9 +445,33 @@ fn search(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
             writeln!(writer, "{query_index}\t{id}\t{}", join_u64(&candidates))?;
         }
         query_index += 1;
+        if let Some(reporter) = &reporter {
+            if reporter.is_due(query_index) {
+                let possible = query_index.saturating_mul(store.len());
+                reporter.emit(
+                    "search",
+                    query_index,
+                    None,
+                    false,
+                    Some(candidate_count),
+                    Some(ratio(candidate_count, possible)),
+                )?;
+            }
+        }
         Ok(())
     })?;
     writer.flush()?;
+    if let Some(reporter) = &reporter {
+        let possible = query_index.saturating_mul(store.len());
+        reporter.emit(
+            "search",
+            query_index,
+            None,
+            true,
+            Some(candidate_count),
+            Some(ratio(candidate_count, possible)),
+        )?;
+    }
     Ok(())
 }
 
@@ -321,8 +479,14 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     if args.min_size == 0 {
         return Err("--min-size must be positive".into());
     }
+    if args.batch_size == 0 {
+        return Err("--batch-size must be positive".into());
+    }
+    let reporter = ProgressReporter::new(&args.progress)?;
     let mut index = LshIndex32::new(args.threshold, args.num_perm, args.seed)?;
     let reader = open_reader(&args.input)?;
+    let mut batch = Vec::with_capacity(args.batch_size);
+    let mut completed = 0_usize;
     for_json_lines(reader, |_line, record: Record| {
         let sketch = make_sketch(
             record.values.as_deref(),
@@ -331,9 +495,26 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
             args.num_perm,
             args.seed,
         )?;
-        index.insert(record.key, &sketch)?;
+        batch.push((record.key, sketch));
+        if batch.len() == args.batch_size {
+            let batch_len = batch.len();
+            index.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
+            batch.clear();
+            completed = completed.saturating_add(batch_len);
+            if let Some(reporter) = &reporter {
+                reporter.emit("dedup_index", completed, None, false, None, None)?;
+            }
+        }
         Ok(())
     })?;
+    if !batch.is_empty() {
+        let batch_len = batch.len();
+        index.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
+        completed = completed.saturating_add(batch_len);
+    }
+    if let Some(reporter) = &reporter {
+        reporter.emit("dedup_index", completed, None, true, None, None)?;
+    }
     let mut writer = open_writer(&args.output)?;
     match args.emit {
         DedupOutput::Pairs => {
@@ -370,6 +551,9 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
         }
     }
     writer.flush()?;
+    if let Some(reporter) = &reporter {
+        reporter.emit("dedup_output", completed, Some(completed), true, None, None)?;
+    }
     Ok(())
 }
 
@@ -388,6 +572,9 @@ fn stats(args: &StatsArgs) -> Result<(), Box<dyn Error>> {
                 "committed_buckets": current.committed_buckets,
                 "overlay_buckets": current.overlay_buckets,
                 "suppressed_base_keys": current.suppressed_base_keys,
+                "committed_bucket_distribution": bucket_distribution_json(current.committed_distribution),
+                "overlay_bucket_distribution": bucket_distribution_json(current.overlay_distribution),
+                "query_metrics": current.queries.map(query_metrics_json),
                 "num_perm": store.num_perm(),
                 "seed": store.seed(),
                 "threshold": store.threshold(),
@@ -402,12 +589,35 @@ fn stats(args: &StatsArgs) -> Result<(), Box<dyn Error>> {
         println!("bands: {}", current.bands);
         println!("rows: {}", current.rows);
         println!("committed buckets: {}", current.committed_buckets);
+        println!("overlay buckets: {}", current.overlay_buckets);
+        println!("suppressed base keys: {}", current.suppressed_base_keys);
+        println!(
+            "committed bucket members: {} total, min {}, p50 {}, p95 {}, p99 {}, max {}, average {:.3}",
+            current.committed_distribution.memberships,
+            current.committed_distribution.minimum,
+            current.committed_distribution.p50,
+            current.committed_distribution.p95,
+            current.committed_distribution.p99,
+            current.committed_distribution.maximum,
+            current.committed_distribution.average_members(),
+        );
+        println!(
+            "overlay bucket members: {} total, min {}, p50 {}, p95 {}, p99 {}, max {}, average {:.3}",
+            current.overlay_distribution.memberships,
+            current.overlay_distribution.minimum,
+            current.overlay_distribution.p50,
+            current.overlay_distribution.p95,
+            current.overlay_distribution.p99,
+            current.overlay_distribution.maximum,
+            current.overlay_distribution.average_members(),
+        );
         println!("dirty: {}", current.dirty);
     }
     Ok(())
 }
 
 fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
+    let reporter = ProgressReporter::new(&args.progress)?;
     let mut file = File::open(&args.index)?;
     let layout = FileLayout::read_from(&mut file)?;
     let bands = usize::try_from(layout.metadata().bands())?;
@@ -424,11 +634,34 @@ fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
     }
     validate_global_bucket_order(&locations)?;
     let mut members_checked = 0_u64;
-    for location in locations.iter().copied() {
+    for (index, location) in locations.iter().copied().enumerate() {
         let members = read_bucket_members(&layout, &mut file, location)?;
         members_checked = members_checked
             .checked_add(u64::try_from(members.len())?)
             .ok_or("member count overflow")?;
+        if let Some(reporter) = &reporter {
+            let completed = index + 1;
+            if reporter.is_due(completed) {
+                reporter.emit(
+                    "verify",
+                    completed,
+                    Some(locations.len()),
+                    false,
+                    Some(members_checked),
+                    None,
+                )?;
+            }
+        }
+    }
+    if let Some(reporter) = &reporter {
+        reporter.emit(
+            "verify",
+            locations.len(),
+            Some(locations.len()),
+            true,
+            Some(members_checked),
+            None,
+        )?;
     }
     let result = VerifyResult {
         valid: true,
@@ -540,4 +773,47 @@ fn join_u64(values: &[u64]) -> String {
         .map(u64::to_string)
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn bucket_distribution_json(distribution: BucketDistribution) -> serde_json::Value {
+    serde_json::json!({
+        "exact": true,
+        "buckets": distribution.buckets,
+        "memberships": distribution.memberships,
+        "minimum": distribution.minimum,
+        "p50": distribution.p50,
+        "p95": distribution.p95,
+        "p99": distribution.p99,
+        "maximum": distribution.maximum,
+        "average": distribution.average_members(),
+    })
+}
+
+fn query_metrics_json(metrics: QueryMetrics) -> serde_json::Value {
+    serde_json::json!({
+        "scope": "process_local",
+        "counts_exact": true,
+        "latency_observed": true,
+        "operations": metrics.operations,
+        "queries": metrics.queries,
+        "candidates": metrics.candidates,
+        "possible_candidates": metrics.possible_candidates,
+        "candidate_rate": metrics.candidate_rate(),
+        "total_latency_ns": metrics.total_latency_ns,
+        "max_latency_ns": metrics.max_latency_ns,
+        "average_operation_ms": metrics.average_operation_ms(),
+    })
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn u64_to_f64(value: u64) -> f64 {
+    value as f64
+}
+
+fn ratio(numerator: u64, denominator: usize) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        u64_to_f64(numerator) / u64_to_f64(u64::try_from(denominator).unwrap_or(u64::MAX))
+    }
 }
