@@ -114,3 +114,5 @@ The capacity coefficients are checked against Pari's existing 100,000- and 1,000
 The source measurements are in the versioned `pari-scale-v1` benchmark bundles under `benchmarks/results/`. RSS is noisy and implementation-dependent, which is why the planner exposes a model version, retains headroom, and never calls these values guarantees. Re-run the benchmark campaigns and version the model before changing coefficients.
 
 The probability model assumes independent MinHash rows. Real feature distributions, low-entropy inputs, adversarial keys, and correlated signatures can produce different candidate rates. Use `stats`, query observability, and representative production samples to validate a plan after building the index.
+
+The exact controlled run for this implementation is recorded in [`model-validation.json`](../benchmarks/results/planner/cb0b7e4368f1a278ffcf596e97143ee81e5a4c34/model-validation.json).

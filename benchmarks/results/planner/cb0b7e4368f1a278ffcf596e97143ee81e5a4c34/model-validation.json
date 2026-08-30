@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "git_sha": "cb0b7e4368f1a278ffcf596e97143ee81e5a4c34",
+  "worktree_clean": true,
+  "model": "pari-lsh-planner-v1",
+  "command": "cargo run --release -p pari-index --example planner_validation",
+  "environment": {
+    "operating_system": "Linux 5.15.167.4-microsoft-standard-WSL2",
+    "architecture": "x86_64",
+    "logical_cpus": 12,
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "candidate_model_validation": {
+    "workload": "deterministic controlled signature pairs queried through LshIndex32",
+    "trials_per_point": 10000,
+    "num_perm": 128,
+    "bands": 9,
+    "rows": 13,
+    "absolute_error_tolerance": 0.04,
+    "maximum_observed_absolute_error": 0.007556121759836332,
+    "within_tolerance": true,
+    "points": [
+      {
+        "similarity": 0.5,
+        "expected_candidate_rate": 0.0010980965234641538,
+        "observed_candidate_rate": 0.0012,
+        "absolute_error": 0.00010190347653584613,
+        "elapsed_ms": 104.69373999999999
+      },
+      {
+        "similarity": 0.8,
+        "expected_candidate_rate": 0.39884387824016365,
+        "observed_candidate_rate": 0.4064,
+        "absolute_error": 0.007556121759836332,
+        "elapsed_ms": 87.064436
+      },
+      {
+        "similarity": 0.9,
+        "expected_candidate_rate": 0.928604353856396,
+        "observed_candidate_rate": 0.9303,
+        "absolute_error": 0.0016956461436040682,
+        "elapsed_ms": 73.341036
+      }
+    ]
+  },
+  "capacity_model_validation": {
+    "configuration": {
+      "num_perm": 128,
+      "bands": 9,
+      "rows": 13
+    },
+    "sources": [
+      "benchmarks/results/pari-scale-v1/929a62b5ab7a59ade32878d5b54537e5f73562c1/scale-100k",
+      "benchmarks/results/pari-scale-v1/ae58cbf63a2f8bec2edcd1601ea7d27c99f1226a/scale-1m"
+    ],
+    "persistent_file_bytes_per_item": {
+      "modeled": 440.0,
+      "measured_100k": 440.00232,
+      "measured_1m": 440.000736,
+      "relative_error_tolerance": 0.05,
+      "within_tolerance": true
+    },
+    "lazy_reopen_rss_delta_bytes_per_item": {
+      "modeled": 512.0,
+      "measured_100k": 519.49568,
+      "measured_1m": 504.582144,
+      "relative_error_tolerance": 0.15,
+      "within_tolerance": true
+    },
+    "in_memory_index_rss_delta_bytes_per_item": {
+      "modeled": 1072.0,
+      "measured_100k": 824.36096,
+      "measured_1m": 1067.565056,
+      "relative_error_tolerance": 0.35,
+      "within_tolerance": true
+    }
+  },
+  "interpretation": "The candidate curve stayed within 0.008 absolute error at every controlled point. Persistent and lazy capacity models closely track both checked-in campaigns; the in-memory coefficient is intentionally conservative for the smaller campaign and matches the one-million-item result within one percent. These remain model estimates, not guarantees."
+}
