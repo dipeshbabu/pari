@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "git_sha": "50ead5c0d2555e7e1d3436876a5d66f4c7ba7926",
+  "worktree_clean": true,
+  "command": "python benchmarks/similarity_family_evaluation.py --output evaluation.json",
+  "decisions": {
+    "weighted_minhash": "defer",
+    "simhash": "defer"
+  },
+  "weighted_frequency_workload": {
+    "cases": [
+      {"case": "same-support-different-frequency", "binary_jaccard": 1.0, "weighted_jaccard": 0.14285714285714285},
+      {"case": "similar-frequency", "binary_jaccard": 1.0, "weighted_jaccard": 0.9523809523809523},
+      {"case": "different-support", "binary_jaccard": 0.0, "weighted_jaccard": 0.0}
+    ],
+    "elapsed_seconds": 0.0000222209999982681
+  },
+  "simhash_code_workload": {
+    "signature_bytes_per_item": 8,
+    "elapsed_seconds": 0.010358025000002158,
+    "pairs": [
+      {"left": "checksum-a", "right": "checksum-b", "same_label": true, "simhash_similarity": 1.0},
+      {"left": "checksum-a", "right": "clamp", "same_label": false, "simhash_similarity": 0.46875},
+      {"left": "checksum-b", "right": "clamp", "same_label": false, "simhash_similarity": 0.46875}
+    ]
+  },
+  "interpretation": "Weighted Jaccard solves a real semantic gap on frequency vectors, but no checked-in Pari workload currently needs weights. SimHash is compact and separates the tiny code fixture, but provides no demonstrated end-to-end advantage over the existing full-recall MinHash path once a new Hamming index and persistence format are included."
+}

@@ -73,3 +73,5 @@ The 8-byte prototype is much smaller than a 128-permutation `MinHash32` signatur
 Implement Weighted MinHash only after a checked-in workload contains meaningful non-negative feature magnitudes and shows that set Jaccard loses required ranking or recall.
 
 Implement SimHash only after a cosine/Hamming workload shows a material end-to-end advantage over MinHash, including its index cost, at acceptable recall. Until then, adding either family would expand the public API, format matrix, migration surface, and test burden without solving a demonstrated Pari workload.
+
+The exact evaluation for this decision is recorded in [`evaluation.json`](../benchmarks/results/similarity-families/50ead5c0d2555e7e1d3436876a5d66f4c7ba7926/evaluation.json).
