@@ -26,6 +26,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - PyArrow dataset adapters now accept preconfigured `Scanner` inputs without invalid batch arguments.
 - Reference workload publication now claims final paths atomically without replacing concurrent files.
 
+### Repository policy
+
+- GitHub now enforces protected `main`, immutable `v*` release tags, squash-only merges, exact-head checks, and automatic merged-branch deletion.
+
 ## [0.1.0] - 2026-08-27
 
 First public alpha of the Pari similarity and deduplication engine.
