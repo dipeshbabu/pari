@@ -116,3 +116,5 @@ Column projection happens before row conversion wherever the source supports it.
 The normal Python matrix verifies that the module imports without extras and that missing-dependency errors remain actionable. A separate CI job installs all three extras and runs real Table, Parquet, DataFrame, LazyFrame, Dataset, and IterableDataset tests with batch sizes smaller than the fixtures.
 
 These adapters are experimental in the v0.x compatibility policy because upstream batch APIs, especially Polars streaming collection, may change. Core MinHash, index, and persistence semantics are unaffected.
+
+The exact real-dependency smoke run for this implementation is recorded in [`smoke.json`](../benchmarks/results/dataset-integrations/36299aa145925d81d53f954928f7e8758be79ac2/smoke.json).

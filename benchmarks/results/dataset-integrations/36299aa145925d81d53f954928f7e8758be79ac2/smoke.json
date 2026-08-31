@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "git_sha": "36299aa145925d81d53f954928f7e8758be79ac2",
+  "worktree_clean": true,
+  "command": "python -m unittest python.tests.test_integrations -v",
+  "environment": {
+    "architecture": "x86_64",
+    "operating_system": "Linux",
+    "python_version": "3.12.3",
+    "pyarrow_version": "25.0.1",
+    "polars_version": "1.44.1",
+    "datasets_version": "5.0.1"
+  },
+  "config": {
+    "rows": 5,
+    "batch_size": 2,
+    "projected_columns": ["id", "text"]
+  },
+  "checks": {
+    "core_import_without_extras": true,
+    "actionable_missing_dependency_error": true,
+    "pyarrow_table": true,
+    "pyarrow_parquet_streaming_batches": true,
+    "pyarrow_direct_dedupe_ingestion": true,
+    "polars_dataframe_slices": true,
+    "polars_lazyframe_streaming_batches": true,
+    "huggingface_dataset_batches": true,
+    "huggingface_iterable_dataset_batches": true,
+    "column_projection": true,
+    "row_order_preserved": true,
+    "nulls_preserved": true
+  },
+  "result": {
+    "tests_run": 6,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "interpretation": "All adapters processed fixtures larger than their requested batch size through current real dependencies. This is a bounded-conversion and compatibility smoke test, not a throughput benchmark."
+}
