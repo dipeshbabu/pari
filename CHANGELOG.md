@@ -25,6 +25,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Rust storage tests now use parallel-safe temporary filenames that are valid on Windows.
 - PyArrow dataset adapters now accept preconfigured `Scanner` inputs without invalid batch arguments.
 - Reference workload publication now claims final paths atomically without replacing concurrent files.
+- Benchmark campaign commands select the main harness explicitly after the package gained an evaluation binary.
 
 ### Repository policy
 

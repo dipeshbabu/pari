@@ -285,6 +285,8 @@ def rust_command(stage: str, profile: Profile, output: Path) -> list[str]:
         "--release",
         "-p",
         "pari-bench",
+        "--bin",
+        "pari-bench",
         "--",
         stage,
         *profile.benchmark_arguments(),

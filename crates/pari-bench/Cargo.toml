@@ -1,5 +1,6 @@
 [package]
 name = "pari-bench"
+default-run = "pari-bench"
 description = "Reproducible end-to-end benchmark harness for Pari"
 version.workspace = true
 edition.workspace = true
