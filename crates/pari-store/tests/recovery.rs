@@ -2,16 +2,19 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use pari_core::MinHash32;
 use pari_store::PersistentIndex32;
 
+static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+
 fn test_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "pari-store-recovery-{name}-{}-{}.pari",
         std::process::id(),
-        std::thread::current().name().unwrap_or("test")
+        NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
     ))
 }
 
