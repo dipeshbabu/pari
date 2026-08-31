@@ -965,13 +965,22 @@ fn temp_path(destination: &Path, nonce: u128, suffix: &str) -> PathBuf {
     destination.with_file_name(format!(".{name}.{nonce:032x}.{suffix}.tmp"))
 }
 
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn sync_parent(path: &Path) -> Result<(), BuildError> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    File::open(parent)?.sync_all()?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        let _ = path;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

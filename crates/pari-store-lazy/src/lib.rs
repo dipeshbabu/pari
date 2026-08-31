@@ -673,13 +673,22 @@ fn temporary_path(path: &Path) -> Result<PathBuf, LazyStoreError> {
     Ok(path.with_file_name(format!(".{name}.pari-lazy-tmp")))
 }
 
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn sync_parent(path: &Path) -> Result<(), LazyStoreError> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    File::open(parent)?.sync_all()?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        let _ = path;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    }
 }
 
 fn hash_band(values: &[u32]) -> u64 {
