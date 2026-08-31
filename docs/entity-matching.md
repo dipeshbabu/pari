@@ -95,3 +95,5 @@ PARI_GIT_SHA=$(git rev-parse HEAD) python examples/entity_matching.py ...
 ```
 
 Use [LSH planning](planning.md) to choose an initial capacity and threshold, then measure recall and reduction on labels representative of the real matching task. A lower threshold usually raises recall and candidate cost.
+
+The exact customer and product fixture runs for this implementation are recorded in [`fixture-report.json`](../benchmarks/results/entity-matching/1b50580f21213774daac43ded4db21845db9342b/fixture-report.json). Their timing is a reproducibility record, not a throughput baseline.
