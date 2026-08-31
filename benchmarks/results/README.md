@@ -22,4 +22,6 @@ Code-corpus reference runs live under `code-corpus/<source-sha>/`. The checked-i
 
 Structured-record candidate runs live under `entity-matching/<source-sha>/`. Labeled customer and product fixture reports pin native candidate-pair recall, pair reduction, deterministic grouping, and memory/persistent output parity.
 
+Optional analytics adapter checks live under `dataset-integrations/<source-sha>/`. They record real dependency versions and bounded-batch compatibility across Arrow/Parquet, Polars, and Hugging Face Dataset paths.
+
 Observability overhead summaries live under `observability/<source-sha>/` and record the same-host baseline commit, disabled/observed confidence intervals, and correctness evidence about allocations and backend round trips.

@@ -96,3 +96,28 @@ jobs:
           name: datasketch-interop-smoke
           path: datasketch-interop.json
           if-no-files-found: error
+
+  dataset-integrations:
+    name: PyArrow, Polars, and Hugging Face integrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - name: Install build and optional dataset dependencies
+        run: >-
+          python -m pip install
+          "maturin==${{ env.MATURIN_VERSION }}"
+          "pyarrow>=18,<27"
+          "polars>=1.36,<2"
+          "datasets>=3.5,<6"
+      - name: Build wheel
+        run: maturin build --release --out dist
+      - name: Install built wheel
+        run: python python/tests/install_wheel.py dist
+      - name: Run dataset integration tests
+        run: python -m unittest python.tests.test_integrations -v

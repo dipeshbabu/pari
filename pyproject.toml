@@ -30,6 +30,10 @@ classifiers = [
 
 [project.optional-dependencies]
 datasketch = ["datasketch>=2,<3"]
+pyarrow = ["pyarrow>=18,<27"]
+polars = ["polars>=1.36,<2"]
+huggingface = ["datasets>=3.5,<6"]
+integrations = ["pyarrow>=18,<27", "polars>=1.36,<2", "datasets>=3.5,<6"]
 
 [project.urls]
 Repository = "https://github.com/dipeshbabu/pari"
@@ -46,6 +50,7 @@ include = [
   { path = "NOTICE", format = "sdist" },
   { path = "benchmarks/datasketch_interop.py", format = "sdist" },
   { path = "docs/datasketch-v2.md", format = "sdist" },
+  { path = "docs/dataset-integrations.md", format = "sdist" },
   { path = "docs/code-workloads.md", format = "sdist" },
   { path = "docs/entity-matching.md", format = "sdist" },
   { path = "docs/observability.md", format = "sdist" },
