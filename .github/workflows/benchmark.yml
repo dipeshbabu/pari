@@ -51,7 +51,7 @@ jobs:
       PARI_REDIS_URL: redis://127.0.0.1:6379/
     services:
       redis:
-        image: redis:7.4.2-alpine
+        image: redis:7.4.2-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf # 7.4.2-alpine
         ports:
           - 6379:6379
         options: >-
@@ -60,11 +60,11 @@ jobs:
           --health-timeout 2s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install reference workload package
@@ -97,7 +97,7 @@ jobs:
       - name: Criterion microbenchmarks
         run: cargo bench --manifest-path benchmarks/criterion/Cargo.toml
       - name: Upload benchmark artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pari-${{ env.BENCHMARK_PROFILE }}-${{ github.sha }}
           if-no-files-found: error
