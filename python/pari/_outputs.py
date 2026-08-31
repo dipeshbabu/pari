@@ -46,33 +46,42 @@ class StagedOutputs(AbstractContextManager["StagedOutputs"]):
             self._cleanup(exc_value)
             return False
 
-        published: list[Path] = []
+        published: list[tuple[Path, tuple[int, int]]] = []
         try:
             missing = [str(path) for path in self._staged.values() if not path.exists()]
             if missing:
                 raise RuntimeError(f"workflow did not create staged outputs: {missing}")
             for attribute, stage in self._staged.items():
                 final = self._original[attribute]
-                if final.exists():
-                    raise FileExistsError(
-                        f"refusing to overwrite output created during run: {final}"
-                    )
-                stage.rename(final)
-                published.append(final)
+                identity = self._identity(stage)
+                os.link(stage, final, follow_symlinks=False)
+                published.append((final, identity))
+            for stage in self._staged.values():
+                stage.unlink()
         except BaseException as error:
             self._cleanup(error, published)
             raise
         return False
 
     def _cleanup(
-        self, original: BaseException, published: list[Path] | None = None
+        self,
+        original: BaseException,
+        published: list[tuple[Path, tuple[int, int]]] | None = None,
     ) -> None:
         errors: list[OSError] = []
-        targets = [*self._staged.values(), *(published or [])]
+        targets = [*self._staged.values()]
         targets.extend(Path(f"{path}.tmp") for path in self._staged.values())
         for path in targets:
             try:
                 path.unlink(missing_ok=True)
+            except OSError as error:
+                errors.append(error)
+        for path, identity in published or []:
+            try:
+                if self._identity(path) == identity:
+                    path.unlink()
+            except FileNotFoundError:
+                pass
             except OSError as error:
                 errors.append(error)
         if errors:
@@ -80,3 +89,8 @@ class StagedOutputs(AbstractContextManager["StagedOutputs"]):
             raise RuntimeError(
                 f"failed to clean staged workload outputs: {details}"
             ) from original
+
+    @staticmethod
+    def _identity(path: Path) -> tuple[int, int]:
+        current = path.stat(follow_symlinks=False)
+        return current.st_dev, current.st_ino

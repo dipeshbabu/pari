@@ -24,6 +24,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - External and lazy storage builders no longer report false parent-directory sync failures on Windows.
 - Rust storage tests now use parallel-safe temporary filenames that are valid on Windows.
 - PyArrow dataset adapters now accept preconfigured `Scanner` inputs without invalid batch arguments.
+- Reference workload publication now claims final paths atomically without replacing concurrent files.
 
 ## [0.1.0] - 2026-08-27
 

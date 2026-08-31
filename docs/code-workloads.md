@@ -26,7 +26,7 @@ python examples/code_workload.py \
 
 The result is deterministic for the same files and options. `repo-alpha/src/checksum.py` is the representative because repositories and paths are traversed in lexical order. The same logical run produces identical group and decision files with the in-memory or persistent backend.
 
-Workflow-owned outputs are staged beside their requested destinations and published only after the index, groups, decisions, and metrics all succeed. A parsing or callback failure leaves none of those final artifacts.
+Workflow-owned outputs are staged beside their requested destinations and published only after the index, groups, decisions, and metrics all succeed. Final names are claimed with atomic no-replace links, so a concurrently created destination is not overwritten. A parsing, callback, or publication failure leaves no transaction-owned final artifacts.
 
 ## Directory input
 

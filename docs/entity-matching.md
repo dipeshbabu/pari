@@ -27,7 +27,7 @@ Replace `customers.jsonl` with `products.jsonl` and `--profile customer` with `-
 
 Omit `--index` for the in-memory path. Memory and persistent runs use the same native batches and produce byte-identical pair and group files.
 
-The index, pair, group, and metrics files are staged and published together after a successful run. Failed ingestion removes transaction-created staging files and leaves the requested final paths absent.
+The index, pair, group, and metrics files are staged and published together after a successful run. Atomic no-replace claims protect destinations created concurrently. Failed ingestion or publication removes transaction-owned files and leaves unrelated destinations intact.
 
 ## Input contract
 
