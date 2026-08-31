@@ -20,6 +20,16 @@ Pari is performance-sensitive infrastructure. Keep changes small enough to revie
 7. Open a pull request that links the issue and explains correctness, compatibility, and performance impact.
 8. Do not merge while required CI is failing or incomplete.
 
+## Enforced merge policy
+
+GitHub protects `main`; direct pushes, force pushes, and branch deletion are disabled for administrators as well as contributors. Every change uses a pull request whose branch is current with `main`, whose required cross-platform Rust/Python/Redis checks pass on the mergeable head, and whose review conversations are resolved.
+
+The repository enables Squash and merge only. Merge commits and rebase merges are disabled, and GitHub deletes the short-lived source branch after merge. Release-sensitive changes must also complete the path-triggered Release Validation workflow even though that expensive workflow is not an always-present branch-protection context.
+
+Tags matching `v*` have an active ruleset that blocks update, deletion, and non-fast-forward changes. There is no standing bypass. Emergency recovery requires an explicit, auditable settings change by the repository administrator, followed by immediate restoration of the rules before normal work resumes. Published tags are never moved to repair a release; publish a new version instead.
+
+The required check names are repository configuration. When a workflow job is renamed, update branch protection in the same maintenance window so `main` is neither bypassable nor permanently blocked.
+
 ## Engineering rules
 
 - Prefer safe Rust. The workspace forbids `unsafe` by default. Any future exception requires a dedicated issue, safety invariants, tests, and benchmark justification.

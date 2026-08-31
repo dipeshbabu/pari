@@ -57,7 +57,9 @@ After the packages exist, configure crates.io Trusted Publishing for each public
 
 ### 4. Protect publication environments and tags
 
-Create GitHub environments `pypi` and `crates-io` with required reviewers where appropriate. Protect `v*` tags so only maintainers can create or update release tags.
+Create GitHub environments `pypi` and `crates-io` with required reviewers where appropriate. The active `Protect release tags` ruleset permits new `v*` tags but blocks updates, deletion, and non-fast-forward changes. It has no standing bypass; an emergency requires an explicit auditable ruleset edit and immediate restoration.
+
+`main` is protected separately: changes require an up-to-date pull request, the configured cross-platform check matrix, resolved conversations, and linear history. Normal pull requests use Squash and merge only, and their branches are deleted after merge.
 
 ## Validate a release candidate
 
