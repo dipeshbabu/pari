@@ -56,10 +56,10 @@ jobs:
         run: |
           cargo package --locked -p pari-core
           cargo package --locked -p pari-format
-          cargo package --locked -p pari-index
-          # pari-store uses post-0.1 pari-index APIs; registry verification becomes
-          # possible again when #91 publishes the coordinated 0.2 dependency set.
-          cargo package --locked --no-verify -p pari-store
+          # The exact 0.2 dependency set does not exist in the registry until
+          # the coordinated #91 tag publishes it in dependency order.
+          cargo package --locked --no-verify -p pari-index --list >/dev/null
+          cargo package --locked --no-verify -p pari-store --list >/dev/null
 
   dependency-policy:
     name: Dependency policy

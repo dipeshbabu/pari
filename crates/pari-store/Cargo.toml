@@ -8,9 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-pari-core = { version = "=0.1.0", path = "../pari-core" }
-pari-format = { version = "=0.1.0", path = "../pari-format" }
-pari-index = { version = "=0.1.0", path = "../pari-index" }
+pari-core = { version = "=0.2.0", path = "../pari-core" }
+pari-format = { version = "=0.2.0", path = "../pari-format" }
+pari-index = { version = "=0.2.0", path = "../pari-index" }
 
 [lints]
 workspace = true

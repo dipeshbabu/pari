@@ -20,11 +20,11 @@ SPEC.loader.exec_module(release)
 
 class ReleaseMetadataTests(unittest.TestCase):
     def test_release_contract_is_self_consistent(self) -> None:
-        self.assertEqual(release.workspace_version(), "0.1.0")
+        self.assertEqual(release.workspace_version(), "0.2.0")
         release.validate()
 
     def test_tag_must_match_workspace_version(self) -> None:
-        release.validate("v0.1.0")
+        release.validate("v0.2.0")
         with self.assertRaises(SystemExit):
             release.validate("v9.9.9")
 
@@ -34,7 +34,7 @@ class ArtifactTests(unittest.TestCase):
         with tarfile.open(path, "w:gz") as archive:
             for name in names:
                 contents = b"fixture"
-                info = tarfile.TarInfo(f"pari_similarity-0.1.0/{name}")
+                info = tarfile.TarInfo(f"pari_similarity-0.2.0/{name}")
                 info.size = len(contents)
                 archive.addfile(info, io.BytesIO(contents))
 
@@ -121,7 +121,7 @@ class ArtifactTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                staging = root / "pari-0.1.0-test"
+                staging = root / "pari-0.2.0-test"
                 staging.mkdir()
                 binary = staging / "pari"
                 binary.write_bytes(b"binary")

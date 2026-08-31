@@ -4,13 +4,13 @@ The `pari` binary is a thin operational layer over the same Rust APIs used by th
 
 ## Install a published binary
 
-Pari 0.1.0 CLI archives are attached to the [GitHub Release](https://github.com/dipeshbabu/pari/releases/tag/v0.1.0):
+Pari 0.2.0 CLI archives are attached to the [GitHub Release](https://github.com/dipeshbabu/pari/releases/tag/v0.2.0):
 
-- [Linux x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-linux.tar.gz)
-- [macOS arm64](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-macos.tar.gz)
-- [Windows x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/pari-0.1.0-windows.zip)
+- [Linux x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.2.0/pari-0.2.0-linux.tar.gz)
+- [macOS arm64](https://github.com/dipeshbabu/pari/releases/download/v0.2.0/pari-0.2.0-macos.tar.gz)
+- [Windows x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.2.0/pari-0.2.0-windows.zip)
 
-Each archive contains `LICENSE`, `NOTICE`, `README.md`, and the `pari` executable (`pari.exe` on Windows). Verify the archive against the release's [`SHA256SUMS`](https://github.com/dipeshbabu/pari/releases/download/v0.1.0/SHA256SUMS), extract it, and move the executable to a directory on `PATH` if desired.
+Each archive contains `LICENSE`, `NOTICE`, `README.md`, and the `pari` executable (`pari.exe` on Windows). Verify the archive against the release's [`SHA256SUMS`](https://github.com/dipeshbabu/pari/releases/download/v0.2.0/SHA256SUMS), extract it, and move the executable to a directory on `PATH` if desired.
 
 ## Build from source for contributors
 
@@ -22,7 +22,7 @@ The binary is written to `target/release/pari` (`pari.exe` on Windows).
 
 ## Compatibility
 
-The command names, documented 0.1 input fields, and machine-readable output field sets are supported interfaces for the 0.1.x release line. Human-readable wording and whitespace are not parser contracts. See [compatibility.md](compatibility.md) for the full versioning and deprecation policy.
+The supported command names, documented 0.2 input fields, and machine-readable output field sets are interfaces for the 0.2.x release line. Human-readable wording and whitespace are not parser contracts. See [compatibility.md](compatibility.md) for the full versioning and deprecation policy.
 
 Machine-readable output revision 1 is pinned by compiled CLI integration tests. The current JSON/JSONL field sets are:
 
