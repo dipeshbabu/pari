@@ -75,6 +75,8 @@ cargo +1.81 check --locked -p pari-core -p pari-format -p pari-index -p pari-sto
 
 Opening a PR that changes release-sensitive paths automatically runs the Release Validation workflow. It builds install-tested Python wheels, CLI archives, public root Rust packages, checks dependent public crate metadata, generates an SBOM, and assembles checksums without publish permissions.
 
+The source-distribution job derives its expected public assets from `tool.maturin.include`, adds release-critical root files and every `python/pari` module/stub, and validates the built tarball with `python scripts/release.py validate-sdist`. Duplicate members, unsafe paths, links, missing declarations, and secret/local-environment artifacts fail the job before installation. The sdist is then installed and imported from outside the checkout.
+
 ## Create the 0.1.0 tag
 
 Only after the four crates.io bootstrap packages are visible and `main` is green:
