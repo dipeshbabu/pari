@@ -4,7 +4,7 @@
 
 Defer implementation. Pari's largest validated campaign is one million items and fits a single process. The required dedicated `scale-10m` run has not been recorded, so there is no measured capacity failure or operational need that sharding would solve today.
 
-The fan-out prototype proves that deterministic logical composition is feasible, but it also measures the cost: on 50,000 items and 100 exact-self queries, four sequential shards cost 1.91 times the unsharded query, eight cost 2.56 times, and sixteen cost 3.57 times. Candidate results and total bucket memberships remained identical at every shard count.
+The fan-out prototype proves that deterministic logical composition is feasible, but it also measures the cost: on 50,000 items and 100 exact-self queries, four sequential shards cost 3.14 times the direct unsharded query, eight cost 2.64 times, and sixteen cost 3.71 times. Candidate results and total bucket memberships remained identical at every shard count.
 
 This satisfies the evidence gate with a defer decision. No manifest, fan-out, or physical-merge implementation issues are opened until the revisit criteria below are met.
 
@@ -32,11 +32,11 @@ It constructs deterministic signatures, builds an equivalent unsharded index and
 
 | Shards | Maximum items/shard | Query overhead | Candidate parity |
 | ---: | ---: | ---: | --- |
-| 1 | 50,000 | 1.38x | exact |
-| 2 | 25,000 | 1.10x | exact |
-| 4 | 12,500 | 1.91x | exact |
-| 8 | 6,250 | 2.56x | exact |
-| 16 | 3,125 | 3.57x | exact |
+| 1 | 50,000 | 2.01x | exact |
+| 2 | 25,000 | 1.15x | exact |
+| 4 | 12,500 | 3.14x | exact |
+| 8 | 6,250 | 2.64x | exact |
+| 16 | 3,125 | 3.71x | exact |
 
 The one-shard prototype includes the generic fan-out/ordered-merge path, so its number is not the direct baseline. Timings are sub-millisecond and noisy; the direction after four shards is the relevant result. Parallel fan-out could reduce wall time while increasing scheduling, memory, and storage concurrency. That tradeoff needs a large persistent workload, not this in-memory smoke test.
 
@@ -107,3 +107,5 @@ Open implementation issues only after a dedicated `scale-10m` or real corpus run
 - query or grouping evidence shows that bounded fan-out is acceptable at the required shard count.
 
 That run must record unsharded and prototype-sharded build time, peak RSS, bytes/item, reopen time, query latency, candidate parity/rate, cross-shard edge volume, and merge cost on local scratch. Until then, sharding would add a manifest compatibility contract and permanent operational complexity without a demonstrated payoff.
+
+The exact prototype run for this decision is recorded in [`fanout.json`](../benchmarks/results/sharding/13ca457c115ea905f94552f68d6888d17be06de5/fanout.json).
