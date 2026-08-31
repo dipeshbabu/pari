@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "git_sha": "13ca457c115ea905f94552f68d6888d17be06de5",
+  "worktree_clean": true,
+  "decision": "defer",
+  "items": 50000,
+  "queries": 100,
+  "num_perm": 128,
+  "threshold": 0.8,
+  "baseline_query_ms": 0.223677,
+  "results": [
+    {"shards": 1, "build_ms": 102.052486, "query_ms": 0.449587, "query_overhead_ratio": 2.0099831453390378, "candidate_parity": true, "total_candidates": 100, "max_shard_items": 50000, "total_bucket_memberships": 450000},
+    {"shards": 2, "build_ms": 112.630989, "query_ms": 0.257779, "query_overhead_ratio": 1.1524609146224243, "candidate_parity": true, "total_candidates": 100, "max_shard_items": 25000, "total_bucket_memberships": 450000},
+    {"shards": 4, "build_ms": 94.80887, "query_ms": 0.702262, "query_overhead_ratio": 3.1396254420436613, "candidate_parity": true, "total_candidates": 100, "max_shard_items": 12500, "total_bucket_memberships": 450000},
+    {"shards": 8, "build_ms": 104.259415, "query_ms": 0.59024, "query_overhead_ratio": 2.6388050626573136, "candidate_parity": true, "total_candidates": 100, "max_shard_items": 6250, "total_bucket_memberships": 450000},
+    {"shards": 16, "build_ms": 134.051008, "query_ms": 0.829999, "query_overhead_ratio": 3.71070338032073, "candidate_parity": true, "total_candidates": 100, "max_shard_items": 3125, "total_bucket_memberships": 450000}
+  ],
+  "scale_evidence": {
+    "largest_validated_items": 1000000,
+    "persistent_bytes_per_item": 440.0,
+    "single_process_peak_rss_mib": 2925.1,
+    "scale_10m_recorded": false
+  },
+  "interpretation": "Logical fan-out preserves exact candidates and membership count, but no shard crossover benefit is demonstrated. The largest validated production-style campaign still fits one process, while the required dedicated 10M run is absent."
+}

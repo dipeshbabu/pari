@@ -16,6 +16,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Structured customer/product candidate generation with labeled recall and reduction evaluation.
 - Optional bounded-batch adapters for PyArrow/Parquet, Polars, and Hugging Face Datasets.
 - Evidence-based defer decision for Weighted MinHash and SimHash future families.
+- Evidence-based defer decision and deterministic fan-out prototype for sharded indexes.
 
 ## [0.1.0] - 2026-08-27
 

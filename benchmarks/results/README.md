@@ -26,4 +26,6 @@ Optional analytics adapter checks live under `dataset-integrations/<source-sha>/
 
 Future similarity-family evaluations live under `similarity-families/<source-sha>/`. They pin semantics-first Weighted MinHash and SimHash evidence and the resulting implement/defer decisions.
 
+Shard fan-out evaluations live under `sharding/<source-sha>/`. They record unsharded parity, shard-count overhead, membership conservation, and the scale evidence used for the implement/defer gate.
+
 Observability overhead summaries live under `observability/<source-sha>/` and record the same-host baseline commit, disabled/observed confidence intervals, and correctness evidence about allocations and backend round trips.
