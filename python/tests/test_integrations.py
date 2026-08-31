@@ -40,6 +40,7 @@ class OptionalDependencyTests(unittest.TestCase):
 class PyArrowIntegrationTests(unittest.TestCase):
     def test_table_parquet_projection_nulls_and_direct_ingestion(self) -> None:
         import pyarrow as pa
+        import pyarrow.dataset as ds
         import pyarrow.parquet as pq
 
         table = pa.table(
@@ -55,6 +56,22 @@ class PyArrowIntegrationTests(unittest.TestCase):
         self.assertEqual(len(rows), 5)
         self.assertEqual(set(rows[0]), {"id", "text"})
         self.assertIsNone(rows[2]["text"])
+
+        dataset = ds.dataset(table)
+        dataset_rows = list(
+            integrations.iter_pyarrow_rows(
+                dataset, columns=["id", "text"], batch_size=2
+            )
+        )
+        self.assertEqual(dataset_rows, rows)
+
+        scanner = dataset.scanner(columns=["id", "text"], batch_size=3)
+        scanner_rows = list(
+            integrations.iter_pyarrow_rows(scanner, columns=["id"], batch_size=2)
+        )
+        self.assertEqual(
+            scanner_rows, [{"id": value} for value in ["a", "b", "c", "d", "e"]]
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "records.parquet"
