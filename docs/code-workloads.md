@@ -26,6 +26,8 @@ python examples/code_workload.py \
 
 The result is deterministic for the same files and options. `repo-alpha/src/checksum.py` is the representative because repositories and paths are traversed in lexical order. The same logical run produces identical group and decision files with the in-memory or persistent backend.
 
+Workflow-owned outputs are staged beside their requested destinations and published only after the index, groups, decisions, and metrics all succeed. A parsing or callback failure leaves none of those final artifacts.
+
 ## Directory input
 
 Repeat `--root REPOSITORY=PATH` to scan multiple repositories. Repository names must be unique. Output identities retain the repository, slash-normalized relative path, and deterministic integer key:

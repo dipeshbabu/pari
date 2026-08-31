@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pari import DedupeIndex, __version__
+from pari._outputs import StagedOutputs
 
 REPORT_SCHEMA_VERSION = 1
 WORKLOAD_NAME = "entity-record-matching"
@@ -258,6 +259,12 @@ def true_pair_count(records: Sequence[RecordRef]) -> int:
 
 
 def match_command(args: argparse.Namespace) -> None:
+    attributes = ("pairs_output", "groups_output", "metrics_output", "index")
+    with StagedOutputs(args, attributes):
+        _match_command(args)
+
+
+def _match_command(args: argparse.Namespace) -> None:
     output_paths = [args.pairs_output, args.groups_output, args.metrics_output]
     if args.index is not None:
         output_paths.append(args.index)

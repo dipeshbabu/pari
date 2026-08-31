@@ -18,6 +18,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Evidence-based defer decision for Weighted MinHash and SimHash future families.
 - Evidence-based defer decision and deterministic fan-out prototype for sharded indexes.
 
+### Fixed
+
+- Reference deduplication and matching workloads no longer retain partial final outputs after failure.
+
 ## [0.1.0] - 2026-08-27
 
 First public alpha of the Pari similarity and deduplication engine.
