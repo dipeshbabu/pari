@@ -1,5 +1,21 @@
 version: 2
 updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-build:
+        patterns: ["maturin"]
+      python-integrations:
+        patterns: ["datasketch", "datasets", "polars", "pyarrow"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
