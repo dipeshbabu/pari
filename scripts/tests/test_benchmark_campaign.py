@@ -171,10 +171,16 @@ class ValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             artifacts = []
-            for stage in ("synthetic", "storage"):
+            for stage in ("synthetic", "storage", "datasketch"):
                 report_path = root / f"{stage}.json"
+                report = report_for(stage, self.profile)
+                if stage == "synthetic":
+                    report["metrics"]["signature.threads"] = metric(1.0, "threads")
+                    report["metrics"]["signature.parallel"] = metric(
+                        0.0, "boolean"
+                    )
                 report_path.write_text(
-                    json.dumps(report_for(stage, self.profile)), encoding="utf-8"
+                    json.dumps(report), encoding="utf-8"
                 )
                 artifacts.append(
                     {
@@ -193,11 +199,17 @@ class ValidationTests(unittest.TestCase):
                 "environment": {
                     "logical_cpus": 4,
                     "operating_system": "test-os",
+                    "physical_memory_bytes": 16 * 1024**3,
                     "rustc": "rustc test",
+                },
+                "filesystem": {
+                    "free_bytes_after_run": 80 * 1024**3,
+                    "total_bytes": 150 * 1024**3,
                 },
                 "git_sha": GIT_SHA,
                 "profile": self.profile,
                 "reports": artifacts,
+                "workload": {"cache_policy": "test cache policy."},
                 "worktree_clean": True,
             }
             bundle_path = root / "bundle.json"
@@ -209,6 +221,12 @@ class ValidationTests(unittest.TestCase):
             rendered = output.read_text(encoding="utf-8")
             self.assertIn("Benchmark evidence", rendered)
             self.assertIn("Bottleneck evidence and decision gates", rendered)
+            self.assertIn("Datasketch semantic baseline", rendered)
+            self.assertIn("persistent/lazy candidate parity", rendered)
+            self.assertIn("1 (auto)", rendered)
+            self.assertIn("workspace filesystem 150.00 GiB total", rendered)
+            self.assertIn("Cache policy: test cache policy.", rendered)
+            self.assertNotIn("WSL-backed", rendered)
             self.assertIn("smoke", rendered)
             self.assertIn(GIT_SHA[:12], rendered)
 

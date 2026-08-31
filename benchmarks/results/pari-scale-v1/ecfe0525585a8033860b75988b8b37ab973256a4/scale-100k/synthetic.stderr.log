@@ -1,0 +1,13 @@
+[1m[92m   Compiling[0m serde_core v1.0.229
+[1m[92m   Compiling[0m quote v1.0.47
+[1m[92m   Compiling[0m serde v1.0.229
+[1m[92m   Compiling[0m syn v3.0.4
+[1m[92m   Compiling[0m serde_derive v1.0.229
+[1m[92m   Compiling[0m serde_json v1.0.151
+[1m[92m   Compiling[0m pari-format v0.1.0 (/home/runner/work/pari/pari/crates/pari-format)
+[1m[92m   Compiling[0m pari-store-build v0.1.0 (/home/runner/work/pari/pari/crates/pari-store-build)
+[1m[92m   Compiling[0m pari-store-lazy v0.1.0 (/home/runner/work/pari/pari/crates/pari-store-lazy)
+[1m[92m   Compiling[0m pari-store v0.1.0 (/home/runner/work/pari/pari/crates/pari-store)
+[1m[92m   Compiling[0m pari-bench v0.1.0 (/home/runner/work/pari/pari/crates/pari-bench)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 7.25s
+[1m[92m     Running[0m `target/release/pari-bench run --items 100000 --queries 100 --set-size 32 --overlap 29 --threshold 0.8 --num-perm 128 --seed 7 --output /home/runner/work/pari/pari/benchmark-artifacts/.scale-100k.partial-ath8dhbf/synthetic.json`

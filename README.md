@@ -146,7 +146,7 @@ Source users evaluating shared memory or Redis backends can follow the [storage 
 - [Datasketch 2.x interoperability and migration](docs/datasketch-v2.md)
 - [Weighted MinHash and SimHash evaluation](docs/similarity-family-evaluation.md)
 - [Shardable and mergeable index evaluation](docs/sharding-evaluation.md)
-- [Benchmark methodology](docs/benchmarks.md), [versioned evidence](docs/benchmark-evidence.md), [CPU parallelism](docs/parallelism.md), [LSH planning](docs/planning.md), [observability](docs/observability.md), and [workload roadmap](https://github.com/dipeshbabu/pari/issues)
+- [Benchmark methodology](docs/benchmarks.md), [native-Linux and historical evidence](docs/benchmark-evidence.md), [CPU parallelism](docs/parallelism.md), [LSH planning](docs/planning.md), [observability](docs/observability.md), and [workload roadmap](https://github.com/dipeshbabu/pari/issues)
 
 ## Design goals
 

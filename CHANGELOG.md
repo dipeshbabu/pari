@@ -17,6 +17,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Optional bounded-batch adapters for PyArrow/Parquet, Polars, and Hugging Face Datasets.
 - Evidence-based defer decision for Weighted MinHash and SimHash future families.
 - Evidence-based defer decision and deterministic fan-out prototype for sharded indexes.
+- Refreshed native-Linux 100K and 1M campaign evidence with persistent storage, text-audit, and Datasketch stages.
 
 ### Fixed
 

@@ -894,6 +894,7 @@ def format_gib(value: float | None) -> str:
 
 def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: bool) -> None:
     rows: list[str] = []
+    datasketch_rows: list[str] = []
     evidence: list[str] = []
     text_rows: list[str] = []
     largest: tuple[
@@ -907,6 +908,7 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
         profile = bundle["profile"]
         synthetic = report_for_stage(bundle_path, bundle, "synthetic")
         storage = report_for_stage(bundle_path, bundle, "storage")
+        datasketch = report_for_stage(bundle_path, bundle, "datasketch")
         text_reference = report_for_stage(bundle_path, bundle, "text-reference")
         text_audit = report_for_stage(bundle_path, bundle, "text-audit")
         if largest is None or profile["items"] > largest[0]["profile"]["items"]:
@@ -916,13 +918,25 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
             optional_metric(synthetic, "memory.signature_peak_rss_bytes"),
             optional_metric(synthetic, "memory.index_build_peak_rss_bytes"),
         )
+        configured_threads = (
+            synthetic.get("config", {}).get("threads")
+            if isinstance(synthetic, dict)
+            else None
+        )
+        thread_policy = "auto" if configured_threads is None else f"max {configured_threads}"
+        effective_threads = optional_metric(synthetic, "signature.threads")
         rows.append(
-            "| {profile} | [{sha}]({link}) | {items:,} | {signature} | {build} | {rss} | {bytes_per_item} | {reopen} | {p99} | {candidate_rate} | {recall} |".format(
+            "| {profile} | [{sha}]({link}) | {items:,} | {signature} | {threads} | {build} | {rss} | {bytes_per_item} | {reopen} | {p99} | {candidate_rate} | {recall} |".format(
                 profile=profile["name"],
                 sha=bundle["git_sha"][:12],
                 link=relative,
                 items=profile["items"],
                 signature=format_number(optional_metric(synthetic, "signature.items_per_second")),
+                threads=(
+                    "n/a"
+                    if effective_threads is None
+                    else f"{effective_threads:.0f} ({thread_policy})"
+                ),
                 build=format_number(optional_metric(synthetic, "index.build_items_per_second")),
                 rss=(
                     "n/a"
@@ -938,10 +952,61 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
                 recall=format_number(optional_metric(synthetic, "candidate.recall"), digits=4),
             )
         )
+        if datasketch is not None:
+            datasketch_rows.append(
+                "| {profile} | {pari_signature} | {baseline_signature} | {pari_build} | {baseline_build} | {pari_p99} | {baseline_p99} | {pari_recall} | {baseline_recall} |".format(
+                    profile=profile["name"],
+                    pari_signature=format_number(
+                        optional_metric(synthetic, "signature.items_per_second")
+                    ),
+                    baseline_signature=format_number(
+                        optional_metric(datasketch, "signature.items_per_second")
+                    ),
+                    pari_build=format_number(
+                        optional_metric(synthetic, "index.build_items_per_second")
+                    ),
+                    baseline_build=format_number(
+                        optional_metric(datasketch, "index.build_items_per_second")
+                    ),
+                    pari_p99=format_number(
+                        optional_metric(synthetic, "query.scalar_p99_ms"), digits=4
+                    ),
+                    baseline_p99=format_number(
+                        optional_metric(datasketch, "query.scalar_p99_ms"), digits=4
+                    ),
+                    pari_recall=format_number(
+                        optional_metric(synthetic, "candidate.recall"), digits=4
+                    ),
+                    baseline_recall=format_number(
+                        optional_metric(datasketch, "candidate.recall"), digits=4
+                    ),
+                )
+            )
         environment = bundle["environment"]
+        filesystem = bundle.get("filesystem", {})
+        physical_memory = environment.get("physical_memory_bytes")
+        if isinstance(physical_memory, bool) or not isinstance(
+            physical_memory, (int, float)
+        ):
+            physical_memory = None
+        filesystem_total = filesystem.get("total_bytes")
+        if isinstance(filesystem_total, bool) or not isinstance(
+            filesystem_total, (int, float)
+        ):
+            filesystem_total = None
+        filesystem_free = filesystem.get("free_bytes_after_run")
+        if isinstance(filesystem_free, bool) or not isinstance(
+            filesystem_free, (int, float)
+        ):
+            filesystem_free = None
+        cache_policy = bundle.get("workload", {}).get(
+            "cache_policy", "not recorded"
+        )
         evidence.append(
             f"- `{profile['name']}`: {environment['operating_system']}; "
-            f"{environment['logical_cpus']} logical CPUs; {environment['rustc']}."
+            f"{environment['logical_cpus']} logical CPUs; {format_gib(physical_memory)} RAM; "
+            f"{environment['rustc']}; workspace filesystem {format_gib(filesystem_total)} total "
+            f"and {format_gib(filesystem_free)} free after the run. Cache policy: {cache_policy}"
         )
         if text_reference is not None and text_audit is not None:
             text_rows.append(
@@ -964,13 +1029,28 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
         "",
         "## Synthetic and persistent index profiles",
         "",
-        "| Profile | Source | Items | Signatures/s | Index items/s | Index peak RSS | Lazy bytes/item | Lazy reopen ms | Scalar p99 ms | Candidate rate | Candidate recall |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Profile | Source | Items | Signatures/s | Signature threads | Index items/s | Index peak RSS | Lazy bytes/item | Lazy reopen ms | Scalar p99 ms | Candidate rate | Candidate recall |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         *rows,
         "",
         "Candidate recall is measured against exact Jaccard ground truth at the configured threshold. It is not expected to be 1.0 for near-threshold queries because LSH candidate generation is probabilistic. Candidate rate is returned pairs divided by all possible query-item pairs.",
         "",
+        "Every selected bundle passed scalar/batch candidate parity, persistent/lazy candidate parity, and persistent mutation parity before its timing data was accepted.",
+        "",
     ]
+    if datasketch_rows:
+        lines.extend(
+            [
+                "## Datasketch semantic baseline",
+                "",
+                "| Profile | Pari signatures/s | Datasketch signatures/s | Pari index items/s | Datasketch index items/s | Pari scalar p99 ms | Datasketch scalar p99 ms | Pari recall | Datasketch recall |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                *datasketch_rows,
+                "",
+                "The Datasketch 2.0 baseline uses the same deterministic integer sets, query mutation, threshold, permutation count, and exact-Jaccard scoring. Pari and Datasketch use different stable seed-to-permutation mappings and LSH implementations, so signatures and candidate sets are not byte-for-byte interoperability claims. Recall and throughput are reported independently; compare performance only within the recorded environment and workload.",
+                "",
+            ]
+        )
     if text_rows:
         lines.extend(
             [
@@ -1018,6 +1098,25 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
             storage, "storage.persistent.build.peak_rss_bytes"
         )
         builder_peak = optional_metric(storage, "storage.builder.peak_rss_bytes")
+        signature_threads = optional_metric(synthetic, "signature.threads")
+        signature_parallel = optional_metric(synthetic, "signature.parallel")
+        configured_threads = (
+            synthetic.get("config", {}).get("threads")
+            if isinstance(synthetic, dict)
+            else None
+        )
+        thread_policy = (
+            "the bounded automatic policy"
+            if configured_threads is None
+            else f"an explicit maximum of {configured_threads} threads"
+        )
+        parallel_state = (
+            "enabled"
+            if signature_parallel == 1.0
+            else "disabled"
+            if signature_parallel == 0.0
+            else "not recorded"
+        )
         lines.extend(
             [
                 "## Bottleneck evidence and decision gates",
@@ -1026,8 +1125,8 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
                 "",
                 f"Persistent construction took {format_duration_ms(optional_metric(storage, 'storage.persistent.build_elapsed_ms'))}; bounded external construction took {format_duration_ms(optional_metric(storage, 'storage.builder.build_elapsed_ms'))}; lazy reopen took {format_duration_ms(optional_metric(storage, 'storage.lazy.reopen_ms'))}. Peak RSS was {format_gib(synthetic_peak)} for the synthetic process, {format_gib(persistent_peak)} during persistent construction, and {format_gib(builder_peak)} during external construction. The external builder held at most {format_number(optional_metric(storage, 'storage.builder.peak_buffered_records'), digits=0)} records and produced {format_number(optional_metric(storage, 'storage.lazy.bytes_per_item'))} bytes/item.",
                 "",
-                "- **Issue #48: defer implementation pending call-stack profiles.** Signature construction is the first CPU target; query parallelism would optimize a negligible phase in this workload. Capture the documented flamegraph and allocation profile on a dedicated Linux host before changing execution policy.",
-                "- **Issue #69: defer sharding implementation.** The 1M profile fits one process, while external construction is I/O-dominant. Run `scale-10m` on dedicated local scratch before using this WSL-backed result to choose a shard crossover point.",
+                f"- **CPU parallelism: keep the bounded signature policy.** The largest profile used {format_number(signature_threads, digits=0)} effective threads under {thread_policy}, with parallel execution {parallel_state}. Query phases remain too small in this workload to justify broader parallel scheduling.",
+                f"- **Issue #69: keep sharding deferred.** The `{profile['name']}` profile fits one process. Run `scale-10m` on dedicated local scratch before choosing a shard crossover point from scale evidence.",
                 "- **GPU work: defer.** The measured end-to-end storage path is I/O-bound, and no profile yet shows a GPU-suitable kernel dominating the real text workload.",
                 "",
             ]

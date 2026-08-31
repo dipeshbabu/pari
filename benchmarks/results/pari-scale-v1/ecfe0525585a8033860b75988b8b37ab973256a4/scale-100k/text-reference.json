@@ -1,0 +1,64 @@
+{
+  "config": {
+    "batch_size": 2048,
+    "exact": false,
+    "exact_threshold": null,
+    "id_field": "id",
+    "input": "/tmp/pari-text-campaign-ebk1okcr/reference.jsonl",
+    "limit": null,
+    "num_perm": 128,
+    "seed": 7,
+    "shingle_size": 3,
+    "text_field": "text",
+    "threads": null,
+    "threshold": 0.8
+  },
+  "engine": "pari",
+  "environment": {
+    "architecture": "x86_64",
+    "git_sha": "ecfe0525585a8033860b75988b8b37ab973256a4",
+    "operating_system": "Linux",
+    "pari_version": "0.1.0",
+    "python_version": "3.12.14"
+  },
+  "generated_unix_seconds": 1788215899,
+  "metrics": {
+    "build_items_per_second": {
+      "direction": "higher",
+      "unit": "items/second",
+      "value": 26487.195083385184
+    },
+    "elapsed_seconds": {
+      "direction": "lower",
+      "unit": "seconds",
+      "value": 0.37754091999997286
+    },
+    "index_bytes": {
+      "direction": "lower",
+      "unit": "bytes",
+      "value": 4400176
+    },
+    "index_bytes_per_item": {
+      "direction": "lower",
+      "unit": "bytes/item",
+      "value": 440.0176
+    },
+    "input_items": {
+      "direction": "neutral",
+      "unit": "items",
+      "value": 10000
+    },
+    "process_peak_rss_bytes": {
+      "direction": "lower",
+      "unit": "bytes",
+      "value": 70508544
+    },
+    "reopen_seconds": {
+      "direction": "lower",
+      "unit": "seconds",
+      "value": 0.004981864999990648
+    }
+  },
+  "schema_version": 1,
+  "workload": "text-reference-build"
+}
