@@ -86,6 +86,20 @@ class ProfileTests(unittest.TestCase):
         stages = [entry["stage"] for entry in planned["commands"]]
         self.assertEqual(stages, ["synthetic", "storage", "datasketch", "redis"])
         synthetic = planned["commands"][0]["command"]
+        self.assertEqual(
+            synthetic[:9],
+            [
+                "cargo",
+                "run",
+                "--release",
+                "-p",
+                "pari-bench",
+                "--bin",
+                "pari-bench",
+                "--",
+                "run",
+            ],
+        )
         self.assertIn("100000", synthetic)
         self.assertIn("--num-perm", synthetic)
 
