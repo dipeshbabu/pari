@@ -36,6 +36,30 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo clippy --manifest-path benchmarks/criterion/Cargo.toml --all-targets -- -D warnings
 
+  msrv:
+    name: Rust 1.81 MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.81.0"
+      - name: Check published crates with the locked dependency graph
+        run: >-
+          cargo check --locked
+          -p pari-core
+          -p pari-format
+          -p pari-index
+          -p pari-store
+      - name: Verify published crate packages
+        run: |
+          cargo package --locked -p pari-core
+          cargo package --locked -p pari-format
+          cargo package --locked -p pari-index
+          # pari-store uses post-0.1 pari-index APIs; registry verification becomes
+          # possible again when #91 publishes the coordinated 0.2 dependency set.
+          cargo package --locked --no-verify -p pari-store
+
   test:
     name: Tests
     runs-on: ubuntu-latest

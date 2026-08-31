@@ -29,6 +29,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 ### Repository policy
 
 - GitHub now enforces protected `main`, immutable `v*` release tags, squash-only merges, exact-head checks, and automatic merged-branch deletion.
+- CI continuously enforces the declared Rust 1.81 minimum for every published crate and package.
 
 ## [0.1.0] - 2026-08-27
 

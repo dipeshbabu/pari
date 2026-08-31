@@ -15,6 +15,12 @@ Pari is performance-sensitive infrastructure. Keep changes small enough to revie
    cargo test --workspace --all-targets --all-features
    ```
 
+   Changes to public Rust crates or `Cargo.lock` must also preserve the declared Rust 1.81 MSRV:
+
+   ```bash
+   cargo +1.81 check --locked -p pari-core -p pari-format -p pari-index -p pari-store
+   ```
+
 5. Add benchmark evidence when a PR claims a performance improvement or changes a hot path.
 6. Update documentation for public APIs and persisted formats.
 7. Open a pull request that links the issue and explains correctness, compatibility, and performance impact.
@@ -38,6 +44,8 @@ The required check names are repository configuration. When a workflow job is re
 - Validate compatibility before comparing or merging signatures and indexes.
 - Avoid speculative abstractions. Add a backend or optimization after a concrete use case and measurement justify it.
 - Keep user-facing APIs simpler than the implementation; advanced tuning should be optional.
+- Do not raise the workspace MSRV through a language feature or dependency update. An intentional MSRV increase is a minor-release decision that updates Cargo metadata, compatibility documentation, the changelog, and release notes together.
+- Exact-version public dependencies can make standalone dependent-package verification impossible between coordinated releases. The MSRV job must still compile the local public graph and build every tarball; use `--no-verify` only for the dependent tarball whose matching registry dependency is not published yet, and remove that exception when the release transition permits registry verification.
 
 ## Third-party code
 

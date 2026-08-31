@@ -81,6 +81,8 @@ These are not compatibility surfaces.
 
 Pari follows semantic-versioning intent while it is pre-1.0.
 
+The four published Rust crates declare and continuously test Rust 1.81 as their minimum supported Rust version. Dependency updates must pass the locked MSRV check. Package verification runs for dependency roots and for dependent crates where the matching exact dependency versions exist on crates.io. During a coordinated pre-release version transition, dependent tarballs are still built and inspected while source compilation uses workspace dependencies; registry verification resumes after the dependency set is publishable in order. Raising the minimum requires an explicit minor-release compatibility decision rather than an incidental lockfile refresh.
+
 For `0.1.x` patch releases:
 
 - no intentional breaking changes to supported Python, Rust, or CLI interfaces

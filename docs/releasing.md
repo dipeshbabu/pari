@@ -70,6 +70,7 @@ python scripts/release.py validate
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
+cargo +1.81 check --locked -p pari-core -p pari-format -p pari-index -p pari-store
 ```
 
 Opening a PR that changes release-sensitive paths automatically runs the Release Validation workflow. It builds install-tested Python wheels, CLI archives, public root Rust packages, checks dependent public crate metadata, generates an SBOM, and assembles checksums without publish permissions.
