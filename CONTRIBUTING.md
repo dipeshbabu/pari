@@ -38,6 +38,8 @@ The required check names are repository configuration. When a workflow job is re
 
 Workflow dependency pins follow [the CI supply-chain policy](docs/ci-supply-chain.md). Dependabot proposes updates; reviewers verify the upstream release and keep immutable SHAs/digests.
 
+Report vulnerabilities through [the private security process](SECURITY.md), not public issues. Dependency changes follow [the advisory, license, source, and MSRV policy](docs/dependency-policy.md).
+
 ## Engineering rules
 
 - Prefer safe Rust. The workspace forbids `unsafe` by default. Any future exception requires a dedicated issue, safety invariants, tests, and benchmark justification.
