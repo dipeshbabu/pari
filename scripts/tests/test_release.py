@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import os
 import re
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,6 +30,73 @@ class ReleaseMetadataTests(unittest.TestCase):
 
 
 class ArtifactTests(unittest.TestCase):
+    def write_sdist(self, path: Path, names: list[str]) -> None:
+        with tarfile.open(path, "w:gz") as archive:
+            for name in names:
+                contents = b"fixture"
+                info = tarfile.TarInfo(f"pari_similarity-0.1.0/{name}")
+                info.size = len(contents)
+                archive.addfile(info, io.BytesIO(contents))
+
+    def test_sdist_manifest_rejects_missing_forbidden_and_duplicate_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            valid = root / "valid.tar.gz"
+            expected = {"LICENSE", "python/pari/api.py"}
+            self.write_sdist(valid, sorted(expected))
+            release.validate_sdist_archive(valid, expected)
+
+            missing = root / "missing.tar.gz"
+            self.write_sdist(missing, ["LICENSE"])
+            with self.assertRaisesRegex(SystemExit, "missing expected sdist file"):
+                release.validate_sdist_archive(missing, expected)
+
+            forbidden = root / "forbidden.tar.gz"
+            self.write_sdist(forbidden, [*sorted(expected), ".env"])
+            with self.assertRaisesRegex(SystemExit, "forbidden sdist file"):
+                release.validate_sdist_archive(forbidden, expected)
+
+            duplicate = root / "duplicate.tar.gz"
+            self.write_sdist(duplicate, [*sorted(expected), "LICENSE"])
+            with self.assertRaisesRegex(SystemExit, "duplicate archive member"):
+                release.validate_sdist_archive(duplicate, expected)
+
+    def test_declared_sdist_manifest_rejects_stale_and_duplicate_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for required in release.REQUIRED_SDIST_ROOTS:
+                path = root / required
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture", encoding="utf-8")
+            package = root / "python" / "pari"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            asset = root / "docs" / "guide.md"
+            asset.parent.mkdir()
+            asset.write_text("guide", encoding="utf-8")
+            pyproject = {
+                "tool": {
+                    "maturin": {
+                        "include": [{"path": "docs/guide.md", "format": "sdist"}]
+                    }
+                }
+            }
+            expected = release.expected_sdist_paths(root, pyproject)
+            self.assertIn("docs/guide.md", expected)
+            self.assertIn("python/pari/__init__.py", expected)
+
+            pyproject["tool"]["maturin"]["include"].append(
+                {"path": "docs/guide.md", "format": "sdist"}
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                release.expected_sdist_paths(root, pyproject)
+
+            pyproject["tool"]["maturin"]["include"] = [
+                {"path": "docs/missing.md", "format": "sdist"}
+            ]
+            with self.assertRaisesRegex(ValueError, "does not exist"):
+                release.expected_sdist_paths(root, pyproject)
+
     def test_checksums_are_sorted_and_exclude_output_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
