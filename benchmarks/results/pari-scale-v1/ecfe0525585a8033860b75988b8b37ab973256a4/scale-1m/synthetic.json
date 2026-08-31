@@ -1,0 +1,204 @@
+{
+  "schema_version": 1,
+  "engine": "pari",
+  "generated_unix_seconds": 1788215804,
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "logical_cpus": 4,
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "git_sha": "ecfe0525585a8033860b75988b8b37ab973256a4"
+  },
+  "config": {
+    "items": 1000000,
+    "queries": 100,
+    "set_size": 32,
+    "overlap": 29,
+    "threshold": 0.8,
+    "num_perm": 128,
+    "seed": 7,
+    "dataset": null
+  },
+  "metrics": {
+    "candidate.average_candidates": {
+      "value": 0.57,
+      "unit": "items",
+      "direction": "lower"
+    },
+    "candidate.exact_matches": {
+      "value": 100.0,
+      "unit": "pairs",
+      "direction": "neutral"
+    },
+    "candidate.ground_truth_elapsed_ms": {
+      "value": 30795.473262000003,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "candidate.precision": {
+      "value": 1.0,
+      "unit": "ratio",
+      "direction": "higher"
+    },
+    "candidate.rate": {
+      "value": 5.7e-7,
+      "unit": "ratio",
+      "direction": "lower"
+    },
+    "candidate.recall": {
+      "value": 0.57,
+      "unit": "ratio",
+      "direction": "higher"
+    },
+    "candidate.reduction": {
+      "value": 0.99999943,
+      "unit": "ratio",
+      "direction": "higher"
+    },
+    "grouping.index_elapsed_ms": {
+      "value": 647.79012,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "grouping.index_group_count": {
+      "value": 0.0,
+      "unit": "groups",
+      "direction": "neutral"
+    },
+    "grouping.index_items_per_second": {
+      "value": 1543709.8670168046,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "grouping.stream_edges_per_second": {
+      "value": 5100697.062408206,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "grouping.stream_elapsed_ms": {
+      "value": 784.206541,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "grouping.stream_group_count": {
+      "value": 1.0,
+      "unit": "groups",
+      "direction": "neutral"
+    },
+    "index.build_elapsed_ms": {
+      "value": 3712.943336,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "index.build_items_per_second": {
+      "value": 269328.1069776067,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "index.live_items": {
+      "value": 1000000.0,
+      "unit": "items",
+      "direction": "neutral"
+    },
+    "index.mutation_operations_per_second": {
+      "value": 348075.7329256671,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "memory.index_build_peak_rss_bytes": {
+      "value": 1995014144.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "memory.index_build_rss_delta_bytes": {
+      "value": 1084252160.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "memory.index_build_rss_delta_bytes_per_item": {
+      "value": 1084.25216,
+      "unit": "bytes/item",
+      "direction": "lower"
+    },
+    "memory.signature_peak_rss_bytes": {
+      "value": 904736768.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "memory.signature_rss_delta_bytes": {
+      "value": 592326656.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "memory.signature_rss_delta_bytes_per_item": {
+      "value": 592.326656,
+      "unit": "bytes/item",
+      "direction": "lower"
+    },
+    "query.batch_elapsed_ms": {
+      "value": 0.040908,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "query.batch_queries_per_second": {
+      "value": 2444509.6313679474,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "query.scalar_batch_parity": {
+      "value": 1.0,
+      "unit": "ratio",
+      "direction": "neutral"
+    },
+    "query.scalar_elapsed_ms": {
+      "value": 0.156949,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "query.scalar_p50_ms": {
+      "value": 0.0015069999999999999,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "query.scalar_p95_ms": {
+      "value": 0.002489,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "query.scalar_p99_ms": {
+      "value": 0.003116,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "query.scalar_queries_per_second": {
+      "value": 637149.6473376702,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "query_signature.items_per_second": {
+      "value": 105062.76449550962,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "signature.elapsed_ms": {
+      "value": 3105.177999,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "signature.items_per_second": {
+      "value": 322042.7300212879,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "signature.parallel": {
+      "value": 1.0,
+      "unit": "boolean",
+      "direction": "neutral"
+    },
+    "signature.threads": {
+      "value": 4.0,
+      "unit": "threads",
+      "direction": "neutral"
+    }
+  }
+}

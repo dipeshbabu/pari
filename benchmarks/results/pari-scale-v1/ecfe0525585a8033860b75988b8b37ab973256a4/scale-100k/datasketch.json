@@ -1,0 +1,89 @@
+{
+  "config": {
+    "dataset": null,
+    "items": 100000,
+    "num_perm": 128,
+    "overlap": 29,
+    "queries": 100,
+    "seed": 7,
+    "set_size": 32,
+    "threshold": 0.8
+  },
+  "engine": "datasketch",
+  "environment": {
+    "arch": "x86_64",
+    "git_sha": "datasketch-2.0.0",
+    "logical_cpus": 4,
+    "os": "linux",
+    "rustc": "python 3.12.14"
+  },
+  "generated_unix_seconds": 1788215898,
+  "metrics": {
+    "candidate.average_candidates": {
+      "direction": "lower",
+      "unit": "items",
+      "value": 0.49
+    },
+    "candidate.exact_matches": {
+      "direction": "neutral",
+      "unit": "pairs",
+      "value": 100.0
+    },
+    "candidate.precision": {
+      "direction": "higher",
+      "unit": "ratio",
+      "value": 1.0
+    },
+    "candidate.recall": {
+      "direction": "higher",
+      "unit": "ratio",
+      "value": 0.49
+    },
+    "index.build_elapsed_ms": {
+      "direction": "lower",
+      "unit": "ms",
+      "value": 2800.360316999999
+    },
+    "index.build_items_per_second": {
+      "direction": "higher",
+      "unit": "items/s",
+      "value": 35709.69042552678
+    },
+    "index.live_items": {
+      "direction": "neutral",
+      "unit": "items",
+      "value": 100000.0
+    },
+    "query.scalar_p50_ms": {
+      "direction": "lower",
+      "unit": "ms",
+      "value": 0.014421000003039808
+    },
+    "query.scalar_p95_ms": {
+      "direction": "lower",
+      "unit": "ms",
+      "value": 0.017145000001050903
+    },
+    "query.scalar_p99_ms": {
+      "direction": "lower",
+      "unit": "ms",
+      "value": 0.0295939999972461
+    },
+    "query.scalar_queries_per_second": {
+      "direction": "higher",
+      "unit": "items/s",
+      "value": 66010.0427681364
+    },
+    "signature.elapsed_ms": {
+      "direction": "lower",
+      "unit": "ms",
+      "value": 21997.415453
+    },
+    "signature.items_per_second": {
+      "direction": "higher",
+      "unit": "items/s",
+      "value": 4545.988605509654
+    }
+  },
+  "schema_version": 1
+}

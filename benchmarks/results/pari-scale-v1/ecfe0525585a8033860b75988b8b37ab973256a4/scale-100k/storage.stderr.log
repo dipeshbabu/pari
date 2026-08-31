@@ -1,0 +1,2 @@
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.03s
+[1m[92m     Running[0m `target/release/pari-bench storage --items 100000 --queries 100 --set-size 32 --overlap 29 --threshold 0.8 --num-perm 128 --seed 7 --output /home/runner/work/pari/pari/benchmark-artifacts/.scale-100k.partial-ath8dhbf/storage.json`
