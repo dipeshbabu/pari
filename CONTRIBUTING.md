@@ -36,6 +36,8 @@ Tags matching `v*` have an active ruleset that blocks update, deletion, and non-
 
 The required check names are repository configuration. When a workflow job is renamed, update branch protection in the same maintenance window so `main` is neither bypassable nor permanently blocked.
 
+Workflow dependency pins follow [the CI supply-chain policy](docs/ci-supply-chain.md). Dependabot proposes updates; reviewers verify the upstream release and keep immutable SHAs/digests.
+
 ## Engineering rules
 
 - Prefer safe Rust. The workspace forbids `unsafe` by default. Any future exception requires a dedicated issue, safety invariants, tests, and benchmark justification.

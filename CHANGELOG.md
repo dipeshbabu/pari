@@ -31,6 +31,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - GitHub now enforces protected `main`, immutable `v*` release tags, squash-only merges, exact-head checks, and automatic merged-branch deletion.
 - CI continuously enforces the declared Rust 1.81 minimum for every published crate and package.
 - Release Validation derives and checks the complete Python source-distribution manifest, including forbidden-file rejection.
+- Active CI actions and Redis service images are immutable and checked automatically.
 
 ## [0.1.0] - 2026-08-27
 
