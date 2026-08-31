@@ -63,11 +63,11 @@ jobs:
             -- --items 256 --queries 32 --output storage-layout-smoke.json
 
   windows-storage-smoke:
-    name: Windows storage smoke
+    name: Windows tests
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - run: cargo test -p pari-bench storage_smoke_reports_parity_and_stable_metrics
+      - run: cargo test --workspace --all-targets --all-features

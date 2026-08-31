@@ -988,6 +988,7 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
     };
 
     use pari_core::MinHash32;
@@ -996,11 +997,13 @@ mod tests {
 
     use super::{build_external, BuildError, BuildOptions};
 
+    static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
+
     fn test_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "pari-external-{name}-{}-{}.idx",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
