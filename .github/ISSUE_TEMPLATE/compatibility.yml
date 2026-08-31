@@ -25,7 +25,7 @@ body:
     attributes:
       label: Source and target versions
       description: State the working version/environment and the version/environment that fails.
-      placeholder: pari-similarity 0.1.0 on CPython 3.12 to ...
+      placeholder: pari-similarity 0.1.0 to 0.2.0 on CPython 3.12
     validations:
       required: true
   - type: textarea

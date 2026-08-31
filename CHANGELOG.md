@@ -6,9 +6,14 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-31
+
 ### Added
 
 - Release automation and packaging hardening for future alpha releases.
+- High-level typed Python deduplication through `DedupeIndex` and `deduplicate`, with exact verification, representative selection, bounded batches, local persistence, and cancellation-aware progress.
+- Streaming text reference-build, deduplication, and cross-corpus audit workflows with exact verification and transactional outputs.
+- Datasketch 2.x affine32 signature interoperability, golden fixtures, migration adapters, and a semantics-matched comparison harness.
 - Deterministic, bounded CPU parallelism for batch MinHash construction in Rust and Python.
 - Opt-in query metrics, exact bucket diagnostics, and batch-granular CLI/Python progress reporting.
 - Deterministic LSH planning and existing-index explanation across Rust, CLI, and Python.
@@ -37,7 +42,14 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Private vulnerability reporting, dependency proposals, and advisory/license/source CI policy are enabled.
 - Repository metadata, focused issue forms, and contributor evidence guidance provide consistent public entry points.
 
-## [0.1.0] - 2026-08-27
+### Compatibility
+
+- Existing supported 0.1 Python, Rust, CLI, signature, and `.pari` format-v1 behavior remains compatible in 0.2.0.
+- CLI machine-readable output remains revision 1; new fields are additive, while the new `plan` and `explain` output remains experimental.
+- The four public Rust crates remain on Rust 1.81 and move together to exact version 0.2.0 dependencies.
+- Planner models, optional dataset and Datasketch adapters, Redis layout, observability measurement policy beyond supported fields, and direct builder/lazy-store APIs remain experimental.
+
+## [0.1.0] - 2026-08-28
 
 First public alpha of the Pari similarity and deduplication engine.
 
@@ -58,5 +70,6 @@ First public alpha of the Pari similarity and deduplication engine.
 
 This is an alpha release. Public 0.x compatibility is governed by `docs/compatibility.md`; interfaces marked experimental or internal may change before 1.0.
 
-[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/dipeshbabu/pari/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dipeshbabu/pari/releases/tag/v0.1.0

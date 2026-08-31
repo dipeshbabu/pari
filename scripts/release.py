@@ -136,6 +136,10 @@ def validate(tag: str | None = None) -> None:
         package = data.get("package", {})
         if package.get("name") != name:
             errors.append(f"{manifest}: package name must be {name}")
+        if package.get("version", {}).get("workspace") is not True:
+            errors.append(
+                f"{manifest}: internal crate version must use version.workspace = true"
+            )
         if package.get("publish") is not False:
             errors.append(
                 f"{manifest}: internal crate must explicitly set publish = false"

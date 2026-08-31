@@ -75,6 +75,8 @@ cargo +1.81 check --locked -p pari-core -p pari-format -p pari-index -p pari-sto
 
 Opening a PR that changes release-sensitive paths automatically runs the Release Validation workflow. It builds install-tested Python wheels, CLI archives, public root Rust packages, checks dependent public crate metadata, generates an SBOM, and assembles checksums without publish permissions.
 
+During a coordinated version transition, Cargo inspects the `pari-index` and `pari-store` package manifests and file lists with `--list --no-verify` because it cannot produce their tarballs until the exact-version registry dependencies exist. The workspace still compiles their local dependency graph on Rust 1.81. On the signed tag, the publication job waits for each dependency to reach the crates.io index, publishes the next crate, then packages and registry-verifies all four crates before the GitHub Release can be created.
+
 The source-distribution job derives its expected public assets from `tool.maturin.include`, adds release-critical root files and every `python/pari` module/stub, and validates the built tarball with `python scripts/release.py validate-sdist`. Duplicate members, unsafe paths, links, missing declarations, and secret/local-environment artifacts fail the job before installation. The sdist is then installed and imported from outside the checkout.
 
 ## Create the 0.1.0 tag
@@ -102,6 +104,20 @@ For releases after 0.1.0:
 4. configure/verify Trusted Publishing for all public packages;
 5. tag the exact green `main` commit;
 6. allow the release workflow to publish Rust crates in dependency order using the temporary OIDC token, then publish the Python distribution and GitHub Release.
+
+Before tagging, dispatch `release.yml` manually from the exact green `main` branch. The manual run performs the full artifact build and an authentication-only crates.io OIDC exchange in the `crates-io` environment; it does not publish. A missing or mismatched trusted-publisher configuration fails that job. PyPI configuration is verified by the successful prior OIDC deployment and must still name owner `dipeshbabu`, repository `pari`, workflow `release.yml`, and environment `pypi`.
+
+For 0.2.0, after the release-candidate PR and manual preflight are green:
+
+```bash
+git checkout main
+git pull --ff-only
+git status --porcelain
+git tag -s v0.2.0 -m "Pari 0.2.0 alpha"
+git push origin v0.2.0
+```
+
+Confirm the tag points to the exact preflighted commit before pushing. The tag workflow must publish all four crates, the Python distribution, attest the assembled files, and create the prerelease. Do not create a GitHub Release separately or move the tag if publication fails.
 
 ## Yank and rollback policy
 
