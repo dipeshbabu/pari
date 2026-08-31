@@ -1,0 +1,69 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Pari.
+title: ""
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. For security vulnerabilities, use the private reporting link instead of this form.
+  - type: input
+    id: version
+    attributes:
+      label: Pari version or commit
+      description: Give the package version, CLI version, or full Git commit SHA.
+      placeholder: pari-similarity 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Interface
+      options:
+        - Python
+        - Rust crate
+        - CLI
+        - Local persistence
+        - Redis backend
+        - Dataset integration
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the operating system, architecture, Python or Rust version, and relevant dependency versions.
+      placeholder: Windows 11, x86_64, CPython 3.12.5
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest code, command, and input that reproduce the problem. Remove secrets and private data.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and logs
+      description: Include the complete error and stack trace when available.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Report checklist
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: The reproduction does not contain credentials or private data.
+          required: true

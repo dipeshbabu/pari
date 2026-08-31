@@ -7,24 +7,66 @@ Pari is performance-sensitive infrastructure. Keep changes small enough to revie
 1. Start from a focused GitHub issue with scope and acceptance criteria.
 2. Create a branch named for the issue or feature.
 3. Add tests for new behavior and regression tests for fixes.
-4. Run the required checks locally when possible:
+4. Run the core checks locally:
 
    ```bash
    cargo fmt --all -- --check
+   cargo fmt --manifest-path benchmarks/criterion/Cargo.toml --all -- --check
+   python scripts/check_workflow_pins.py
    cargo clippy --workspace --all-targets --all-features -- -D warnings
+   cargo clippy --manifest-path benchmarks/criterion/Cargo.toml --all-targets -- -D warnings
    cargo test --workspace --all-targets --all-features
+   cargo test --manifest-path benchmarks/criterion/Cargo.toml --all-targets
+   python -m unittest scripts.tests.test_benchmark_campaign -v
    ```
 
    Changes to public Rust crates or `Cargo.lock` must also preserve the declared Rust 1.81 MSRV:
 
    ```bash
-   cargo +1.81 check --locked -p pari-core -p pari-format -p pari-index -p pari-store
+   cargo +1.81 check --locked \
+     -p pari-core -p pari-format -p pari-index -p pari-store
+   cargo +1.81 package --locked -p pari-core
+   cargo +1.81 package --locked -p pari-format
+   cargo +1.81 package --locked -p pari-index
+   cargo +1.81 package --locked --no-verify -p pari-store
    ```
+
+   Run the checks for every surface the change affects. For Python bindings, build and test the installed wheel rather than importing from the source tree:
+
+   ```bash
+   python -m pip install "maturin==1.14.1"
+   maturin build --release --out dist
+   python python/tests/install_wheel.py dist
+   python -m unittest discover -s python/tests -p "test_*.py" -v
+   ```
+
+   Dependency changes must also pass `cargo deny check advisories licenses bans sources`. Release metadata and packaging changes must pass `python scripts/release.py validate`. The platform, integration, Redis, and release workflows remain authoritative for checks that need their managed environment.
 
 5. Add benchmark evidence when a PR claims a performance improvement or changes a hot path.
 6. Update documentation for public APIs and persisted formats.
 7. Open a pull request that links the issue and explains correctness, compatibility, and performance impact.
 8. Do not merge while required CI is failing or incomplete.
+
+## Compatibility and performance evidence
+
+Check the [v0.x compatibility contract](docs/compatibility.md) before changing a public Python, Rust, CLI, signature, or persisted-format surface. Supported 0.1.x interfaces must remain compatible in patch releases. Experimental interfaces can change in a minor release only when the release notes explain the impact and migration path. Persisted data and machine-readable output must never be silently reinterpreted.
+
+A performance claim needs a reproducible baseline and comparison from the same machine, source revision, workload, and cache policy. Include the commands, environment, raw JSON reports, correctness/parity results, and an explanation of material variance in the pull request. Use the named campaign when the change affects end-to-end behavior:
+
+```bash
+python scripts/benchmark_campaign.py run smoke \
+  --output benchmark-artifacts/smoke
+python scripts/benchmark_campaign.py validate \
+  benchmark-artifacts/smoke/bundle.json
+```
+
+Larger or publishable runs must follow the environment and artifact rules in the [benchmark guide](docs/benchmarks.md). CI timing on shared runners is not benchmark evidence.
+
+## Issues and triage
+
+Use the issue form that matches the report. Bug, compatibility, and performance reports should contain a minimal reproduction, exact Pari version or commit, interface, operating system, architecture, toolchain/runtime versions, workload size, and relevant logs or artifacts. Report security problems privately through the [security policy](SECURITY.md).
+
+Triage uses one type label where useful, one or more focused `area:` labels, and a `priority:` or `status:` label only after impact and scheduling are understood. New labels should represent a recurring queue, not a single issue.
 
 ## Enforced merge policy
 

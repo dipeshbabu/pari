@@ -1,0 +1,49 @@
+name: Feature proposal
+description: Propose a user-facing capability tied to a concrete workload.
+title: ""
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and users
+      description: Describe the workflow that is difficult today, who encounters it, and its scale.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior and success criteria without prescribing unnecessary implementation details.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example API or command
+      description: Show how the capability could fit the Python, Rust, or CLI interface when useful.
+      render: shell
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current approach and alternatives
+      description: Explain current workarounds and related tools or designs considered.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Compatibility, storage, and performance impact
+      description: Note public API, persisted-format, machine-output, MSRV, memory, I/O, or throughput implications. State when an area is unaffected.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Proposal checklist
+      options:
+        - label: I searched existing issues and roadmap items for the same request.
+          required: true
+        - label: The proposal is tied to a concrete use case rather than a speculative abstraction.
+          required: true

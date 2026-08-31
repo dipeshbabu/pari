@@ -1,0 +1,75 @@
+name: Performance regression or benchmark report
+description: Report a measured regression or share reproducible benchmark evidence.
+title: ""
+labels:
+  - "area: performance"
+  - "area: benchmarks"
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Pari version or commit
+      description: Give the exact baseline and current versions or full commit SHAs.
+      placeholder: baseline v0.1.0; current 0123456789abcdef...
+    validations:
+      required: true
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Measured path
+      options:
+        - Signature construction
+        - In-memory index build or query
+        - Persistent index build, reopen, or query
+        - Python API
+        - CLI workload
+        - Redis backend
+        - Dataset integration
+        - Other documented benchmark
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Benchmark environment
+      description: Include CPU, RAM, operating system, architecture, storage or Redis details, toolchains, and cache policy.
+    validations:
+      required: true
+  - type: textarea
+    id: workload
+    attributes:
+      label: Workload and scale
+      description: Include item/query counts, feature or shingle sizes, MinHash and LSH settings, dataset source, and concurrency.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Reproduction commands
+      description: Include setup plus baseline and current commands.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Results and artifacts
+      description: Link or attach raw JSON reports and summarize repeated measurements. State whether correctness and candidate parity passed.
+    validations:
+      required: true
+  - type: textarea
+    id: interpretation
+    attributes:
+      label: Expected result and interpretation
+      description: Explain the expected behavior, observed difference, and why it is outside normal variance.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Evidence checklist
+      options:
+        - label: Baseline and current measurements used the same machine, workload, and cache policy.
+          required: true
+        - label: Correctness checks passed before performance numbers were compared.
+          required: true

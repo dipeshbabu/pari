@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/dipeshbabu/pari/security/advisories/new
+    about: Send exploit details through GitHub's private vulnerability reporting flow.

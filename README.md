@@ -8,6 +8,16 @@ The project is built around a Rust core with Python bindings and a CLI. The goal
 
 Pari **0.1.0 alpha** is publicly available from PyPI, crates.io, and [GitHub Releases](https://github.com/dipeshbabu/pari/releases/tag/v0.1.0). Pari is still pre-1.0: supported 0.1.x interfaces follow the [v0.x compatibility policy](docs/compatibility.md), while experimental surfaces may change in a future minor release with release notes and migration guidance.
 
+Choose the interface that fits your workload:
+
+| Interface | Install or download | Start here |
+| --- | --- | --- |
+| Python 3.10+ | `python -m pip install "pari-similarity==0.1.0"` | [Python API guide](docs/python.md) |
+| Rust 1.81+ | `cargo add pari-core@0.1.0 pari-index@0.1.0` | [Architecture and crate layers](docs/architecture.md) |
+| CLI | [Download a 0.1.0 archive](https://github.com/dipeshbabu/pari/releases/tag/v0.1.0) | [CLI guide](docs/cli.md) |
+
+The [project links](#project-links) collect release notes, compatibility and security policies, integrations, workload guides, and benchmark evidence.
+
 ## Python quick start
 
 Install the published distribution (CPython 3.10 or newer):
