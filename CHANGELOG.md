@@ -14,6 +14,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Deterministic LSH planning and existing-index explanation across Rust, CLI, and Python.
 - Streaming source-code corpus deduplication with lexical features, exact verification, and reproducible metrics.
 - Structured customer/product candidate generation with labeled recall and reduction evaluation.
+- Optional bounded-batch adapters for PyArrow/Parquet, Polars, and Hugging Face Datasets.
 
 ## [0.1.0] - 2026-08-27
 
