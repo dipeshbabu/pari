@@ -24,4 +24,6 @@ Structured-record candidate runs live under `entity-matching/<source-sha>/`. Lab
 
 Optional analytics adapter checks live under `dataset-integrations/<source-sha>/`. They record real dependency versions and bounded-batch compatibility across Arrow/Parquet, Polars, and Hugging Face Dataset paths.
 
+Future similarity-family evaluations live under `similarity-families/<source-sha>/`. They pin semantics-first Weighted MinHash and SimHash evidence and the resulting implement/defer decisions.
+
 Observability overhead summaries live under `observability/<source-sha>/` and record the same-host baseline commit, disabled/observed confidence intervals, and correctness evidence about allocations and backend round trips.
