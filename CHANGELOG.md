@@ -33,6 +33,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Release Validation derives and checks the complete Python source-distribution manifest, including forbidden-file rejection.
 - Active CI actions and Redis service images are immutable and checked automatically.
 - Private vulnerability reporting, dependency proposals, and advisory/license/source CI policy are enabled.
+- Repository metadata, focused issue forms, and contributor evidence guidance provide consistent public entry points.
 
 ## [0.1.0] - 2026-08-27
 

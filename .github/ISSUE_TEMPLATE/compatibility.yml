@@ -1,0 +1,68 @@
+name: Compatibility problem
+description: Report an upgrade, format, signature, platform, or interoperability problem.
+title: ""
+labels:
+  - "area: compatibility"
+body:
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Compatibility surface
+      options:
+        - Python API or typing
+        - Rust API or MSRV
+        - CLI input or output
+        - .pari persisted format
+        - MinHash signature scheme
+        - Datasketch interoperability
+        - Dataset integration
+        - Operating system or architecture
+        - Redis data or namespace
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Source and target versions
+      description: State the working version/environment and the version/environment that fails.
+      placeholder: pari-similarity 0.1.0 on CPython 3.12 to ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, architecture, toolchain/runtime, dependency versions, and storage/backend details.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include commands, code, and the smallest safe artifact or schema details needed to reproduce the mismatch.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Compatibility expectation
+      description: Explain why the source and target should interoperate, including the relevant documented contract.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result and diagnostics
+      description: Include complete errors, validation output, or byte/signature differences where relevant.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Report checklist
+      options:
+        - label: I reviewed the v0.x compatibility contract and experimental-interface notes.
+          required: true
+        - label: Any attached artifact is free of credentials and private data.
+          required: true

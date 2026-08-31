@@ -19,8 +19,10 @@ Benchmark notes:
 ## Checks
 
 - [ ] `cargo fmt --all -- --check`
+- [ ] `cargo fmt --manifest-path benchmarks/criterion/Cargo.toml --all -- --check`
 - [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - [ ] `cargo test --workspace --all-targets --all-features`
+- [ ] Surface-specific Python, benchmark, dependency, Redis, or release checks were run where relevant.
 - [ ] Required GitHub Actions checks are green before merge.
 
 ## Attribution
