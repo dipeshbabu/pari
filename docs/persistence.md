@@ -54,13 +54,13 @@ If the index is already clean, `flush()` is a no-op.
 
 ## `sync`
 
-`sync()` performs the same commit sequence as `flush()` and then `sync_all`s the containing directory.
+`sync()` performs the same commit sequence as `flush()` and then `sync_all`s the containing directory on non-Windows platforms. Rust's standard library does not expose a portable Windows directory `fsync`, so Windows returns after the synced file rename instead of treating an unsupported directory open as a write failure.
 
 Use `sync()` when the caller needs the strongest durability guarantee the local backend currently exposes.
 
 If the parent-directory sync reports an error after the rename, Pari returns that error and marks the reopened handle dirty. The target may already contain the new generation, but the caller must treat durability as unconfirmed rather than silently assuming success.
 
-Calling `sync()` on a clean index still syncs the containing directory.
+Calling `sync()` on a clean index still syncs the containing directory where the platform supports that operation. On Windows it is a successful no-op because the committed file was already synced before rename.
 
 ## `close`
 
@@ -101,6 +101,8 @@ A copied committed target is self-contained. It does not depend on sidecar datab
 `PersistentIndex32` is optimized for incremental local mutation and compaction. For large initial builds, use `pari-store-build`, which spills fixed-width records into bounded sorted runs and externally merges them into the same canonical segmented format used by the local and lazy readers.
 
 The external builder's memory contract is bounded by the configured spill buffer, merge heap, one bounded segment directory, fixed copy buffers, and metadata rather than total bucket membership.
+
+Mutable commits, bounded external builds, and lazy snapshot creation use the same platform policy: sync the complete temporary file before atomic rename, then sync the parent directory on non-Windows platforms.
 
 ## Current limitations
 
