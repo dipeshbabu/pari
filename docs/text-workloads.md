@@ -36,6 +36,8 @@ python examples/text_workload.py dedupe \
 
 The optional `--index` mirrors the same batches into a persistent `.pari` file. Without it, grouping uses only the in-memory native index. `--exact` checks shingle Jaccard before native candidate components are joined. Exact reference reads use a bounded LRU cache controlled by `--cache-size`.
 
+Deduplication stages the optional index, groups, decisions, and metrics beside their final paths. It publishes them only after the whole workflow succeeds, so malformed input after a committed batch does not leave a partial final index.
+
 Group rows identify the deterministic first-record representative and all members:
 
 ```json

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pari import DedupeIndex, Index, MinHash, __version__
+from pari._outputs import StagedOutputs
 
 REPORT_SCHEMA_VERSION = 1
 REFERENCE_SCHEMA = "pari-text-reference-v1"
@@ -253,6 +254,12 @@ def document_json(reference: DocumentRef) -> dict[str, Any]:
 
 
 def dedupe_command(args: argparse.Namespace) -> None:
+    attributes = ("groups_output", "decisions_output", "metrics_output", "index")
+    with StagedOutputs(args, attributes):
+        _dedupe_command(args)
+
+
+def _dedupe_command(args: argparse.Namespace) -> None:
     input_path = args.input.resolve()
     output_paths = [args.groups_output, args.decisions_output, args.metrics_output]
     if args.index is not None:

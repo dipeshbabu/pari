@@ -27,6 +27,8 @@ Replace `customers.jsonl` with `products.jsonl` and `--profile customer` with `-
 
 Omit `--index` for the in-memory path. Memory and persistent runs use the same native batches and produce byte-identical pair and group files.
 
+The index, pair, group, and metrics files are staged and published together after a successful run. Failed ingestion removes transaction-created staging files and leaves the requested final paths absent.
+
 ## Input contract
 
 Every line is a JSON object with a unique `id` by default. Use `--id-field` when the identity column has another name. Empty lines are ignored; malformed JSON, duplicate identities, invalid field types, and records with no usable profile fields fail with line context.

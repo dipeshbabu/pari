@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pari import DedupeIndex, __version__
+from pari._outputs import StagedOutputs
 
 REPORT_SCHEMA_VERSION = 1
 WORKLOAD_NAME = "code-corpus-deduplication"
@@ -457,6 +458,12 @@ def probability(value: str) -> float:
 
 
 def dedupe_command(args: argparse.Namespace) -> None:
+    attributes = ("groups_output", "decisions_output", "metrics_output", "index")
+    with StagedOutputs(args, attributes):
+        _dedupe_command(args)
+
+
+def _dedupe_command(args: argparse.Namespace) -> None:
     output_paths = [args.groups_output, args.decisions_output, args.metrics_output]
     if args.index is not None:
         output_paths.append(args.index)
