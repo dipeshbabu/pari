@@ -51,7 +51,7 @@ The adapter's `batch_size` controls source conversion. `DedupeIndex.batch_size` 
 
 - a Parquet path;
 - `pyarrow.Table`, `RecordBatch`, or `RecordBatchReader`;
-- an Arrow dataset object with `to_batches()`.
+- `pyarrow.dataset.Dataset` or a preconfigured `Scanner`.
 
 Parquet paths use [`ParquetFile.iter_batches`](https://arrow.apache.org/docs/python/generated/pyarrow.parquet.ParquetFile.html#pyarrow.parquet.ParquetFile.iter_batches), which caps records per yielded batch. Arrow buffers remain columnar until one bounded record batch crosses the Python boundary through `to_pylist()`. At that point values and row dictionaries are Python copies.
 
@@ -65,6 +65,8 @@ for row in iter_pyarrow_rows(
 ```
 
 `add_pyarrow` passes the iterator directly to `DedupeIndex.add_many_features`.
+
+For a `Scanner`, Pari calls `to_batches()` without arguments so the scanner's filter, projection, and batch configuration remain intact. An adapter-level `columns` value may select a subset of columns already produced by the scanner, but it cannot add columns omitted by the scanner. Pari slices scanner batches again when they exceed the adapter `batch_size`, keeping Python row conversion bounded without rebuilding the scan plan.
 
 ## Polars
 

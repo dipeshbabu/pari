@@ -46,6 +46,7 @@ def iter_pyarrow_rows(
 
     batch_size = _positive_batch_size(batch_size)
     pa = _require("pyarrow", "pyarrow")
+    arrow_dataset = _require("pyarrow.dataset", "pyarrow")
     selected = list(columns) if columns is not None else None
 
     if isinstance(source, (str, Path)):
@@ -60,13 +61,15 @@ def iter_pyarrow_rows(
         batches = (source,)
     elif isinstance(source, pa.RecordBatchReader):
         batches = iter(source)
-    elif hasattr(source, "to_batches"):
+    elif isinstance(source, arrow_dataset.Scanner):
+        batches = source.to_batches()
+    elif isinstance(source, arrow_dataset.Dataset):
         batches = source.to_batches(columns=selected, batch_size=batch_size)
         selected = None
     else:
         raise TypeError(
             "source must be a Parquet path, pyarrow Table/RecordBatch/Reader, "
-            "or dataset with to_batches()"
+            "Dataset, or Scanner"
         )
 
     for batch in batches:
