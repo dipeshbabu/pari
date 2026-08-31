@@ -23,6 +23,8 @@ with Index.open("documents.pari") as index:
 
 `LshPlan` is produced by the canonical Rust model used by the CLI. It exposes signature cost, modeled index and resident bytes, budget fit, candidate probabilities, and an explicit storage recommendation reason. Estimates are not measured guarantees. See [LSH planning and explanation](planning.md) for model assumptions and validation evidence.
 
+`DedupeIndex.candidate_pairs()` returns the native index's unique LSH bucket-collision pairs as record pairs. Use it when a downstream verifier or labeled evaluation needs real candidate edges rather than connected-component closure. See the [entity matching workload](entity-matching.md) for a complete example.
+
 ## Install the published package
 
 ```bash

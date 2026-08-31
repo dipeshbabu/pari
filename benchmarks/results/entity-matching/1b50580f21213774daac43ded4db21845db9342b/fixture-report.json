@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "git_sha": "1b50580f21213774daac43ded4db21845db9342b",
+  "worktree_clean": true,
+  "workload": "entity-record-matching",
+  "command_template": "python examples/entity_matching.py --input <fixture>.jsonl --profile <customer|product> --label-field entity_id --pairs-output pairs.jsonl --groups-output groups.jsonl --metrics-output metrics.json --index index.pari --threshold 0.4 --num-perm 128 --seed 7 --batch-size 2",
+  "environment": {
+    "architecture": "x86_64",
+    "operating_system": "Linux",
+    "pari_version": "0.1.0",
+    "python_version": "3.12.3"
+  },
+  "config": {
+    "batch_size": 2,
+    "label_field": "entity_id",
+    "num_perm": 128,
+    "seed": 7,
+    "threshold": 0.4
+  },
+  "profiles": {
+    "customer": {
+      "fixture": "examples/entity_matching_fixture/customers.jsonl",
+      "input_items": 5,
+      "total_pairs": 10,
+      "labeled_true_pairs": 2,
+      "candidate_pairs": 2,
+      "true_candidate_pairs": 2,
+      "candidate_groups": 2,
+      "candidate_recall": 1.0,
+      "candidate_precision": 1.0,
+      "candidate_reduction_ratio": 0.8,
+      "elapsed_seconds": 0.9860048480000074,
+      "items_per_second": 5.070968981685942,
+      "process_peak_rss_bytes": 17371136,
+      "index_bytes": 7384,
+      "output_bytes": 662
+    },
+    "product": {
+      "fixture": "examples/entity_matching_fixture/products.jsonl",
+      "input_items": 5,
+      "total_pairs": 10,
+      "labeled_true_pairs": 2,
+      "candidate_pairs": 2,
+      "true_candidate_pairs": 2,
+      "candidate_groups": 2,
+      "candidate_recall": 1.0,
+      "candidate_precision": 1.0,
+      "candidate_reduction_ratio": 0.8,
+      "elapsed_seconds": 0.2035558600000087,
+      "items_per_second": 24.56328203963171,
+      "process_peak_rss_bytes": 17502208,
+      "index_bytes": 7672,
+      "output_bytes": 642
+    }
+  },
+  "correctness": {
+    "labels_excluded_from_features": true,
+    "native_candidate_pairs_used": true,
+    "memory_persistent_pair_output_parity": true,
+    "memory_persistent_group_output_parity": true,
+    "deterministic_representatives": true
+  },
+  "interpretation": "Both labeled fixtures retained every true pair while removing 80% of all-pairs comparisons. These five-record fixtures validate workflow semantics and metric calculation; they do not establish production matching quality or throughput."
+}

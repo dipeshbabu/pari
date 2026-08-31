@@ -1038,6 +1038,11 @@ impl PyDedupeEngine {
         })
     }
 
+    /// Return unique normalized candidate pairs from LSH bucket collisions.
+    fn pairs(&self, py: Python<'_>) -> PyResult<Vec<(u64, u64)>> {
+        self.run_read(py, |state| Ok(state.index.candidate_pairs().collect()))
+    }
+
     fn sync(&self, py: Python<'_>) -> PyResult<()> {
         self.run_write(py, |state| {
             if let Some(store) = &mut state.store {

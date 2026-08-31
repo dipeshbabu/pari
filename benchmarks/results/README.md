@@ -20,4 +20,6 @@ LSH planner validation lives under `planner/<source-sha>/`. It records controlle
 
 Code-corpus reference runs live under `code-corpus/<source-sha>/`. The checked-in fixture report pins deterministic cross-repository grouping, exact-verification results, backend output parity, and the workload's metric schema. Fixture timing is not a performance threshold.
 
+Structured-record candidate runs live under `entity-matching/<source-sha>/`. Labeled customer and product fixture reports pin native candidate-pair recall, pair reduction, deterministic grouping, and memory/persistent output parity.
+
 Observability overhead summaries live under `observability/<source-sha>/` and record the same-host baseline commit, disabled/observed confidence intervals, and correctness evidence about allocations and backend round trips.

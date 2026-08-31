@@ -47,6 +47,7 @@ include = [
   { path = "benchmarks/datasketch_interop.py", format = "sdist" },
   { path = "docs/datasketch-v2.md", format = "sdist" },
   { path = "docs/code-workloads.md", format = "sdist" },
+  { path = "docs/entity-matching.md", format = "sdist" },
   { path = "docs/observability.md", format = "sdist" },
   { path = "docs/planning.md", format = "sdist" },
   { path = "docs/parallelism.md", format = "sdist" },
@@ -56,5 +57,8 @@ include = [
   { path = "examples/code_corpus_fixture/repo-alpha/src/checksum.py", format = "sdist" },
   { path = "examples/code_corpus_fixture/repo-beta/lib/checksum_copy.py", format = "sdist" },
   { path = "examples/code_corpus_fixture/repo-beta/src/clamp.rs", format = "sdist" },
+  { path = "examples/entity_matching.py", format = "sdist" },
+  { path = "examples/entity_matching_fixture/customers.jsonl", format = "sdist" },
+  { path = "examples/entity_matching_fixture/products.jsonl", format = "sdist" },
   { path = "scripts/generate_datasketch_v2_golden.py", format = "sdist" },
 ]
