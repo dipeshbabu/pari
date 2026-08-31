@@ -112,7 +112,9 @@ class DedupeIndexTests(unittest.TestCase):
         finally:
             index.close()
 
-    def test_progress_cancellation_and_callback_errors_preserve_completed_batches(self) -> None:
+    def test_progress_cancellation_and_callback_errors_preserve_completed_batches(
+        self,
+    ) -> None:
         records = [{"text": f"record {index}"} for index in range(5)]
         index = DedupeIndex(text_features, num_perm=32, batch_size=2, threads=1)
         try:
@@ -125,6 +127,7 @@ class DedupeIndexTests(unittest.TestCase):
 
         failing = DedupeIndex(text_features, num_perm=32, batch_size=2, threads=1)
         try:
+
             def fail(_event: ProgressEvent) -> None:
                 raise RuntimeError("progress failed")
 
@@ -169,6 +172,7 @@ class DedupeIndexTests(unittest.TestCase):
             )
             self.assertEqual(added, 3)
             self.assertEqual(index.candidate_groups()[0].member_indices, (0, 1))
+            self.assertEqual(index.candidate_pairs(), ((records[0], records[1]),))
             self.assertEqual(index.result().dropped_indices, (1,))
         finally:
             index.close()

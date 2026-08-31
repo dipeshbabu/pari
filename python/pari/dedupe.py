@@ -6,8 +6,8 @@ from collections.abc import Callable, Iterable, Sequence, Sized
 from dataclasses import dataclass
 from itertools import islice
 from os import PathLike
-from typing import Generic, Literal, TypeVar
 from time import perf_counter
+from typing import Generic, Literal, TypeVar
 
 from ._native import (
     ClosedIndexError,
@@ -108,8 +108,8 @@ class DedupeIndex(Generic[T]):
         "backend",
         "num_perm",
         "seed",
-        "threshold",
         "threads",
+        "threshold",
     )
 
     def __init__(
@@ -300,6 +300,15 @@ class DedupeIndex(Generic[T]):
         raw_groups = self._engine.groups(verifier=None)
         return tuple(
             self._convert_group(member_indices) for _, member_indices in raw_groups
+        )
+
+    def candidate_pairs(self) -> tuple[tuple[T, T], ...]:
+        """Return unique, normalized LSH candidate pairs deterministically."""
+
+        self._ensure_open()
+        return tuple(
+            (self._records[left], self._records[right])
+            for left, right in self._engine.pairs()
         )
 
     def groups(self) -> tuple[DuplicateGroup[T], ...]:

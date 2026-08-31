@@ -1,0 +1,5 @@
+{"brand":"Acme","category":"computer accessories","entity_id":"product-1","id":"product-a","sku":"X100","title":"Acme Wireless Mouse Model X100"}
+{"brand":"ACME","category":"computer accessories","entity_id":"product-1","id":"product-b","sku":"X-100","title":"Wireless Mouse X-100 by Acme"}
+{"brand":"Northwind","category":"computer accessories","entity_id":"product-2","id":"product-c","sku":"KB-77","title":"Mechanical Keyboard 87 Key"}
+{"brand":"HomeCo","category":"drinkware","entity_id":"product-3","id":"product-d","sku":"MUG12","title":"Insulated Ceramic Travel Mug 12 oz"}
+{"brand":"Home Co.","category":"drinkware","entity_id":"product-3","id":"product-e","sku":"MUG-12","title":"Ceramic Travel Mug, Twelve Ounce"}

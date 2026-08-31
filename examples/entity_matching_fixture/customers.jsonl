@@ -1,0 +1,5 @@
+{"address":"12 Main Street, Boston MA","email":"alice@example.com","entity_id":"customer-1","id":"customer-a","name":"Alice Smith","phone":"+1 (617) 555-0101"}
+{"address":"12 Main St Boston, Massachusetts","email":"alice@example.com","entity_id":"customer-1","id":"customer-b","name":"Alice B. Smith","phone":"617-555-0101"}
+{"address":"800 Pine Road, Denver CO","email":"bob@example.net","entity_id":"customer-2","id":"customer-c","name":"Robert Chen","phone":"303-555-0198"}
+{"address":"44 Lake Avenue, Madison WI","email":"carol.jones@example.org","entity_id":"customer-3","id":"customer-d","name":"Carol Jones","phone":"608-555-0112"}
+{"address":"44 Lake Ave Madison Wisconsin","email":"c.jones@example.org","entity_id":"customer-3","id":"customer-e","name":"Carol A Jones","phone":"1-608-555-0112"}
