@@ -26,9 +26,9 @@ Persistent bucket statistics distinguish committed storage from the mutation ove
 Observation is disabled by default:
 
 ```rust
-use pari_index::LshIndex32;
+use pari_index::LshIndex64;
 
-let mut index = LshIndex32::new(0.8, 128, 7)?;
+let mut index = LshIndex64::new(0.8, 128, 7)?;
 index.set_observability(true);
 
 // Insert and query as usual.
@@ -40,7 +40,11 @@ if let Some(queries) = stats.queries {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`LshIndex32`, `PersistentIndex32`, `LazyIndex32`, and `BackendIndex32` expose the same opt-in query metrics. A scalar query counts as one operation and one query. `query_many` counts as one operation and records every query in the batch.
+`LshIndex32`, `LshIndex64`, `PersistentIndex32`, `LazyIndex32`, and
+`BackendIndex32` expose the same opt-in query metrics. A scalar query counts as
+one operation and one query. `query_many` counts as one operation and records
+every query in the batch. The persistent and backend surfaces remain affine32
+until later issue #124 slices add explicit width-matched types.
 
 ## Python query metrics
 

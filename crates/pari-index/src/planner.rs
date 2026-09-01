@@ -8,7 +8,7 @@ use super::{
 /// Version label for Pari's analytical and benchmark-calibrated planning model.
 pub const LSH_PLANNER_MODEL: &str = "pari-lsh-planner-v1";
 
-const MINHASH_VALUE_BYTES: u64 = 4;
+const MINHASH32_VALUE_BYTES: u64 = 4;
 const EXTERNAL_KEY_BYTES: u64 = 8;
 const BAND_HASH_AND_MEMBERSHIP_BYTES: u64 = 16;
 const IN_MEMORY_BASE_BYTES_PER_ITEM: u64 = 64;
@@ -349,18 +349,37 @@ pub fn plan_lsh(options: LshPlanOptions) -> Result<LshPlan, LshPlanError> {
         });
     }
     let params = LshParams::tune(options.threshold, options.num_perm)?;
-    build_plan(options, params, ParameterSource::Tuned)
+    build_plan(
+        options,
+        params,
+        ParameterSource::Tuned,
+        MINHASH32_VALUE_BYTES,
+    )
 }
 
 /// Explain explicit or persisted LSH parameters without reading bucket memberships.
 pub fn explain_lsh(options: LshPlanOptions, params: LshParams) -> Result<LshPlan, LshPlanError> {
-    build_plan(options, params, ParameterSource::Existing)
+    build_plan(
+        options,
+        params,
+        ParameterSource::Existing,
+        MINHASH32_VALUE_BYTES,
+    )
+}
+
+pub(crate) fn explain_lsh_with_value_bytes(
+    options: LshPlanOptions,
+    params: LshParams,
+    value_bytes: u64,
+) -> Result<LshPlan, LshPlanError> {
+    build_plan(options, params, ParameterSource::Existing, value_bytes)
 }
 
 fn build_plan(
     options: LshPlanOptions,
     params: LshParams,
     parameter_source: ParameterSource,
+    value_bytes: u64,
 ) -> Result<LshPlan, LshPlanError> {
     if options.memory_budget_bytes == Some(0) {
         return Err(LshPlanError::InvalidMemoryBudget { bytes: 0 });
@@ -372,7 +391,12 @@ fn build_plan(
     let used_permutations = params
         .used_permutations()
         .expect("validated LSH parameters cannot overflow");
-    let sizes = size_estimates(options.expected_items, options.num_perm, params.bands)?;
+    let sizes = size_estimates(
+        options.expected_items,
+        options.num_perm,
+        params.bands,
+        value_bytes,
+    )?;
     let in_memory_fits_budget = options
         .memory_budget_bytes
         .map(|budget| sizes.in_memory_with_headroom_bytes <= budget);
@@ -433,10 +457,11 @@ fn size_estimates(
     expected_items: u64,
     num_perm: usize,
     bands: usize,
+    minhash_value_bytes: u64,
 ) -> Result<LshSizeEstimates, LshPlanError> {
     let num_perm = u64::try_from(num_perm).map_err(|_| LshPlanError::EstimateOverflow)?;
     let bands = u64::try_from(bands).map_err(|_| LshPlanError::EstimateOverflow)?;
-    let signature_bytes_per_item = checked_mul(num_perm, MINHASH_VALUE_BYTES)?;
+    let signature_bytes_per_item = checked_mul(num_perm, minhash_value_bytes)?;
     let index_metadata_bytes_per_item = checked_add(
         EXTERNAL_KEY_BYTES,
         checked_mul(bands, BAND_HASH_AND_MEMBERSHIP_BYTES)?,
