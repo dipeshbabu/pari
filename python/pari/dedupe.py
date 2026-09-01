@@ -397,7 +397,7 @@ class DedupeIndex(Generic[T]):
 
         if self._representative is not None:
             selected = self._representative(members)
-            for index, member in zip(member_indices, members):
+            for index, member in zip(member_indices, members, strict=True):
                 if selected is member:
                     representative_index = index
                     representative = member

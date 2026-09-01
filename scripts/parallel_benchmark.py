@@ -13,8 +13,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_VERSION = 1
@@ -31,7 +32,11 @@ def positive_csv(value: str) -> tuple[int, ...]:
         parsed = tuple(int(item.strip()) for item in value.split(","))
     except ValueError as error:
         raise argparse.ArgumentTypeError("must be comma-separated integers") from error
-    if not parsed or any(item <= 0 for item in parsed) or len(set(parsed)) != len(parsed):
+    if (
+        not parsed
+        or any(item <= 0 for item in parsed)
+        or len(set(parsed)) != len(parsed)
+    ):
         raise argparse.ArgumentTypeError("values must be unique positive integers")
     return parsed
 
@@ -55,7 +60,9 @@ def command_output(
     return completed.stdout.strip()
 
 
-def read_report(path: Path, *, items: int, threads: int, git_sha: str) -> dict[str, Any]:
+def read_report(
+    path: Path, *, items: int, threads: int, git_sha: str
+) -> dict[str, Any]:
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -65,7 +72,11 @@ def read_report(path: Path, *, items: int, threads: int, git_sha: str) -> dict[s
     config = report.get("config")
     environment = report.get("environment")
     metrics = report.get("metrics")
-    if not isinstance(config, dict) or not isinstance(environment, dict) or not isinstance(metrics, dict):
+    if (
+        not isinstance(config, dict)
+        or not isinstance(environment, dict)
+        or not isinstance(metrics, dict)
+    ):
         raise BenchmarkError(f"incomplete benchmark report in {path}")
     if config.get("items") != items or config.get("threads") != threads:
         raise BenchmarkError(f"benchmark report configuration mismatch in {path}")
@@ -85,7 +96,11 @@ def read_report(path: Path, *, items: int, threads: int, git_sha: str) -> dict[s
         if not isinstance(metric, dict):
             raise BenchmarkError(f"missing metric {name!r} in {path}")
         value = metric.get("value")
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
             raise BenchmarkError(f"invalid metric {name!r} in {path}")
     if metrics["query.scalar_batch_parity"]["value"] != 1.0:
         raise BenchmarkError(f"candidate parity failed in {path}")
@@ -97,7 +112,6 @@ def metric(report: dict[str, Any], name: str) -> float:
 
 
 def product_phase_ms(report: dict[str, Any]) -> float:
-    metrics = report["metrics"]
     total = sum(
         metric(report, name)
         for name in (
@@ -128,7 +142,9 @@ def distribution(values: Sequence[float]) -> dict[str, float]:
     }
 
 
-def summarize_group(items: int, requested_threads: int, reports: Sequence[dict[str, Any]]) -> dict[str, Any]:
+def summarize_group(
+    items: int, requested_threads: int, reports: Sequence[dict[str, Any]]
+) -> dict[str, Any]:
     effective = {int(metric(report, "signature.threads")) for report in reports}
     parallel = {bool(metric(report, "signature.parallel")) for report in reports}
     if len(effective) != 1 or len(parallel) != 1:
@@ -172,7 +188,9 @@ def speedups(results: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
                     "effective_threads": current["effective_threads"],
                     "signature_speedup": baseline["signature_elapsed_ms"]["median"]
                     / current["signature_elapsed_ms"]["median"],
-                    "product_phase_speedup": baseline["product_phase_elapsed_ms"]["median"]
+                    "product_phase_speedup": baseline["product_phase_elapsed_ms"][
+                        "median"
+                    ]
                     / current["product_phase_elapsed_ms"]["median"],
                 }
             )
@@ -187,7 +205,9 @@ def run(args: argparse.Namespace) -> None:
     git_sha = command_output(["git", "rev-parse", "HEAD"], root)
     dirty = bool(command_output(["git", "status", "--porcelain"], root))
     if dirty and not args.allow_dirty:
-        raise BenchmarkError("the worktree is dirty; commit changes or pass --allow-dirty")
+        raise BenchmarkError(
+            "the worktree is dirty; commit changes or pass --allow-dirty"
+        )
 
     environment = os.environ.copy()
     environment["PARI_GIT_SHA"] = git_sha
@@ -197,7 +217,9 @@ def run(args: argparse.Namespace) -> None:
         ["cargo", "build", "--release", "-p", "pari-bench"], root, environment
     )
     target = Path(environment.get("CARGO_TARGET_DIR", root / "target"))
-    binary = target / "release" / ("pari-bench.exe" if os.name == "nt" else "pari-bench")
+    binary = (
+        target / "release" / ("pari-bench.exe" if os.name == "nt" else "pari-bench")
+    )
     if not binary.is_file():
         raise BenchmarkError(f"benchmark binary was not created: {binary}")
 
@@ -283,7 +305,9 @@ def run(args: argparse.Namespace) -> None:
         "speedups": speedups(results),
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(f"wrote {output}")
 
 
@@ -307,10 +331,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.repeats <= 0 or args.set_size <= 0 or args.num_perm <= 0:
-        print("parallel benchmark error: repeats, set-size, and num-perm must be positive", file=sys.stderr)
+        print(
+            "parallel benchmark error: repeats, set-size, and num-perm must be positive",
+            file=sys.stderr,
+        )
         return 2
     if not 0 <= args.overlap <= args.set_size:
-        print("parallel benchmark error: overlap must be in 0..=set-size", file=sys.stderr)
+        print(
+            "parallel benchmark error: overlap must be in 0..=set-size", file=sys.stderr
+        )
         return 2
     if not 0.0 < args.threshold <= 1.0:
         print("parallel benchmark error: threshold must be in (0, 1]", file=sys.stderr)

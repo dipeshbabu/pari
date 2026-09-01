@@ -61,12 +61,8 @@ class ParallelBenchmarkTests(unittest.TestCase):
         self.assertEqual(summary["signature_elapsed_ms"]["median"], 3.0)
 
     def test_speedup_uses_one_thread_result_as_baseline(self) -> None:
-        scalar = benchmark.summarize_group(
-            256, 1, [report(elapsed=6.0, threads=1)]
-        )
-        parallel = benchmark.summarize_group(
-            256, 4, [report(elapsed=2.0, threads=4)]
-        )
+        scalar = benchmark.summarize_group(256, 1, [report(elapsed=6.0, threads=1)])
+        parallel = benchmark.summarize_group(256, 4, [report(elapsed=2.0, threads=4)])
 
         speedup = benchmark.speedups([scalar, parallel])[0]
         self.assertEqual(speedup["signature_speedup"], 3.0)

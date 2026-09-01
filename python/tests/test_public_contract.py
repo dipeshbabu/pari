@@ -5,7 +5,6 @@ from importlib.resources import files
 
 import pari
 
-
 V02_PUBLIC_EXPORTS = {
     "ClosedIndexError",
     "CompatibilityError",

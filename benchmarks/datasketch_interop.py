@@ -84,7 +84,7 @@ def require_signature_parity(
 ) -> None:
     parity = len(native) == len(external) and all(
         sketch.signature == [int(value) for value in external_sketch.hashvalues]
-        for sketch, external_sketch in zip(native, external)
+        for sketch, external_sketch in zip(native, external, strict=True)
     )
     if not parity:
         raise RuntimeError(
@@ -108,9 +108,7 @@ def benchmark_width(
     dtype = np.uint32 if width == 32 else np.uint64
 
     started = time.perf_counter()
-    external = datasketch_signatures(
-        rows, num_perm, seed, scheme, sketch_type, dtype
-    )
+    external = datasketch_signatures(rows, num_perm, seed, scheme, sketch_type, dtype)
     datasketch_elapsed = time.perf_counter() - started
 
     started = time.perf_counter()
@@ -126,13 +124,9 @@ def benchmark_width(
     external_queries = datasketch_signatures(
         query_rows, num_perm, seed, scheme, sketch_type, dtype
     )
-    native_queries = sketch_type.from_batch(
-        query_rows, num_perm=num_perm, seed=seed
-    )
+    native_queries = sketch_type.from_batch(query_rows, num_perm=num_perm, seed=seed)
     require_signature_parity(native_queries, external_queries, f"query-{scheme}")
-    imported_queries = [
-        adapter.from_datasketch(sketch) for sketch in external_queries
-    ]
+    imported_queries = [adapter.from_datasketch(sketch) for sketch in external_queries]
 
     path = directory / f"migration-{scheme}.pari"
     with index_type.create(
@@ -152,8 +146,7 @@ def benchmark_width(
         index_bytes = index.stats().file_bytes
 
     self_matches = sum(
-        int(query_index in result)
-        for query_index, result in enumerate(candidates)
+        int(query_index in result) for query_index, result in enumerate(candidates)
     )
     self_recall = self_matches / len(query_rows)
     if self_recall != 1.0:
@@ -233,9 +226,7 @@ def main() -> None:
             "Pari affine32/affine64 candidate parity failed for the matched workload"
         )
 
-    metrics = {
-        f"affine32.{name}": value for name, value in affine32.metrics.items()
-    }
+    metrics = {f"affine32.{name}": value for name, value in affine32.metrics.items()}
     metrics.update(
         {f"affine64.{name}": value for name, value in affine64.metrics.items()}
     )

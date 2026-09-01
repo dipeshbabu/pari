@@ -35,6 +35,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Repository policy
 
+- Rust remains formatted by the pinned canonical `rustfmt`; maintained Python and stub files now use pinned Ruff 0.16.5 with explicit stable formatting/lint rules and protected benchmark-fixture exclusions.
 - The coordinated affine64 crate transition temporarily builds the `pari-store` tarball without standalone registry verification while the complete local Rust 1.81 graph remains enforced; full verification resumes after the matching `pari-index` release is published.
 - Full registry-backed package verification is restored for all four public crates after the coordinated 0.2.0 publication.
 

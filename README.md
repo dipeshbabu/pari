@@ -180,6 +180,14 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 ```
 
+Python formatting and linting use the pinned Ruff toolchain:
+
+```bash
+python -m pip install "ruff==0.16.5"
+ruff format --check python scripts benchmarks examples
+ruff check python scripts benchmarks examples
+```
+
 Python wheel development additionally uses maturin:
 
 ```bash

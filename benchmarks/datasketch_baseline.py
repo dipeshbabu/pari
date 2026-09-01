@@ -11,9 +11,9 @@ import platform
 import statistics
 import sys
 import time
+from collections.abc import Iterable
 from importlib import metadata
 from pathlib import Path
-from typing import Iterable
 
 from datasketch import MinHash, MinHashLSH
 
@@ -37,7 +37,9 @@ def corpus(items: int, set_size: int, seed: int) -> list[list[int]]:
     ]
 
 
-def queries(rows: list[list[int]], count: int, overlap: int, seed: int) -> list[list[int]]:
+def queries(
+    rows: list[list[int]], count: int, overlap: int, seed: int
+) -> list[list[int]]:
     output: list[list[int]] = []
     for query_index in range(count):
         source = rows[query_index % len(rows)]
@@ -99,7 +101,9 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=0.8)
     parser.add_argument("--num-perm", type=int, default=128)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--output", type=Path, default=Path("datasketch-benchmark.json"))
+    parser.add_argument(
+        "--output", type=Path, default=Path("datasketch-benchmark.json")
+    )
     args = parser.parse_args()
 
     rows = corpus(args.items, args.set_size, args.seed)
@@ -141,7 +145,10 @@ def main() -> None:
                 if key in candidate_set:
                     found_exact += 1
         for key in candidates:
-            if exact_jaccard(query, rows[key]) + sys.float_info.epsilon >= args.threshold:
+            if (
+                exact_jaccard(query, rows[key]) + sys.float_info.epsilon
+                >= args.threshold
+            ):
                 exact_candidates += 1
 
     def ratio(numerator: int, denominator: int) -> float:
@@ -150,18 +157,30 @@ def main() -> None:
         return numerator / denominator
 
     metrics = {
-        "signature.items_per_second": metric(args.items / signature_elapsed, "items/s", "higher"),
+        "signature.items_per_second": metric(
+            args.items / signature_elapsed, "items/s", "higher"
+        ),
         "signature.elapsed_ms": metric(signature_elapsed * 1_000.0, "ms", "lower"),
-        "index.build_items_per_second": metric(args.items / build_elapsed, "items/s", "higher"),
+        "index.build_items_per_second": metric(
+            args.items / build_elapsed, "items/s", "higher"
+        ),
         "index.build_elapsed_ms": metric(build_elapsed * 1_000.0, "ms", "lower"),
         "index.live_items": metric(float(args.items), "items", "neutral"),
-        "query.scalar_queries_per_second": metric(args.queries / scalar_elapsed, "items/s", "higher"),
+        "query.scalar_queries_per_second": metric(
+            args.queries / scalar_elapsed, "items/s", "higher"
+        ),
         "query.scalar_p50_ms": metric(percentile(latencies_ms, 0.50), "ms", "lower"),
         "query.scalar_p95_ms": metric(percentile(latencies_ms, 0.95), "ms", "lower"),
         "query.scalar_p99_ms": metric(percentile(latencies_ms, 0.99), "ms", "lower"),
-        "candidate.recall": metric(ratio(found_exact, exact_matches), "ratio", "higher"),
-        "candidate.precision": metric(ratio(exact_candidates, total_candidates), "ratio", "higher"),
-        "candidate.average_candidates": metric(ratio(total_candidates, args.queries), "items", "lower"),
+        "candidate.recall": metric(
+            ratio(found_exact, exact_matches), "ratio", "higher"
+        ),
+        "candidate.precision": metric(
+            ratio(exact_candidates, total_candidates), "ratio", "higher"
+        ),
+        "candidate.average_candidates": metric(
+            ratio(total_candidates, args.queries), "items", "lower"
+        ),
         "candidate.exact_matches": metric(float(exact_matches), "pairs", "neutral"),
     }
 
@@ -188,7 +207,9 @@ def main() -> None:
         },
         "metrics": metrics,
     }
-    args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    args.output.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(f"wrote {args.output}")
     print(f"median query latency: {statistics.median(latencies_ms):.6f} ms")
 

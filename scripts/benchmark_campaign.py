@@ -15,9 +15,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "benchmarks" / "campaigns" / "scale-v1.json"
@@ -382,9 +383,10 @@ def run_logged(
     stderr_path: Path,
 ) -> int:
     print(f"running: {shell_join(command)}", flush=True)
-    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
-        "w", encoding="utf-8"
-    ) as stderr:
+    with (
+        stdout_path.open("w", encoding="utf-8") as stdout,
+        stderr_path.open("w", encoding="utf-8") as stderr,
+    ):
         completed = subprocess.run(
             command,
             cwd=root,
@@ -409,7 +411,9 @@ def read_log_tail(
     return tail.decode("utf-8", errors="replace")[-max_chars:]
 
 
-def metric_value(report: dict[str, Any], name: str, *, allow_null: bool = False) -> float | None:
+def metric_value(
+    report: dict[str, Any], name: str, *, allow_null: bool = False
+) -> float | None:
     metrics = report.get("metrics")
     if not isinstance(metrics, dict) or name not in metrics:
         raise CampaignError(f"report is missing required metric {name!r}")
@@ -490,17 +494,27 @@ def validate_report(
 
     if stage == "synthetic":
         if metric_value(report, "index.live_items") != float(profile["items"]):
-            raise CampaignError("synthetic report item count does not match the profile")
+            raise CampaignError(
+                "synthetic report item count does not match the profile"
+            )
         if metric_value(report, "candidate.exact_matches") <= 0.0:
-            raise CampaignError("synthetic correctness evaluation found no exact matches")
+            raise CampaignError(
+                "synthetic correctness evaluation found no exact matches"
+            )
     elif stage == "text-reference":
-        if metric_value(report, "input_items") != float(profile["text_reference_items"]):
-            raise CampaignError("text reference report item count does not match the profile")
+        if metric_value(report, "input_items") != float(
+            profile["text_reference_items"]
+        ):
+            raise CampaignError(
+                "text reference report item count does not match the profile"
+            )
     elif stage == "text-audit":
         if metric_value(report, "query_count") != float(profile["text_query_items"]):
             raise CampaignError("text audit query count does not match the profile")
         if metric_value(report, "exact_match_count") <= 0.0:
-            raise CampaignError("text audit did not exact-verify any cross-corpus match")
+            raise CampaignError(
+                "text audit did not exact-verify any cross-corpus match"
+            )
     return report
 
 
@@ -534,7 +548,9 @@ def generate_text_corpora(
     with reference_path.open("w", encoding="utf-8", newline="\n") as destination:
         for index in range(reference_items):
             row = {"id": f"reference-{index}", "text": generated_text(index, seed)}
-            destination.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+            destination.write(
+                json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+            )
 
     planted_matches = 0
     with query_path.open("w", encoding="utf-8", newline="\n") as destination:
@@ -546,7 +562,9 @@ def generate_text_corpora(
             else:
                 text = generated_text(index, seed ^ 0xA5A5_A5A5, "query")
             row = {"id": f"query-{index}", "text": text}
-            destination.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+            destination.write(
+                json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+            )
 
     return {
         "generator": "deterministic-text-cross-corpus-v1",
@@ -742,7 +760,9 @@ def host_environment(root: Path) -> dict[str, Any]:
         try:
             cpu = next(
                 line.split(":", 1)[1].strip()
-                for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines()
+                for line in Path("/proc/cpuinfo")
+                .read_text(encoding="utf-8")
+                .splitlines()
                 if line.startswith("model name")
             )
         except (OSError, StopIteration):
@@ -789,7 +809,9 @@ def quarantine_staged_bundle(staging: Path) -> None:
     source_path = staging / "failed-bundle.source"
     bundle_path.replace(source_path)
     if bundle_path.exists() or bundle_path.is_symlink():
-        raise CampaignError("bundle.json still exists after diagnostic ownership transfer")
+        raise CampaignError(
+            "bundle.json still exists after diagnostic ownership transfer"
+        )
 
     bundle["artifact_kind"] = "pari-benchmark-campaign-failure-snapshot"
     bundle["status"] = "failed"
@@ -802,7 +824,9 @@ def quarantine_staged_bundle(staging: Path) -> None:
         raise
     source_path.unlink()
     if source_path.exists() or source_path.is_symlink():
-        raise CampaignError("failed bundle source still exists after wrapper publication")
+        raise CampaignError(
+            "failed bundle source still exists after wrapper publication"
+        )
 
 
 def remove_process_temp(process_temp: Path) -> None:
@@ -1180,7 +1204,10 @@ def validate_bundle(path: Path, *, require_clean: bool = True) -> dict[str, Any]
         seen.add(stage)
         report_path = path.parent / report_name
         expected_digest = artifact.get("report_sha256")
-        if not isinstance(expected_digest, str) or sha256_file(report_path) != expected_digest:
+        if (
+            not isinstance(expected_digest, str)
+            or sha256_file(report_path) != expected_digest
+        ):
             raise CampaignError(f"checksum mismatch for stage {stage!r}")
         validate_report(
             report_path,
@@ -1193,13 +1220,19 @@ def validate_bundle(path: Path, *, require_clean: bool = True) -> dict[str, Any]
     if profile.get("storage"):
         expected.add("storage")
     if not expected.issubset(seen):
-        raise CampaignError(f"bundle is missing required stages: {sorted(expected - seen)}")
+        raise CampaignError(
+            f"bundle is missing required stages: {sorted(expected - seen)}"
+        )
     if ("text-reference" in seen) != ("text-audit" in seen):
-        raise CampaignError("text-reference and text-audit reports must be bundled together")
+        raise CampaignError(
+            "text-reference and text-audit reports must be bundled together"
+        )
     return bundle
 
 
-def report_for_stage(bundle_path: Path, bundle: dict[str, Any], stage: str) -> dict[str, Any] | None:
+def report_for_stage(
+    bundle_path: Path, bundle: dict[str, Any], stage: str
+) -> dict[str, Any] | None:
     for artifact in bundle["reports"]:
         if artifact["stage"] == stage:
             return read_json(bundle_path.parent / artifact["report"])
@@ -1242,16 +1275,21 @@ def format_gib(value: float | None) -> str:
     return "n/a" if value is None else f"{value / (1024**3):.2f} GiB"
 
 
-def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: bool) -> None:
+def render_report(
+    bundle_paths: Sequence[Path], output: Path, *, require_clean: bool
+) -> None:
     rows: list[str] = []
     datasketch_rows: list[str] = []
     evidence: list[str] = []
     text_rows: list[str] = []
-    largest: tuple[
-        dict[str, Any],
-        dict[str, Any] | None,
-        dict[str, Any] | None,
-    ] | None = None
+    largest: (
+        tuple[
+            dict[str, Any],
+            dict[str, Any] | None,
+            dict[str, Any] | None,
+        ]
+        | None
+    ) = None
     for bundle_path in bundle_paths:
         bundle_path = bundle_path.resolve()
         bundle = validate_bundle(bundle_path, require_clean=require_clean)
@@ -1273,7 +1311,9 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
             if isinstance(synthetic, dict)
             else None
         )
-        thread_policy = "auto" if configured_threads is None else f"max {configured_threads}"
+        thread_policy = (
+            "auto" if configured_threads is None else f"max {configured_threads}"
+        )
         effective_threads = optional_metric(synthetic, "signature.threads")
         rows.append(
             "| {profile} | [{sha}]({link}) | {items:,} | {signature} | {threads} | {build} | {rss} | {bytes_per_item} | {reopen} | {p99} | {candidate_rate} | {recall} |".format(
@@ -1281,25 +1321,35 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
                 sha=bundle["git_sha"][:12],
                 link=relative,
                 items=profile["items"],
-                signature=format_number(optional_metric(synthetic, "signature.items_per_second")),
+                signature=format_number(
+                    optional_metric(synthetic, "signature.items_per_second")
+                ),
                 threads=(
                     "n/a"
                     if effective_threads is None
                     else f"{effective_threads:.0f} ({thread_policy})"
                 ),
-                build=format_number(optional_metric(synthetic, "index.build_items_per_second")),
+                build=format_number(
+                    optional_metric(synthetic, "index.build_items_per_second")
+                ),
                 rss=(
-                    "n/a"
-                    if peak_rss is None
-                    else f"{peak_rss / (1024 * 1024):.1f} MiB"
+                    "n/a" if peak_rss is None else f"{peak_rss / (1024 * 1024):.1f} MiB"
                 ),
                 bytes_per_item=format_number(
                     optional_metric(storage, "storage.lazy.bytes_per_item")
                 ),
-                reopen=format_number(optional_metric(storage, "storage.lazy.reopen_ms")),
-                p99=format_number(optional_metric(synthetic, "query.scalar_p99_ms"), digits=4),
-                candidate_rate=format_number(optional_metric(synthetic, "candidate.rate"), digits=8),
-                recall=format_number(optional_metric(synthetic, "candidate.recall"), digits=4),
+                reopen=format_number(
+                    optional_metric(storage, "storage.lazy.reopen_ms")
+                ),
+                p99=format_number(
+                    optional_metric(synthetic, "query.scalar_p99_ms"), digits=4
+                ),
+                candidate_rate=format_number(
+                    optional_metric(synthetic, "candidate.rate"), digits=8
+                ),
+                recall=format_number(
+                    optional_metric(synthetic, "candidate.recall"), digits=4
+                ),
             )
         )
         if datasketch is not None:
@@ -1349,9 +1399,7 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
             filesystem_free, (int, float)
         ):
             filesystem_free = None
-        cache_policy = bundle.get("workload", {}).get(
-            "cache_policy", "not recorded"
-        )
+        cache_policy = bundle.get("workload", {}).get("cache_policy", "not recorded")
         evidence.append(
             f"- `{profile['name']}`: {environment['operating_system']}; "
             f"{environment['logical_cpus']} logical CPUs; {format_gib(physical_memory)} RAM; "
@@ -1363,12 +1411,22 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
                 "| {profile} | {reference_items:,} | {build} | {bytes_per_item} | {queries:,} | {query_rate} | {candidate_rate} | {matches} |".format(
                     profile=profile["name"],
                     reference_items=profile["text_reference_items"],
-                    build=format_number(optional_metric(text_reference, "build_items_per_second")),
-                    bytes_per_item=format_number(optional_metric(text_reference, "index_bytes_per_item")),
+                    build=format_number(
+                        optional_metric(text_reference, "build_items_per_second")
+                    ),
+                    bytes_per_item=format_number(
+                        optional_metric(text_reference, "index_bytes_per_item")
+                    ),
                     queries=profile["text_query_items"],
-                    query_rate=format_number(optional_metric(text_audit, "queries_per_second")),
-                    candidate_rate=format_number(optional_metric(text_audit, "candidate_rate"), digits=8),
-                    matches=format_number(optional_metric(text_audit, "exact_match_count"), digits=0),
+                    query_rate=format_number(
+                        optional_metric(text_audit, "queries_per_second")
+                    ),
+                    candidate_rate=format_number(
+                        optional_metric(text_audit, "candidate_rate"), digits=8
+                    ),
+                    matches=format_number(
+                        optional_metric(text_audit, "exact_match_count"), digits=0
+                    ),
                 )
             )
 
@@ -1485,7 +1543,9 @@ def render_report(bundle_paths: Sequence[Path], output: Path, *, require_clean: 
     output.write_text("\n".join(lines), encoding="utf-8")
 
 
-def plan(profile: Profile, root: Path, *, include_datasketch: bool, include_redis: bool) -> dict[str, Any]:
+def plan(
+    profile: Profile, root: Path, *, include_datasketch: bool, include_redis: bool
+) -> dict[str, Any]:
     if profile.methodology_only:
         return {
             "profile": asdict(profile),
@@ -1510,7 +1570,9 @@ def plan(profile: Profile, root: Path, *, include_datasketch: bool, include_redi
         commands.append(
             {
                 "stage": "datasketch",
-                "command": datasketch_command(root, profile, output / "datasketch.json"),
+                "command": datasketch_command(
+                    root, profile, output / "datasketch.json"
+                ),
             }
         )
     if include_redis:
@@ -1552,7 +1614,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--allow-dirty", action="store_true")
     validate_parser.set_defaults(handler=validate_command)
 
-    render_parser = subparsers.add_parser("render", help="render validated bundles as Markdown")
+    render_parser = subparsers.add_parser(
+        "render", help="render validated bundles as Markdown"
+    )
     render_parser.add_argument("bundles", nargs="+", type=Path)
     render_parser.add_argument("--output", type=Path, required=True)
     render_parser.add_argument("--allow-dirty", action="store_true")

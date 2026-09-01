@@ -111,8 +111,7 @@ def from_datasketch(sketch: Any) -> MinHash | MinHash64:
             "Datasketch permutation array lengths do not match num_perm"
         )
     if any(
-        not 0 <= value <= maximum
-        for value in (*actual_multipliers, *actual_offsets)
+        not 0 <= value <= maximum for value in (*actual_multipliers, *actual_offsets)
     ):
         raise CompatibilityError(
             f"Datasketch {scheme} permutation arrays contain non-u{width} values"
