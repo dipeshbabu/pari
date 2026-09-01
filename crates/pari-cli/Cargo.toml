@@ -21,6 +21,7 @@ pari-index = { path = "../pari-index" }
 pari-store = { path = "../pari-store" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+same-file = "1.0"
 
 [lints]
 workspace = true

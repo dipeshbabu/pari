@@ -84,7 +84,7 @@ pari index \
   --json
 ```
 
-The command inserts records in bounded input batches and commits between batches. Existing destination files are never overwritten implicitly.
+The command inserts records into a sibling staging index in bounded input batches and commits between batches. After the complete input succeeds, Pari atomically claims the requested destination without replacement and removes the staging file. Invalid or unreadable input therefore leaves no partial index at the final path, and existing or concurrently created destinations are never overwritten implicitly.
 
 Add `--progress` for human batch updates on stderr, or `--progress json` for structured schema-1 events. Machine-readable summaries remain on stdout.
 

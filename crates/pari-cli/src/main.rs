@@ -2,11 +2,13 @@
 
 use std::{
     error::Error,
-    fs::File,
+    ffi::OsString,
+    fmt,
+    fs::{self, File},
     io::{self, BufRead, BufReader, BufWriter, Write},
-    path::PathBuf,
-    process::ExitCode,
-    time::Instant,
+    path::{Path, PathBuf},
+    process::{self, ExitCode},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -20,6 +22,7 @@ use pari_index::{
     plan_lsh, BucketDistribution, LshIndex32, LshPlan, LshPlanOptions, QueryMetrics, StorageMode,
 };
 use pari_store::PersistentIndex32;
+use same_file::Handle;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Parser)]
@@ -278,6 +281,259 @@ struct ProgressReporter {
     started: Instant,
 }
 
+struct IndexOutputTransaction {
+    final_path: PathBuf,
+    staged_path: PathBuf,
+    active: bool,
+}
+
+impl IndexOutputTransaction {
+    fn begin(final_path: &Path) -> Result<Self, Box<dyn Error>> {
+        match fs::symlink_metadata(final_path) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("index path {} already exists", final_path.display()),
+                )
+                .into());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        let file_name = final_path
+            .file_name()
+            .ok_or("index output must identify a file")?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let mut staged_name = OsString::from(".");
+        staged_name.push(file_name);
+        staged_name.push(format!(".pari-cli-{}-{nonce}.tmp", process::id()));
+        Ok(Self {
+            final_path: final_path.to_path_buf(),
+            staged_path: final_path.with_file_name(staged_name),
+            active: true,
+        })
+    }
+
+    fn staged_path(&self) -> &Path {
+        &self.staged_path
+    }
+
+    fn publish(self) -> Result<(), Box<dyn Error>> {
+        self.publish_with(|path| fs::remove_file(path), sync_parent_directory)
+    }
+
+    fn publish_with<R, S>(mut self, remove_staged: R, sync_parent: S) -> Result<(), Box<dyn Error>>
+    where
+        R: FnOnce(&Path) -> io::Result<()>,
+        S: FnOnce(&Path) -> io::Result<()>,
+    {
+        let identity = match Handle::from_path(&self.staged_path) {
+            Ok(identity) => identity,
+            Err(error) => return Err(self.abort(error.into())),
+        };
+        if let Err(error) = fs::hard_link(&self.staged_path, &self.final_path) {
+            let publication = io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to publish index {} without replacement: {error}",
+                    self.final_path.display()
+                ),
+            );
+            return Err(self.abort(publication.into()));
+        }
+
+        if let Err(error) = remove_staged(&self.staged_path) {
+            let cleanup = io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to remove staged index {} after publication: {error}",
+                    self.staged_path.display()
+                ),
+            );
+            return Err(self.recover_after_publication(&identity, cleanup.into()));
+        }
+        if let Err(error) = remove_file_if_exists(&store_temporary_path(&self.staged_path)) {
+            let cleanup = io::Error::new(
+                error.kind(),
+                format!("failed to remove staged index companion after publication: {error}"),
+            );
+            return Err(self.recover_after_publication(&identity, cleanup.into()));
+        }
+        if let Err(error) = sync_parent(&self.final_path) {
+            let durability = io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to sync index output directory after publishing {}: {error}",
+                    self.final_path.display()
+                ),
+            );
+            return Err(self.recover_after_publication(&identity, durability.into()));
+        }
+        self.active = false;
+        Ok(())
+    }
+
+    fn recover_after_publication(
+        mut self,
+        identity: &Handle,
+        original: Box<dyn Error>,
+    ) -> Box<dyn Error> {
+        let rollback = self
+            .rollback_final(identity)
+            .err()
+            .map(|error| error.to_string());
+        let cleanup = self
+            .remove_staged_files()
+            .err()
+            .map(|error| error.to_string());
+        if rollback.is_none() && cleanup.is_none() {
+            return original;
+        }
+        Box::new(IndexRecoveryError {
+            original,
+            rollback,
+            cleanup,
+        })
+    }
+
+    fn rollback_final(&self, identity: &Handle) -> io::Result<()> {
+        let current = match Handle::from_path(&self.final_path) {
+            Ok(current) => current,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if &current != identity {
+            return Ok(());
+        }
+        fs::remove_file(&self.final_path)?;
+        sync_parent_directory(&self.final_path)
+    }
+
+    fn abort(mut self, original: Box<dyn Error>) -> Box<dyn Error> {
+        match self.remove_staged_files() {
+            Ok(()) => original,
+            Err(cleanup) => Box::new(IndexCleanupError {
+                staged_path: self.staged_path.clone(),
+                original,
+                cleanup,
+            }),
+        }
+    }
+
+    fn remove_staged_files(&mut self) -> io::Result<()> {
+        let mut first_error = None;
+        for path in [&self.staged_path, &store_temporary_path(&self.staged_path)] {
+            if let Err(error) = remove_file_if_exists(path) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for IndexOutputTransaction {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.remove_staged_files();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IndexCleanupError {
+    staged_path: PathBuf,
+    original: Box<dyn Error>,
+    cleanup: io::Error,
+}
+
+impl fmt::Display for IndexCleanupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}; also failed to clean staged index {}: {}",
+            self.original,
+            self.staged_path.display(),
+            self.cleanup
+        )
+    }
+}
+
+impl Error for IndexCleanupError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.original.as_ref())
+    }
+}
+
+#[derive(Debug)]
+struct IndexRecoveryError {
+    original: Box<dyn Error>,
+    rollback: Option<String>,
+    cleanup: Option<String>,
+}
+
+impl fmt::Display for IndexRecoveryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.original)?;
+        if let Some(rollback) = &self.rollback {
+            write!(
+                formatter,
+                "; also failed to roll back published index: {rollback}"
+            )?;
+        }
+        if let Some(cleanup) = &self.cleanup {
+            write!(formatter, "; also failed to clean staged index: {cleanup}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for IndexRecoveryError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.original.as_ref())
+    }
+}
+
+fn remove_file_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn store_temporary_path(path: &Path) -> PathBuf {
+    let mut temporary = path.as_os_str().to_os_string();
+    temporary.push(".tmp");
+    PathBuf::from(temporary)
+}
+
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
+fn sync_parent_directory(path: &Path) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let _ = path;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        File::open(parent)?.sync_all()
+    }
+}
+
 impl ProgressReporter {
     fn new(args: &ProgressArgs) -> Result<Option<Self>, Box<dyn Error>> {
         let Some(format) = args.progress else {
@@ -513,8 +769,29 @@ fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
     if args.batch_size == 0 {
         return Err("--batch-size must be positive".into());
     }
-    let mut store =
-        PersistentIndex32::create(&args.output, args.threshold, args.num_perm, args.seed)?;
+    let transaction = IndexOutputTransaction::begin(&args.output)?;
+    let summary = match build_index(args, transaction.staged_path()) {
+        Ok(summary) => summary,
+        Err(error) => return Err(transaction.abort(error)),
+    };
+    transaction.publish()?;
+    if args.json {
+        println!("{}", serde_json::to_string(&summary)?);
+    } else {
+        println!(
+            "indexed {} items into {} ({} bytes, {} bands x {} rows)",
+            summary.items,
+            args.output.display(),
+            summary.file_bytes,
+            summary.bands,
+            summary.rows
+        );
+    }
+    Ok(())
+}
+
+fn build_index(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn Error>> {
+    let mut store = PersistentIndex32::create(output, args.threshold, args.num_perm, args.seed)?;
     let reporter = ProgressReporter::new(&args.progress)?;
     let reader = open_reader(&args.input)?;
     let mut batch = Vec::with_capacity(args.batch_size);
@@ -558,19 +835,8 @@ fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
         bands: current.bands,
         rows: current.rows,
     };
-    if args.json {
-        println!("{}", serde_json::to_string(&summary)?);
-    } else {
-        println!(
-            "indexed {} items into {} ({} bytes, {} bands x {} rows)",
-            summary.items,
-            args.output.display(),
-            summary.file_bytes,
-            summary.bands,
-            summary.rows
-        );
-    }
-    Ok(())
+    store.close()?;
+    Ok(summary)
 }
 
 fn insert_batch(
@@ -986,5 +1252,90 @@ fn ratio(numerator: u64, denominator: usize) -> f64 {
         0.0
     } else {
         u64_to_f64(numerator) / u64_to_f64(u64::try_from(denominator).unwrap_or(u64::MAX))
+    }
+}
+
+#[cfg(test)]
+mod index_output_transaction_tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::{sync_parent_directory, IndexOutputTransaction};
+    use std::{fs, io, path::PathBuf};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    fn output_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "pari-cli-transaction-{name}-{}-{}.pari",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    fn staged_transaction(name: &str) -> (IndexOutputTransaction, PathBuf, PathBuf) {
+        let final_path = output_path(name);
+        let _ = fs::remove_file(&final_path);
+        let transaction = IndexOutputTransaction::begin(&final_path).expect("transaction");
+        let staged_path = transaction.staged_path().to_path_buf();
+        fs::write(&staged_path, b"complete index bytes").expect("staged index");
+        (transaction, final_path, staged_path)
+    }
+
+    #[test]
+    fn cleanup_failure_after_link_rolls_back_owned_final() {
+        let (transaction, final_path, staged_path) = staged_transaction("cleanup-failure");
+
+        let error = transaction
+            .publish_with(
+                |_| Err(io::Error::other("forced staged cleanup failure")),
+                sync_parent_directory,
+            )
+            .expect_err("publication must fail");
+
+        assert!(error.to_string().contains("forced staged cleanup failure"));
+        assert!(!final_path.exists(), "owned final path was not rolled back");
+        assert!(!staged_path.exists(), "staged path was not cleaned");
+    }
+
+    #[test]
+    fn cleanup_failure_preserves_concurrent_final_replacement() {
+        let (transaction, final_path, staged_path) = staged_transaction("replacement");
+        let replacement_path = final_path.clone();
+        let replacement = b"concurrent replacement";
+
+        let error = transaction
+            .publish_with(
+                move |_| {
+                    fs::remove_file(&replacement_path)?;
+                    fs::write(&replacement_path, replacement)?;
+                    Err(io::Error::other("forced staged cleanup failure"))
+                },
+                sync_parent_directory,
+            )
+            .expect_err("publication must fail");
+
+        assert!(error.to_string().contains("forced staged cleanup failure"));
+        assert_eq!(
+            fs::read(&final_path).expect("replacement remains"),
+            replacement
+        );
+        assert!(!staged_path.exists(), "staged path was not cleaned");
+        let _ = fs::remove_file(final_path);
+    }
+
+    #[test]
+    fn directory_sync_failure_rolls_back_owned_final() {
+        let (transaction, final_path, staged_path) = staged_transaction("sync-failure");
+
+        let error = transaction
+            .publish_with(
+                |path| fs::remove_file(path),
+                |_| Err(io::Error::other("forced directory sync failure")),
+            )
+            .expect_err("publication must fail");
+
+        assert!(error.to_string().contains("forced directory sync failure"));
+        assert!(!final_path.exists(), "owned final path was not rolled back");
+        assert!(!staged_path.exists(), "staged path was not removed");
     }
 }
