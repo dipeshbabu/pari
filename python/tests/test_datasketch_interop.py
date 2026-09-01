@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import runpy
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from pari import CompatibilityError, Index, MinHash
+from pari import CompatibilityError, Index, Index64, MinHash, MinHash64
 from pari import datasketch as adapter
 
 DATASKETCH_LOADED_BY_ADAPTER_IMPORT = "datasketch" in sys.modules
@@ -49,6 +50,16 @@ class DatasketchInteropTests(unittest.TestCase):
         generator = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(generator)
         self.assertEqual(generator.generate(), FIXTURE)
+
+    def test_benchmark_refuses_mismatched_signatures(self) -> None:
+        benchmark = runpy.run_path(str(ROOT / "benchmarks" / "datasketch_interop.py"))
+        native = MinHash64.from_values(VALUES, num_perm=8, seed=42)
+        external = adapter.to_datasketch(native)
+        external.hashvalues[0] ^= np.uint64(1)
+        with self.assertRaisesRegex(RuntimeError, "signature parity failed"):
+            benchmark["require_signature_parity"](
+                [native], [external], "affine64-test"
+            )
 
     def test_affine32_round_trip_stays_update_compatible(self) -> None:
         pari = MinHash.from_values(
@@ -101,23 +112,59 @@ class DatasketchInteropTests(unittest.TestCase):
         with self.assertRaisesRegex(CompatibilityError, "custom hash functions"):
             adapter.from_datasketch(external)
 
-    def test_affine64_fixture_matches_but_python_index_rejects_import(self) -> None:
+    def test_affine64_round_trip_preserves_upper_bits_update_and_merge(self) -> None:
         expected = FIXTURE["schemes"]["affine64"]
-        external = DatasketchMinHash(
-            num_perm=FIXTURE["num_perm"],
-            seed=FIXTURE["seed"],
-            scheme="affine64",
-            permutations=(
-                np.asarray(expected["multipliers"], dtype=np.uint64),
-                np.asarray(expected["offsets"], dtype=np.uint64),
-            ),
+        pari = MinHash64.from_values(
+            VALUES, num_perm=FIXTURE["num_perm"], seed=FIXTURE["seed"]
         )
-        external.update_batch(VALUES)
+        external = adapter.to_datasketch(pari)
+        self.assertEqual(external.scheme, "affine64")
+        self.assertEqual(external.hashvalues.dtype, np.dtype(np.uint64))
         self.assertEqual(
             [int(value) for value in external.hashvalues],
             expected["pari_compatible_signature"],
         )
-        with self.assertRaisesRegex(CompatibilityError, "current Python Index"):
+        self.assertEqual(
+            [int(value) for value in external.permutations[0]],
+            expected["multipliers"],
+        )
+        self.assertTrue(
+            any(value > 2**32 - 1 for value in expected["pari_compatible_signature"])
+        )
+        self.assertTrue(adapter.is_compatible(external))
+
+        imported = adapter.from_datasketch(external)
+        self.assertIsInstance(imported, MinHash64)
+        self.assertEqual(imported.signature, pari.signature)
+
+        external.update(b"d")
+        imported.update(b"d")
+        self.assertEqual(
+            imported.signature, [int(value) for value in external.hashvalues]
+        )
+
+        other = MinHash64.from_values(
+            [b"d", b"e"], num_perm=FIXTURE["num_perm"], seed=FIXTURE["seed"]
+        )
+        external.merge(adapter.to_datasketch(other))
+        imported.merge(other)
+        self.assertEqual(
+            imported.signature, [int(value) for value in external.hashvalues]
+        )
+
+    def test_affine64_default_equal_seed_is_rejected(self) -> None:
+        external = DatasketchMinHash(
+            num_perm=FIXTURE["num_perm"],
+            seed=FIXTURE["seed"],
+            scheme="affine64",
+        )
+        external.update_batch(VALUES)
+        self.assertEqual(
+            [int(value) for value in external.hashvalues],
+            FIXTURE["schemes"]["affine64"]["datasketch_default_signature"],
+        )
+        self.assertFalse(adapter.is_compatible(external))
+        with self.assertRaisesRegex(CompatibilityError, "equal seeds alone"):
             adapter.from_datasketch(external)
 
     def test_legacy_scheme_is_rejected(self) -> None:
@@ -149,6 +196,77 @@ class DatasketchInteropTests(unittest.TestCase):
                 )
             finally:
                 index.close()
+
+    def test_affine64_import_persists_reopens_and_queries_in_index64(self) -> None:
+        first = MinHash64.from_values([b"alpha", b"beta"], num_perm=32, seed=7)
+        second = MinHash64.from_values([b"red", b"green"], num_perm=32, seed=7)
+        external_first = adapter.to_datasketch(first)
+        imported_first = adapter.from_datasketch(external_first)
+        imported_second = adapter.from_datasketch(adapter.to_datasketch(second))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "interop64.pari"
+            with Index64.create(
+                path, threshold=0.8, num_perm=32, seed=7
+            ) as index:
+                index.add_many([(1, imported_first), (2, imported_second)])
+                self.assertEqual(index.search(imported_first), [1])
+                index.sync()
+
+            with Index64.open(path) as reopened:
+                query = adapter.from_datasketch(external_first)
+                self.assertEqual(reopened.search(query), [1])
+
+    def test_affine64_mismatches_fail_before_index_mutation(self) -> None:
+        baseline = MinHash64.from_values(VALUES, num_perm=8, seed=42)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "atomic-rejection.pari"
+            with Index64.create(path, threshold=0.8, num_perm=8, seed=42) as index:
+                index.add(1, baseline)
+
+                bad_hash = adapter.to_datasketch(baseline)
+                bad_hash.hashfunc = lambda _value: 1
+
+                bad_seed = adapter.to_datasketch(baseline)
+                bad_seed.seed += 1
+
+                bad_count = adapter.to_datasketch(baseline)
+                bad_count.num_perm += 1
+
+                bad_permutations = adapter.to_datasketch(baseline)
+                bad_permutations.permutations[0][0] ^= np.uint64(2)
+
+                bad_signature = adapter.to_datasketch(baseline)
+                bad_signature.hashvalues = [-1, *bad_signature.hashvalues[1:]]
+
+                bad_width = adapter.to_datasketch(baseline)
+                bad_width.hashvalues = bad_width.hashvalues.astype(np.uint32)
+
+                cases = (
+                    (bad_hash, "custom hash functions"),
+                    (bad_seed, "equal seeds alone"),
+                    (bad_count, "length does not match num_perm"),
+                    (bad_permutations, "equal seeds alone"),
+                    (bad_signature, "non-u64"),
+                    (bad_width, "does not match u64 width"),
+                )
+                for incompatible, message in cases:
+                    with self.subTest(message=message):
+                        with self.assertRaisesRegex(CompatibilityError, message):
+                            adapter.from_datasketch(incompatible)
+                        self.assertEqual(len(index), 1)
+                        self.assertTrue(index.contains(1))
+
+                affine32 = adapter.from_datasketch(
+                    adapter.to_datasketch(
+                        MinHash.from_values(VALUES, num_perm=8, seed=42)
+                    )
+                )
+                with self.assertRaises(CompatibilityError):
+                    index.add(2, affine32)
+                self.assertEqual(len(index), 1)
+                self.assertFalse(index.contains(2))
 
 
 if __name__ == "__main__":

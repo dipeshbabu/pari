@@ -124,6 +124,12 @@ An implementation change must use a new scheme identifier if it changes the sign
 
 Sketch comparison, merge, indexing, and persisted-index operations must continue to reject incompatible seeds, permutation counts, widths, or schemes rather than returning misleading similarity results. Python keeps the families explicit: `MinHash` and `Index` are affine32, while `MinHash64` and `Index64` are affine64. There is no mode flag that changes an existing type's width.
 
+The experimental `pari.datasketch` adapter follows the same boundary. Exact
+`affine32` imports return `MinHash`; exact `affine64` imports return `MinHash64`.
+It validates the width-matched hash function, seed, count, and complete
+permutation arrays before reconstructing state, and never narrows or relabels a
+signature for the other family.
+
 ## `.pari` file compatibility
 
 Format version 1 is specified in [`index-format.md`](index-format.md). Its checked-in golden fixture is an executable compatibility contract: CI verifies that the current writer reproduces the expected bytes and that the current reader accepts them.
