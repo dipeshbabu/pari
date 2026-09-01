@@ -112,7 +112,10 @@ jobs:
       - name: Package dependent crates from the published dependency set
         run: |
           cargo package --locked -p pari-index
-          cargo package --locked -p pari-store
+          # The local pari-store consumes affine64 symbols not present in the
+          # published 0.2.0 pari-index. The publish job below registry-verifies
+          # the complete graph after the coordinated dependency release.
+          cargo package --locked -p pari-store --no-verify
       - name: Verify packaged dependent licenses and attribution
         run: |
           cargo package --locked -p pari-index --list --no-verify | grep -Fx LICENSE
