@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from importlib.resources import files
 
 import pari
 
@@ -15,9 +16,11 @@ V02_PUBLIC_EXPORTS = {
     "DuplicateKeyError",
     "DuplicateGroup",
     "Index",
+    "Index64",
     "IndexStats",
     "InvalidRepresentativeError",
     "MinHash",
+    "MinHash64",
     "LshPlan",
     "PariError",
     "ProgressCancelledError",
@@ -47,6 +50,18 @@ class PublicContractTests(unittest.TestCase):
             pari.StorageError,
         ):
             self.assertTrue(issubclass(error_type, pari.PariError), error_type.__name__)
+
+    def test_affine64_stub_shape_is_shipped(self) -> None:
+        stub = files(pari).joinpath("__init__.pyi").read_text(encoding="utf-8")
+        for declaration in (
+            "class MinHash64:",
+            "def jaccard(self, other: MinHash64) -> float:",
+            "class Index64:",
+            "def add(self, key: int, sketch: MinHash64) -> None:",
+            "def search(self, sketch: MinHash64) -> list[int]:",
+        ):
+            with self.subTest(declaration=declaration):
+                self.assertIn(declaration, stub)
 
 
 if __name__ == "__main__":

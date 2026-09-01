@@ -184,6 +184,27 @@ print(first.jaccard(second))
 
 `MinHash.from_signature` reconstructs a sketch only when the caller has already established `pari-affine32-v1` compatibility. `MinHash.permutations` exposes the stable multiplier and offset arrays used by the optional, conservatively checked [Datasketch 2.x adapter](datasketch-v2.md). Ordinary Datasketch equal-seed signatures are not compatible and must be rebuilt from source features.
 
+### Opt in to full-width affine64 signatures
+
+`MinHash64` is a separate type for applications that deliberately choose
+`pari-affine64-v1`. It mirrors scalar updates, bounded ordered batches,
+similarity, merge, clear, signature reconstruction, and permutation access:
+
+```python
+from pari import MinHash64
+
+rows = [[b"new york", b"rust"], [b"new york", b"python"]]
+first, second = MinHash64.from_batch(rows, num_perm=128, seed=7)
+restored = MinHash64.from_signature(first.signature, seed=7)
+
+assert restored.signature == first.signature
+print(first.jaccard(second))
+```
+
+Python integers retain every `u64` signature and permutation bit. `MinHash64`
+does not reinterpret `MinHash` values, and cross-width comparison or merge
+raises `CompatibilityError` before either sketch changes.
+
 ## Create and query a persistent index
 
 ```python
@@ -231,6 +252,30 @@ index.sync()   # also sync the parent directory
 
 Mutations are visible through the same Python handle immediately. `flush`, `sync`, and `close` delegate to the production `PersistentIndex32` implementation rather than duplicating persistence logic in the binding.
 
+### Persist affine64 signatures
+
+Use the distinct `Index64` type with `MinHash64` signatures. Its lifecycle and
+mutation API matches `Index`, but it creates and opens only
+`pari-affine64-v1` snapshots:
+
+```python
+from pari import Index64, MinHash64
+
+signature = MinHash64.from_values([b"a", b"b"], num_perm=128, seed=7)
+with Index64.create("documents-64.pari", num_perm=128, seed=7) as index:
+    index.add(100, signature)
+    print(index.search(signature))
+
+with Index64.open("documents-64.pari") as index:
+    print(index.stats().file_bytes)
+```
+
+`Index64` rejects `MinHash` values, `Index` rejects `MinHash64` values, and
+each index type rejects persisted files of the other width with
+`CompatibilityError`. No conversion, narrowing, or relabeling occurs. The
+optional Datasketch adapter and CLI affine64 ingestion remain separate future
+slices.
+
 All persistent index operations that may perform Rust compute or filesystem work run outside the Python GIL. The Python binding keeps the Rust index behind a synchronized handle so scalar and batch calls share the same safety contract.
 
 Create or open an index with `observability=True` to collect process-local query counts, candidate rate, and wall-clock latency. `IndexStats` also exposes exact committed bucket percentiles and overlay membership counts. Observation can be reset or disabled with `set_observability()`; it is never persisted into the index file.
@@ -254,7 +299,7 @@ These exception classes are stable API surface; callers do not need to parse Rus
 
 The wheel includes `pari/__init__.pyi` and `pari/py.typed`. Editors and static type checkers therefore see the public signatures without importing PyO3 internals.
 
-The type surface accepts `str` and `os.PathLike[str]` paths, `bytes | bytearray | memoryview` values, integer keys, `MinHash` sketches, and typed `IndexStats` results.
+The type surface accepts `str` and `os.PathLike[str]` paths, `bytes | bytearray | memoryview` values, integer keys, width-matched `MinHash` or `MinHash64` sketches, and typed `IndexStats` results.
 
 ## Supported Python versions
 
