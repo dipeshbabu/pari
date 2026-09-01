@@ -10,10 +10,13 @@
 use std::{
     collections::{BTreeMap, HashSet},
     error::Error,
+    ffi::OsString,
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
+    process,
+    sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
@@ -33,6 +36,9 @@ use pari_index::{
 const U64_BYTES: usize = 8;
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
+const TEMPORARY_CREATE_ATTEMPTS: usize = 128;
+
+static NEXT_TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Errors returned by the lazy local store.
 #[derive(Debug)]
@@ -637,23 +643,35 @@ fn phase1_count(payload: &[u8]) -> Result<usize, LazyStoreError> {
 }
 
 fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), LazyStoreError> {
+    atomic_create_with(path, bytes, |_| Ok(()))
+}
+
+fn atomic_create_with(
+    path: &Path,
+    bytes: &[u8],
+    before_publish: impl FnOnce(&Path) -> Result<(), LazyStoreError>,
+) -> Result<(), LazyStoreError> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
         fs::create_dir_all(parent)?;
     }
-    let temporary = temporary_path(path)?;
+    let (temporary, mut file) = create_temporary(path)?;
     let result = (|| -> Result<(), LazyStoreError> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
         file.write_all(bytes)?;
         file.flush()?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&temporary, path)?;
+        before_publish(&temporary)?;
+        match fs::hard_link(&temporary, path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(LazyStoreError::AlreadyExists(path.to_path_buf()));
+            }
+            Err(error) => return Err(LazyStoreError::Io(error)),
+        }
+        fs::remove_file(&temporary)?;
         sync_parent(path)?;
         Ok(())
     })();
@@ -663,14 +681,33 @@ fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), LazyStoreError> {
     result
 }
 
-fn temporary_path(path: &Path) -> Result<PathBuf, LazyStoreError> {
-    let name = path
-        .file_name()
-        .ok_or(LazyStoreError::InvalidSnapshot {
-            reason: "destination path must identify a file",
-        })?
-        .to_string_lossy();
-    Ok(path.with_file_name(format!(".{name}.pari-lazy-tmp")))
+fn create_temporary(path: &Path) -> Result<(PathBuf, File), LazyStoreError> {
+    for _ in 0..TEMPORARY_CREATE_ATTEMPTS {
+        let temporary = temporary_path(path, NEXT_TEMPORARY_ID.fetch_add(1, Ordering::Relaxed))?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(LazyStoreError::Io(error)),
+        }
+    }
+    Err(LazyStoreError::Io(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique lazy-store temporary file",
+    )))
+}
+
+fn temporary_path(path: &Path, id: u64) -> Result<PathBuf, LazyStoreError> {
+    let file_name = path.file_name().ok_or(LazyStoreError::InvalidSnapshot {
+        reason: "destination path must identify a file",
+    })?;
+    let mut temporary_name = OsString::from(".");
+    temporary_name.push(file_name);
+    temporary_name.push(format!(".pari-lazy-{}-{id}.tmp", process::id()));
+    Ok(path.with_file_name(temporary_name))
 }
 
 #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
@@ -721,10 +758,11 @@ fn read_u64_exact(bytes: &[u8]) -> Result<u64, LazyStoreError> {
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::RefCell,
         fs,
         fs::OpenOptions,
         io::{Seek, SeekFrom, Write},
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
 
@@ -733,7 +771,7 @@ mod tests {
     use pari_index::LshIndex32;
     use pari_store::PersistentIndex32;
 
-    use super::{build_from_snapshot, LazyIndex32};
+    use super::{atomic_create_with, build_from_snapshot, LazyIndex32, LazyStoreError};
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -747,6 +785,13 @@ mod tests {
 
     fn cleanup(path: &PathBuf) {
         let _ = fs::remove_file(path);
+    }
+
+    fn assert_already_exists(error: LazyStoreError, expected: &Path) {
+        match error {
+            LazyStoreError::AlreadyExists(path) => assert_eq!(path, expected),
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
     }
 
     fn sketch(base: u64) -> MinHash32 {
@@ -831,6 +876,81 @@ mod tests {
             .any(|section| section.kind() == SectionKind::Buckets));
         cleanup(&source);
         cleanup(&lazy_path);
+    }
+
+    #[test]
+    fn pre_existing_destination_is_preserved_with_typed_error() {
+        let (source, lazy_path, _) = build_fixture("pre-existing");
+        let existing = b"bytes owned by an earlier writer";
+        fs::write(&lazy_path, existing).expect("replace fixture with sentinel");
+
+        let error =
+            build_from_snapshot(&source, &lazy_path).expect_err("destination must conflict");
+
+        assert_already_exists(error, &lazy_path);
+        assert_eq!(fs::read(&lazy_path).expect("read sentinel"), existing);
+        cleanup(&source);
+        cleanup(&lazy_path);
+    }
+
+    #[test]
+    fn concurrent_destination_claim_is_preserved_and_owned_temporary_is_removed() {
+        let destination = test_path("publication-race");
+        let unrelated = test_path("publication-race-unrelated-temp");
+        cleanup(&destination);
+        cleanup(&unrelated);
+        fs::write(&unrelated, b"unrelated transaction").expect("write unrelated temporary");
+        let temporary = RefCell::new(None);
+        let concurrent = b"bytes owned by the concurrent writer";
+
+        let error = atomic_create_with(&destination, b"new lazy index", |owned_temporary| {
+            temporary.replace(Some(owned_temporary.to_path_buf()));
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&destination)?;
+            file.write_all(concurrent)?;
+            file.sync_all()?;
+            Ok(())
+        })
+        .expect_err("concurrent destination must conflict");
+
+        assert_already_exists(error, &destination);
+        assert_eq!(
+            fs::read(&destination).expect("read concurrent bytes"),
+            concurrent
+        );
+        assert!(!temporary
+            .into_inner()
+            .expect("capture owned temporary")
+            .exists());
+        assert_eq!(
+            fs::read(&unrelated).expect("read unrelated temporary"),
+            b"unrelated transaction"
+        );
+        cleanup(&destination);
+        cleanup(&unrelated);
+    }
+
+    #[test]
+    fn successful_publication_is_byte_exact_and_removes_temporary() {
+        let destination = test_path("publication-success");
+        cleanup(&destination);
+        let temporary = RefCell::new(None);
+        let expected = b"exact canonical lazy-index bytes";
+
+        atomic_create_with(&destination, expected, |owned_temporary| {
+            temporary.replace(Some(owned_temporary.to_path_buf()));
+            Ok(())
+        })
+        .expect("publish destination");
+
+        assert_eq!(fs::read(&destination).expect("read destination"), expected);
+        assert!(!temporary
+            .into_inner()
+            .expect("capture owned temporary")
+            .exists());
+        cleanup(&destination);
     }
 
     #[test]

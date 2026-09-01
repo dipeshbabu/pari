@@ -102,7 +102,7 @@ A copied committed target is self-contained. It does not depend on sidecar datab
 
 The external builder's memory contract is bounded by the configured spill buffer, merge heap, one bounded segment directory, fixed copy buffers, and metadata rather than total bucket membership.
 
-Mutable commits, bounded external builds, and lazy snapshot creation use the same platform policy: sync the complete temporary file before atomic rename, then sync the parent directory on non-Windows platforms.
+Mutable commits and bounded external builds sync the complete temporary file before atomic rename, then sync the parent directory on non-Windows platforms. Lazy snapshot creation provides the same durability while publishing only to an absent destination: it syncs a uniquely owned adjacent temporary file, atomically claims the final name without replacement, removes the temporary name, and then syncs the parent directory on non-Windows platforms. A pre-existing or concurrently created destination is returned as `LazyStoreError::AlreadyExists` and is left byte-for-byte unchanged.
 
 ## Current limitations
 
