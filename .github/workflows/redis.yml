@@ -35,7 +35,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Run Redis backend tests
-        run: cargo test -p pari-backend --features redis --all-targets
+        run: cargo test -p pari-backend --features "redis conformance" --all-targets
       - name: Run Redis batch benchmark smoke
         run: cargo run --release -p pari-backend --example redis_bench --features redis
       - name: Show Redis benchmark report

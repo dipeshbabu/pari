@@ -20,6 +20,9 @@ use pari_index::{BucketDistribution, LshError, LshIndex32, LshParams, QueryMetri
 #[cfg(feature = "redis")]
 mod redis_backend;
 
+#[cfg(feature = "conformance")]
+pub mod conformance;
+
 #[cfg(feature = "redis")]
 pub use redis_backend::RedisBackend;
 
