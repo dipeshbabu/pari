@@ -786,10 +786,23 @@ def quarantine_staged_bundle(staging: Path) -> None:
     except CampaignError:
         bundle_path.replace(staging / "failed-bundle.partial")
         return
+    source_path = staging / "failed-bundle.source"
+    bundle_path.replace(source_path)
+    if bundle_path.exists() or bundle_path.is_symlink():
+        raise CampaignError("bundle.json still exists after diagnostic ownership transfer")
+
     bundle["artifact_kind"] = "pari-benchmark-campaign-failure-snapshot"
     bundle["status"] = "failed"
-    write_json(bundle_path, bundle)
-    bundle_path.replace(staging / "failed-bundle.json")
+    wrapper_path = staging / "failed-bundle.json"
+    try:
+        write_json(wrapper_path, bundle)
+    except Exception:
+        if wrapper_path.exists() or wrapper_path.is_symlink():
+            wrapper_path.replace(staging / "failed-bundle-wrapper.partial")
+        raise
+    source_path.unlink()
+    if source_path.exists() or source_path.is_symlink():
+        raise CampaignError("failed bundle source still exists after wrapper publication")
 
 
 def remove_process_temp(process_temp: Path) -> None:

@@ -465,6 +465,65 @@ class CampaignExecutionTests(unittest.TestCase):
                             require_clean=True,
                         )
 
+    def test_failed_wrapper_write_cannot_leave_a_valid_bundle_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.arguments(
+                root, profile="smoke", preserve_failure_evidence=True
+            )
+            _manifest, profiles = campaign.load_campaign(campaign.DEFAULT_MANIFEST)
+            profile = asdict(profiles["smoke"])
+            output = args.output.resolve()
+            original_replace = Path.replace
+            original_write_json = campaign.write_json
+
+            def fail_success_publication(path: Path, target: Path) -> Path:
+                if Path(target) == output:
+                    raise OSError("deterministic publication failure")
+                return original_replace(path, target)
+
+            def deny_failed_wrapper(path: Path, value: dict[str, object]) -> None:
+                if path.name == "failed-bundle.json":
+                    raise PermissionError("deterministic wrapper write failure")
+                original_write_json(path, value)
+
+            warning = io.StringIO()
+            with (
+                patch.object(campaign, "git_state", return_value=(GIT_SHA, False)),
+                patch.object(
+                    campaign,
+                    "run_logged",
+                    side_effect=self.valid_command(profile),
+                ),
+                patch.object(campaign, "host_environment", return_value=self.host()),
+                patch.object(Path, "replace", new=fail_success_publication),
+                patch.object(campaign, "write_json", side_effect=deny_failed_wrapper),
+                redirect_stderr(warning),
+                self.assertRaisesRegex(OSError, "publication failure"),
+            ):
+                campaign.run_campaign(args)
+
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob("smoke.failed-*")), [])
+            staging = next(root.glob(".smoke.partial-*"))
+            self.assertFalse((staging / "tmp").exists())
+            self.assertFalse((staging / "failure.json").exists())
+            self.assertFalse((staging / "bundle.json").exists())
+            self.assertFalse((staging / "failed-bundle.json").exists())
+            self.assertTrue((staging / "failed-bundle.source").exists())
+            for json_path in staging.glob("*.json"):
+                with self.subTest(json_path=json_path.name):
+                    with self.assertRaises(campaign.CampaignError):
+                        campaign.validate_bundle(json_path)
+                    with self.assertRaises(campaign.CampaignError):
+                        campaign.render_report(
+                            [json_path],
+                            root / f"wrapper-{json_path.stem}.md",
+                            require_clean=True,
+                        )
+            self.assertIn("bundle quarantine failed", warning.getvalue())
+            self.assertIn("wrapper write failure", warning.getvalue())
+
     def test_partial_bundle_write_is_preserved_after_verified_temp_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
