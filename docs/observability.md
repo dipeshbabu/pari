@@ -40,7 +40,8 @@ if let Some(queries) = stats.queries {
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-`LshIndex32`, `LshIndex64`, `PersistentIndex32`, `LazyIndex32`, and
+`LshIndex32`, `LshIndex64`, `PersistentIndex32`, `PersistentIndex64`,
+`LazyIndex32`, `LazyIndex64`, and
 `BackendIndex32` expose the same opt-in query metrics. A scalar query counts as
 one operation and one query. `query_many` counts as one operation and records
 every query in the batch. The persistent and backend surfaces remain affine32

@@ -9,6 +9,7 @@ use super::{
 pub const LSH_PLANNER_MODEL: &str = "pari-lsh-planner-v1";
 
 const MINHASH32_VALUE_BYTES: u64 = 4;
+const MINHASH64_VALUE_BYTES: u64 = 8;
 const EXTERNAL_KEY_BYTES: u64 = 8;
 const BAND_HASH_AND_MEMBERSHIP_BYTES: u64 = 16;
 const IN_MEMORY_BASE_BYTES_PER_ITEM: u64 = 64;
@@ -367,6 +368,19 @@ pub fn explain_lsh(options: LshPlanOptions, params: LshParams) -> Result<LshPlan
     )
 }
 
+/// Explain explicit or persisted affine64 LSH parameters without reading bucket memberships.
+///
+/// This mirrors [`explain_lsh`] while accounting for eight-byte signature values.
+/// The distinct function keeps affine32 estimates and callers unchanged.
+pub fn explain_lsh64(options: LshPlanOptions, params: LshParams) -> Result<LshPlan, LshPlanError> {
+    build_plan(
+        options,
+        params,
+        ParameterSource::Existing,
+        MINHASH64_VALUE_BYTES,
+    )
+}
+
 pub(crate) fn explain_lsh_with_value_bytes(
     options: LshPlanOptions,
     params: LshParams,
@@ -572,8 +586,8 @@ mod tests {
     use pari_core::MinHash32;
 
     use super::{
-        explain_lsh, plan_lsh, LshPlanError, LshPlanOptions, ParameterSource, RecommendationReason,
-        StorageMode,
+        explain_lsh, explain_lsh64, plan_lsh, LshPlanError, LshPlanOptions, ParameterSource,
+        RecommendationReason, StorageMode,
     };
     use crate::{LshIndex32, LshParams};
 
@@ -600,6 +614,16 @@ mod tests {
         );
         assert_eq!(plan.candidate_probability(-0.1), None);
         assert_eq!(plan.candidate_probability(1.1), None);
+    }
+
+    #[test]
+    fn affine64_explanation_accounts_for_full_width_values() {
+        let options = LshPlanOptions::new(10, 0.8, 128).storage_mode(StorageMode::Persistent);
+        let affine32 = explain_lsh(options, LshParams::new(32, 4)).expect("affine32 plan");
+        let affine64 = explain_lsh64(options, LshParams::new(32, 4)).expect("affine64 plan");
+        assert_eq!(affine32.sizes.signature_bytes_per_item, 512);
+        assert_eq!(affine64.sizes.signature_bytes_per_item, 1_024);
+        assert_eq!(affine32.params, affine64.params);
     }
 
     #[test]

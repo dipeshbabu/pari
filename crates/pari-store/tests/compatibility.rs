@@ -4,10 +4,12 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use pari_format::{FileLayout, SignatureScheme};
 use pari_index::LshParams;
-use pari_store::PersistentIndex32;
+use pari_store::{PersistentIndex32, PersistentIndex64};
 
 const V1_EMPTY_HEX: &str = include_str!("fixtures/v1-empty.hex");
+const V1_EMPTY_AFFINE64_HEX: &str = include_str!("fixtures/v1-empty-affine64.hex");
 static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
 
 fn test_path(name: &str) -> PathBuf {
@@ -61,6 +63,10 @@ fn stable_v1_empty_fixture_opens_with_expected_metadata() {
     assert_eq!(stats.committed_buckets, 0);
     assert!(!stats.dirty);
     drop(store);
+    assert!(
+        PersistentIndex64::open(&path).is_err(),
+        "affine64 reader must not reinterpret affine32 fixture"
+    );
     cleanup(&path);
 }
 
@@ -74,5 +80,51 @@ fn current_writer_reproduces_stable_v1_empty_fixture_exactly() {
 
     let actual = fs::read(&path).expect("read generated fixture");
     assert_eq!(actual, decode_hex(V1_EMPTY_HEX));
+    cleanup(&path);
+}
+
+#[test]
+fn stable_v1_affine64_empty_fixture_opens_only_as_affine64() {
+    let path = test_path("open64");
+    cleanup(&path);
+    let fixture = decode_hex(V1_EMPTY_AFFINE64_HEX);
+    assert_eq!(
+        fixture.len(),
+        176,
+        "affine64 v1 fixture byte length changed"
+    );
+    fs::write(&path, fixture).expect("write affine64 compatibility fixture");
+
+    let mut file = fs::File::open(&path).expect("open affine64 fixture metadata");
+    let layout = FileLayout::read_from(&mut file).expect("read affine64 fixture metadata");
+    assert_eq!(
+        layout.metadata().signature_scheme(),
+        SignatureScheme::PariAffine64V1
+    );
+    assert_eq!(layout.metadata().signature_scheme().width_bits(), 64);
+
+    let store = PersistentIndex64::open(&path).expect("open stable affine64 v1 fixture");
+    assert_eq!(store.num_perm(), 128);
+    assert_eq!(store.seed(), 7);
+    assert_eq!(store.params(), LshParams::new(32, 4));
+    assert!(store.is_empty());
+    drop(store);
+    assert!(
+        PersistentIndex32::open(&path).is_err(),
+        "affine32 reader must not reinterpret affine64 fixture"
+    );
+    cleanup(&path);
+}
+
+#[test]
+fn current_affine64_writer_reproduces_stable_v1_fixture_exactly() {
+    let path = test_path("writer64");
+    cleanup(&path);
+    PersistentIndex64::create_with_params(&path, 0.8, 128, 7, LshParams::new(32, 4))
+        .expect("create affine64 fixture")
+        .close()
+        .expect("close affine64 fixture");
+    let actual = fs::read(&path).expect("read generated affine64 fixture");
+    assert_eq!(actual, decode_hex(V1_EMPTY_AFFINE64_HEX));
     cleanup(&path);
 }
