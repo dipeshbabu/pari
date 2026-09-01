@@ -1,0 +1,49 @@
+minimum_pre_commit_version: "4.6.2"
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-ast
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 1f1e8bf348ff38fc88619a38d3ca4d9c56abea49 # v0.16.5
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt-workspace
+        name: cargo fmt (workspace)
+        entry: cargo fmt --all -- --check
+        language: system
+        pass_filenames: false
+        files: ^(?:crates/.*\.rs|rustfmt\.toml)$
+      - id: cargo-fmt-criterion
+        name: cargo fmt (Criterion workspace)
+        entry: cargo fmt --manifest-path benchmarks/criterion/Cargo.toml --all -- --check
+        language: system
+        pass_filenames: false
+        files: ^(?:benchmarks/criterion/.*\.rs|rustfmt\.toml)$
+      - id: workflow-pins
+        name: validate workflow dependency pins
+        entry: python scripts/check_workflow_pins.py
+        language: system
+        pass_filenames: false
+        files: ^(?:\.github/workflows/.*\.ya?ml|scripts/check_workflow_pins\.py|scripts/tests/test_workflow_pins\.py)$
+
+  - repo: meta
+    hooks:
+      - id: check-hooks-apply
+      - id: check-useless-excludes

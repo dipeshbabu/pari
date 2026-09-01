@@ -4,6 +4,28 @@ Pari is performance-sensitive infrastructure. Keep changes small enough to revie
 
 ## Workflow
 
+Install the pinned fast-check framework once per development environment, then
+install the repository hook:
+
+```bash
+python -m pip install "pre-commit==4.6.2"
+pre-commit install
+pre-commit run --all-files
+```
+
+The ordinary commit hook fixes or reports whitespace and end-of-file issues,
+checks YAML/TOML/JSON syntax, runs the pinned Ruff formatting/lint policy,
+detects merge markers and private-key material, checks both Rust formatting
+workspaces, and validates workflow pins.
+It intentionally excludes Clippy, tests, MSRV/package builds, wheel builds,
+Redis, cargo-deny, release validation, and benchmarks. Those remain explicit
+local or protected-CI checks, and CI remains authoritative.
+
+Use `git commit --no-verify` only when a broken local tool makes the hook itself
+unusable. Record the reason, repair the environment, and run
+`pre-commit run --all-files` before pushing. Bypassing a finding is not an
+accepted shortcut, and the protected checks cannot be bypassed by this option.
+
 1. Start from a focused GitHub issue with scope and acceptance criteria.
 2. Create a branch named for the issue or feature.
 3. Add tests for new behavior and regression tests for fixes.

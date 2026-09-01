@@ -13,3 +13,16 @@ The dependency-policy job may restore the exact `cargo-deny` binary produced by 
 CI, Python, Redis, and Release Validation cancel an older run only when a newer commit updates the same pull request. Pushes to `main`, release tags, scheduled workflows, and manually dispatched workflows are never cancellation targets. Required check names and coverage apply to the latest mergeable pull-request head exactly as before.
 
 The required formatting job installs Ruff from PyPI at the exact version declared in both `pyproject.toml` and the workflow environment. Ruff is a development tool, not a package runtime dependency. A formatting-tool upgrade must update both pins together, retain explicit lint selection, preserve the benchmark-fixture exclusions, and pass the complete Python and release suites before merge.
+
+Contributor fast checks use `pre-commit` 4.6.2 and the official
+`pre-commit/pre-commit-hooks` v6.0.0 source pinned to immutable commit
+`3e8a8703264a2f4a69428a0aa4dcb512790b2c8c`. Python formatting and linting use
+the official `astral-sh/ruff-pre-commit` v0.16.5 source pinned to immutable
+commit `1f1e8bf348ff38fc88619a38d3ca4d9c56abea49`, matching the PyPI and
+`pyproject.toml` policy. Rust formatting and workflow-pin validation are
+repository-owned `language: system` hooks, so no third party wraps Cargo or the
+policy script. Review upstream release notes and exact source diffs before
+changing a version; update all pins, SHA comments, policy tests, and
+documentation together, then run `pre-commit run --all-files` and the
+malformed-sample probe. Protected CI remains authoritative and does not trust a
+contributor's local hook result.

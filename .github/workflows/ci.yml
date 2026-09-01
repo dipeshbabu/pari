@@ -15,6 +15,7 @@ concurrency:
 env:
   CARGO_DENY_VERSION: "0.20.2"
   RUFF_VERSION: "0.16.5"
+  PRE_COMMIT_VERSION: "4.6.2"
   RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
@@ -39,6 +40,9 @@ jobs:
       - name: Lint Python
         run: ruff check python scripts benchmarks examples
       - run: python scripts/check_workflow_pins.py
+      - run: python -m pip install "pre-commit==${PRE_COMMIT_VERSION}"
+      - run: python -m pre_commit run --all-files --show-diff-on-failure
+      - run: python scripts/check_precommit_samples.py
 
   clippy:
     name: Clippy

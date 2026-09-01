@@ -8,6 +8,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Added
 
+- Pinned fast pre-commit checks cover repository text and syntax policy, both
+  Rust formatting workspaces, and workflow dependency pins without moving
+  expensive protected-CI gates into the normal commit path.
 - Distinct batch-first Rust `LshIndex64` candidate generation over full-width
   affine64 signatures, including deterministic grouping and observability.
 - Explicit Rust `PersistentIndex64` and `LazyIndex64` storage, canonical
