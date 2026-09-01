@@ -33,6 +33,39 @@ A remote backend should make its native batch operations real batch operations. 
 
 The integration contract tests are intentionally compiled as an external crate. They verify that the public descriptor and capability construction APIs are sufficient for third-party backend implementations in addition to exercising the built-in memory and Redis adapters.
 
+### Reusing the conformance kit
+
+Backend crates can run Pari's product-independent contract instead of copying
+its integration tests. Enable the test-only feature in a development
+dependency; it does not enable or depend on Redis:
+
+```toml
+[dev-dependencies]
+pari-backend = { path = "../pari/crates/pari-backend", features = ["conformance"] }
+```
+
+Call the exercise with a fresh backend whose namespace is isolated from other
+tests:
+
+```rust
+#[test]
+fn backend_satisfies_pari_contract() {
+    let backend = MyBackend::new_isolated().expect("test backend");
+    pari_backend::conformance::exercise_backend_contract(backend);
+}
+```
+
+The exercise checks capability declarations, descriptor round trips, atomic
+batch rejection, candidate parity with `LshIndex32`, ordered existence checks,
+deletion, flush, health, statistics, and cleanup. If the backend advertises TTL,
+it also creates the index with retention and requires active TTL statistics.
+
+Product-specific integration tests are still required for cross-process
+visibility, namespace isolation from unrelated application data, transport
+failures, and wall-clock TTL expiry. Those concerns need a backend-specific
+namespace factory, fault injection, or clock and are deliberately not abstracted
+by the common kit.
+
 ## Redis backend
 
 Enable the optional Redis implementation with the `redis` feature:

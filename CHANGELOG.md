@@ -11,6 +11,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Distinct batch-first Rust `LshIndex64` candidate generation over full-width
   affine64 signatures, including deterministic grouping and observability.
 - Release Validation builds a manylinux2014 aarch64 Python wheel, executes it on native Linux arm64, and packages a natively smoke-tested Linux arm64 CLI archive for subsequent releases.
+- An opt-in backend conformance kit lets third-party `StorageBackend` implementations reuse Pari's atomicity, query-parity, lifecycle, capability, and statistics contract tests without enabling Redis.
 
 ### Fixed
 

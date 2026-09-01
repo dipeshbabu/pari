@@ -1,6 +1,6 @@
 use pari_backend::{
-    BackendCapabilities, BackendCapability, BackendIndex32, BackendIndexError, IndexDescriptor,
-    MemoryBackend, StorageBackend,
+    conformance::exercise_backend_contract, BackendCapabilities, BackendCapability, BackendIndex32,
+    IndexDescriptor, MemoryBackend, StorageBackend,
 };
 use pari_core::MinHash32;
 use pari_index::LshIndex32;
@@ -9,73 +9,6 @@ fn sketch(values: &[&[u8]], num_perm: usize, seed: u64) -> MinHash32 {
     let mut sketch = MinHash32::new(num_perm, seed).expect("valid sketch");
     sketch.update_many(values);
     sketch
-}
-
-fn exercise_backend_contract<B: StorageBackend>(backend: B) -> BackendIndex32<B> {
-    let num_perm = 128;
-    let seed = 7;
-    let first = sketch(&[b"alpha", b"beta", b"gamma"], num_perm, seed);
-    let duplicate = first.clone();
-    let third = sketch(&[b"unrelated", b"record"], num_perm, seed);
-
-    let mut reference = LshIndex32::new(0.8, num_perm, seed).expect("reference index");
-    reference.insert(1, &first).expect("reference insert");
-
-    let mut index =
-        BackendIndex32::create(backend, 0.8, num_perm, seed, None).expect("backend index create");
-    index.insert(1, &first).expect("initial insert");
-
-    let error = index
-        .insert_many([(2, &duplicate), (1, &first)])
-        .expect_err("existing duplicate must reject the whole batch");
-    assert!(matches!(
-        error,
-        BackendIndexError::Backend(pari_backend::BackendError::DuplicateKey { key: 1 })
-    ));
-    assert!(!index.contains(2).expect("contains after rejected batch"));
-
-    index
-        .insert_many([(2, &duplicate), (3, &third)])
-        .expect("batch insert");
-    reference
-        .insert_many([(2, &duplicate), (3, &third)])
-        .expect("reference batch insert");
-    index.set_observability(true);
-
-    assert_eq!(
-        index.query(&first).expect("scalar query"),
-        reference.query(&first).expect("reference scalar query")
-    );
-    assert_eq!(
-        index.query_many([&first, &third]).expect("batch query"),
-        reference
-            .query_many([&first, &third])
-            .expect("reference batch query")
-    );
-    assert_eq!(
-        index.contains_many(&[1, 2, 4]).expect("batch contains"),
-        vec![true, true, false]
-    );
-
-    assert_eq!(index.remove_many([2, 99]).expect("batch remove"), 1);
-    assert!(reference.remove(2));
-    assert_eq!(
-        index.query(&first).expect("query after remove"),
-        reference
-            .query(&first)
-            .expect("reference query after remove")
-    );
-    index.flush().expect("flush");
-    index.health().expect("health");
-    let stats = index.stats().expect("stats");
-    assert_eq!(stats.items, 2);
-    assert!(stats.bucket_memberships > 0);
-    let queries = stats.queries.expect("query metrics");
-    assert_eq!(queries.operations, 3);
-    assert_eq!(queries.queries, 4);
-    assert_eq!(queries.possible_candidates, 11);
-    assert!(queries.candidate_rate() > 0.0);
-    index
 }
 
 #[test]
@@ -99,12 +32,18 @@ fn public_backend_extension_types_are_constructible() {
 
 #[test]
 fn memory_backend_satisfies_shared_contract() {
-    let mut index = exercise_backend_contract(MemoryBackend::new());
-    let capabilities = index.backend().capabilities();
+    let backend = MemoryBackend::new();
+    let capabilities = backend.capabilities();
     assert!(capabilities.supports(BackendCapability::BatchRead));
     assert!(capabilities.supports(BackendCapability::BatchWrite));
     assert!(!capabilities.supports(BackendCapability::Ttl));
     assert!(!capabilities.supports(BackendCapability::Remote));
+    exercise_backend_contract(backend);
+
+    let value = sketch(&[b"distribution"], 64, 1);
+    let mut index = BackendIndex32::create(MemoryBackend::new(), 0.8, 64, 1, None)
+        .expect("memory diagnostics index");
+    index.insert(1, &value).expect("memory diagnostics insert");
     let stats = index.stats().expect("memory stats");
     assert!(
         stats
@@ -158,9 +97,13 @@ mod redis_tests {
         assert!(backend.capabilities().supports(BackendCapability::Remote));
         assert!(backend.capabilities().supports(BackendCapability::Ttl));
 
-        let index = exercise_backend_contract(backend);
-        let first = sketch(&[b"alpha", b"beta", b"gamma"], 128, 7);
+        exercise_backend_contract(backend);
 
+        let backend = clean_backend(&url, &namespace);
+        let first = sketch(&[b"alpha", b"beta", b"gamma"], 128, 7);
+        let mut index =
+            BackendIndex32::create(backend, 0.8, 128, 7, None).expect("shared Redis index");
+        index.insert(1, &first).expect("shared Redis insert");
         let reopened_backend =
             RedisBackend::connect(&url, &namespace).expect("second Redis handle");
         let mut reopened = BackendIndex32::open(reopened_backend).expect("open shared namespace");
@@ -169,7 +112,7 @@ mod redis_tests {
             vec![1]
         );
         let stats = reopened.stats().expect("Redis stats");
-        assert_eq!(stats.items, 2);
+        assert_eq!(stats.items, 1);
         assert!(stats.round_trips > 0);
         drop(index);
         reopened.cleanup().expect("Redis cleanup");
