@@ -6,6 +6,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Added
+
+- Release Validation builds a manylinux2014 aarch64 Python wheel, executes it on native Linux arm64, and packages a natively smoke-tested Linux arm64 CLI archive for subsequent releases.
+
 ### Repository policy
 
 - Full registry-backed package verification is restored for all four public crates after the coordinated 0.2.0 publication.

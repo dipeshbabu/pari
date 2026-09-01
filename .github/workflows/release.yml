@@ -151,6 +151,10 @@ jobs:
         include:
           - os: ubuntu-latest
             label: linux
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            label: linux-arm64
+            target: aarch64-unknown-linux-gnu
           - os: macos-latest
             label: macos
           - os: windows-latest
@@ -165,10 +169,11 @@ jobs:
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: build
-          args: --release --out dist
+          args: --release --locked --out dist
           maturin-version: ${{ env.MATURIN_VERSION }}
           manylinux: "2014"
           rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          target: ${{ matrix.target }}
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         if: runner.os != 'Linux'
         with:
@@ -178,16 +183,38 @@ jobs:
         run: python -m pip install "maturin==${{ env.MATURIN_VERSION }}"
       - name: Build native wheel
         if: runner.os != 'Linux'
-        run: maturin build --release --out dist
+        run: maturin build --release --locked --out dist
       - name: Install built wheel
+        if: matrix.label != 'linux-arm64'
         run: python python/tests/install_wheel.py dist
       - name: Test installed package
+        if: matrix.label != 'linux-arm64'
         run: python -m unittest discover -s python/tests -p "test_*.py" -v
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-wheel-${{ matrix.label }}
           path: dist/*.whl
           if-no-files-found: error
+
+  python-arm64-validation:
+    name: Python wheel linux-arm64 validation
+    runs-on: ubuntu-24.04-arm
+    needs: [metadata, python-wheels]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-wheel-linux-arm64
+          path: dist
+      - name: Install cross-built wheel on native arm64
+        run: python python/tests/install_wheel.py dist
+      - name: Run focused native arm64 smoke
+        run: python python/tests/arm64_smoke.py
+      - name: Test installed package
+        run: python -m unittest discover -s python/tests -p "test_*.py" -v
 
   python-sdist:
     name: Python source distribution
@@ -235,6 +262,9 @@ jobs:
           - os: ubuntu-latest
             label: linux
             binary: target/release/pari
+          - os: ubuntu-24.04-arm
+            label: linux-arm64
+            binary: target/release/pari
           - os: macos-latest
             label: macos
             binary: target/release/pari
@@ -251,6 +281,23 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Build CLI
         run: cargo build --locked --release -p pari-cli
+      - name: Run native Linux arm64 CLI smoke
+        if: matrix.label == 'linux-arm64'
+        shell: bash
+        run: |
+          test "$(uname -m)" = aarch64
+          target/release/pari --version
+          target/release/pari --help >/dev/null
+          printf '%s\n' \
+            '{"key":1,"values":["arm64","pari","release"]}' \
+            '{"key":2,"values":["arm64","pari","validation"]}' \
+            > arm64-input.jsonl
+          target/release/pari index \
+            --input arm64-input.jsonl \
+            --output arm64-smoke.pari \
+            --num-perm 32 \
+            --json
+          target/release/pari verify --index arm64-smoke.pari --json
       - id: source-date
         name: Read source date epoch
         shell: bash
@@ -272,7 +319,7 @@ jobs:
   assemble:
     name: Assemble release candidate
     runs-on: ubuntu-latest
-    needs: [metadata, rust-packages, python-wheels, python-sdist, cli]
+    needs: [metadata, rust-packages, python-wheels, python-arm64-validation, python-sdist, cli]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -295,6 +342,7 @@ jobs:
             test -f "release-dist/$crate-$version.crate"
           done
           test -f "release-dist/pari-$version-linux.tar.gz"
+          test -f "release-dist/pari-$version-linux-arm64.tar.gz"
           test -f "release-dist/pari-$version-macos.tar.gz"
           test -f "release-dist/pari-$version-windows.zip"
           test -f "release-dist/pari-$version.cdx.json"
@@ -412,6 +460,7 @@ jobs:
             test -f "release-dist/$crate-$VERSION.crate"
           done
           test -f "release-dist/pari-$VERSION-linux.tar.gz"
+          test -f "release-dist/pari-$VERSION-linux-arm64.tar.gz"
           test -f "release-dist/pari-$VERSION-macos.tar.gz"
           test -f "release-dist/pari-$VERSION-windows.zip"
           test -f "release-dist/pari-$VERSION.cdx.json"

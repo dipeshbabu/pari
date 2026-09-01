@@ -85,6 +85,8 @@ Download the published archive for your platform:
 | macOS arm64 | [`pari-0.2.0-macos.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.2.0/pari-0.2.0-macos.tar.gz) |
 | Windows x86_64 | [`pari-0.2.0-windows.zip`](https://github.com/dipeshbabu/pari/releases/download/v0.2.0/pari-0.2.0-windows.zip) |
 
+Linux arm64 wheels and CLI archives are validated on native ARM runners for the next tagged release. They are not retroactively attached to the immutable 0.2.0 release. See the [platform support matrix](docs/platforms.md).
+
 Linux:
 
 ```bash
@@ -141,6 +143,7 @@ Source users evaluating shared memory or Redis backends can follow the [storage 
 - [GitHub Release and binary downloads](https://github.com/dipeshbabu/pari/releases/tag/v0.2.0)
 - [0.2.0 release notes](docs/releases/0.2.0.md)
 - [Compatibility policy](docs/compatibility.md)
+- [Platform support and release targets](docs/platforms.md)
 - [Security policy](SECURITY.md) and [dependency maintenance](docs/dependency-policy.md)
 - [Python guide](docs/python.md), [CLI guide](docs/cli.md), [dataset integrations](docs/dataset-integrations.md), [text workloads](docs/text-workloads.md), [code corpus deduplication](docs/code-workloads.md), and [entity matching](docs/entity-matching.md)
 - [Datasketch 2.x interoperability and migration](docs/datasketch-v2.md)
