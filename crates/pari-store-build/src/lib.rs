@@ -23,6 +23,7 @@ use pari_format::{
     CodecId, FileLayout, FormatError, IndexMetadata, LayoutError, SectionDescriptor, SectionKind,
     SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES, BUCKET_SEGMENT_TARGET_BYTES,
 };
+use same_file::Handle;
 
 const FILE_MAGIC: [u8; 8] = *b"PARIIDX\0";
 const FORMAT_VERSION: u16 = 1;
@@ -289,9 +290,9 @@ fn build_external_with_hook(
         &segments,
         &destination_temp,
     )?;
+    let output_bytes = fs::metadata(&destination_temp)?.len();
     before_publish()?;
     publish_no_replace(&destination_temp, destination)?;
-    let output_bytes = fs::metadata(destination)?.len();
 
     Ok(BuildStats {
         records,
@@ -973,6 +974,25 @@ fn temp_path(destination: &Path, nonce: u128, suffix: &str) -> PathBuf {
 }
 
 fn publish_no_replace(temporary: &Path, destination: &Path) -> Result<(), BuildError> {
+    publish_no_replace_with(
+        temporary,
+        destination,
+        |path| fs::remove_file(path),
+        sync_parent,
+    )
+}
+
+fn publish_no_replace_with<R, S>(
+    temporary: &Path,
+    destination: &Path,
+    remove_temporary: R,
+    sync_directory: S,
+) -> Result<(), BuildError>
+where
+    R: FnOnce(&Path) -> io::Result<()>,
+    S: FnOnce(&Path) -> io::Result<()>,
+{
+    let identity = Handle::from_path(temporary)?;
     // Both names are in the same directory, so a hard link atomically claims
     // the destination without exposing a partially written file or replacing
     // a destination created by another process.
@@ -984,14 +1004,106 @@ fn publish_no_replace(temporary: &Path, destination: &Path) -> Result<(), BuildE
         Err(error) => return Err(BuildError::Io(error)),
     }
 
-    let cleanup_result = fs::remove_file(temporary);
-    let sync_result = sync_parent(destination);
-    cleanup_result?;
-    sync_result
+    if let Err(error) = remove_temporary(temporary) {
+        return Err(recover_after_publication(
+            temporary,
+            destination,
+            &identity,
+            error,
+        ));
+    }
+    if let Err(error) = sync_directory(destination) {
+        return Err(recover_after_publication(
+            temporary,
+            destination,
+            &identity,
+            error,
+        ));
+    }
+    Ok(())
+}
+
+fn recover_after_publication(
+    temporary: &Path,
+    destination: &Path,
+    identity: &Handle,
+    original: io::Error,
+) -> BuildError {
+    let kind = original.kind();
+    let rollback = rollback_final(destination, identity)
+        .err()
+        .map(|error| error.to_string());
+    let cleanup = remove_file_if_exists(temporary)
+        .err()
+        .map(|error| error.to_string());
+    if rollback.is_none() && cleanup.is_none() {
+        return BuildError::Io(original);
+    }
+    BuildError::Io(io::Error::new(
+        kind,
+        PublicationRecoveryError {
+            original,
+            rollback,
+            cleanup,
+        },
+    ))
+}
+
+fn rollback_final(destination: &Path, identity: &Handle) -> io::Result<()> {
+    let current = match Handle::from_path(destination) {
+        Ok(current) => current,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if &current != identity {
+        return Ok(());
+    }
+    fs::remove_file(destination)?;
+    sync_parent(destination)
+}
+
+fn remove_file_if_exists(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Debug)]
+struct PublicationRecoveryError {
+    original: io::Error,
+    rollback: Option<String>,
+    cleanup: Option<String>,
+}
+
+impl fmt::Display for PublicationRecoveryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.original)?;
+        if let Some(rollback) = &self.rollback {
+            write!(
+                formatter,
+                "; also failed to roll back destination: {rollback}"
+            )?;
+        }
+        if let Some(cleanup) = &self.cleanup {
+            write!(
+                formatter,
+                "; also failed to remove temporary file: {cleanup}"
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for PublicationRecoveryError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.original)
+    }
 }
 
 #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
-fn sync_parent(path: &Path) -> Result<(), BuildError> {
+fn sync_parent(path: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         let _ = path;
@@ -1003,15 +1115,14 @@ fn sync_parent(path: &Path) -> Result<(), BuildError> {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        File::open(parent)?.sync_all()?;
-        Ok(())
+        File::open(parent)?.sync_all()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
+        fs, io,
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -1020,7 +1131,10 @@ mod tests {
     use pari_store::PersistentIndex32;
     use pari_store_lazy::{build_from_snapshot, LazyIndex32};
 
-    use super::{build_external, build_external_with_hook, BuildError, BuildOptions};
+    use super::{
+        build_external, build_external_with_hook, publish_no_replace_with, sync_parent, BuildError,
+        BuildOptions,
+    };
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -1222,5 +1336,88 @@ mod tests {
         assert!(temporary_artifacts(&destination).is_empty());
         cleanup(&source);
         cleanup(&destination);
+    }
+
+    #[test]
+    fn cleanup_failure_after_link_rolls_back_owned_destination() {
+        let temporary = test_path("cleanup-failure-temp");
+        let destination = test_path("cleanup-failure-output");
+        cleanup(&temporary);
+        cleanup(&destination);
+        fs::write(&temporary, b"complete external index").expect("write temporary");
+
+        let error = publish_no_replace_with(
+            &temporary,
+            &destination,
+            |_| Err(io::Error::other("forced temporary cleanup failure")),
+            sync_parent,
+        )
+        .expect_err("publication must fail");
+
+        assert!(error
+            .to_string()
+            .contains("forced temporary cleanup failure"));
+        assert!(
+            !destination.exists(),
+            "owned destination was not rolled back"
+        );
+        assert!(!temporary.exists(), "temporary file was not cleaned");
+    }
+
+    #[test]
+    fn cleanup_failure_preserves_concurrent_destination_replacement() {
+        let temporary = test_path("replacement-temp");
+        let destination = test_path("replacement-output");
+        cleanup(&temporary);
+        cleanup(&destination);
+        fs::write(&temporary, b"complete external index").expect("write temporary");
+        let replacement_path = destination.clone();
+        let replacement = b"concurrent replacement";
+
+        let error = publish_no_replace_with(
+            &temporary,
+            &destination,
+            move |_| {
+                fs::remove_file(&replacement_path)?;
+                fs::write(&replacement_path, replacement)?;
+                Err(io::Error::other("forced temporary cleanup failure"))
+            },
+            sync_parent,
+        )
+        .expect_err("publication must fail");
+
+        assert!(error
+            .to_string()
+            .contains("forced temporary cleanup failure"));
+        assert_eq!(
+            fs::read(&destination).expect("replacement remains"),
+            replacement
+        );
+        assert!(!temporary.exists(), "temporary file was not cleaned");
+        cleanup(&destination);
+    }
+
+    #[test]
+    fn directory_sync_failure_rolls_back_owned_destination() {
+        let temporary = test_path("sync-failure-temp");
+        let destination = test_path("sync-failure-output");
+        cleanup(&temporary);
+        cleanup(&destination);
+        fs::write(&temporary, b"complete external index").expect("write temporary");
+
+        let error = publish_no_replace_with(
+            &temporary,
+            &destination,
+            |path| fs::remove_file(path),
+            |_| Err(io::Error::other("forced directory sync failure")),
+        )
+        .expect_err("publication must fail");
+
+        assert!(error.to_string().contains("forced directory sync failure"));
+        assert!(
+            !destination.exists(),
+            "owned destination was not rolled back"
+        );
+        assert!(!temporary.exists(), "temporary file was not removed");
     }
 }

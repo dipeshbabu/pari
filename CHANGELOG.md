@@ -13,6 +13,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 ### Fixed
 
 - Lazy index publication preserves destinations created concurrently after conversion begins.
+- Bounded external index publication now atomically rejects existing destinations and rolls back transaction-owned outputs after cleanup or durability failures.
 
 ### Repository policy
 

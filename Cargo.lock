@@ -514,6 +514,7 @@ dependencies = [
  "pari-format",
  "pari-store",
  "pari-store-lazy",
+ "same-file",
 ]
 
 [[package]]
