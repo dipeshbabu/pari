@@ -13,6 +13,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Explicit Rust `PersistentIndex64` and `LazyIndex64` storage, canonical
   affine64 reference/external builds, and a pinned format-v1 fixture without
   changing affine32 APIs or bytes.
+- Explicit CLI affine64 indexing and deduplication, full-width
+  `MinHash64::from_signature` reconstruction, and metadata-derived search,
+  inspection, explanation, and verification; affine32 remains the default and
+  revision-1 machine-readable fields are unchanged.
 - Release Validation builds a manylinux2014 aarch64 Python wheel, executes it on native Linux arm64, and packages a natively smoke-tested Linux arm64 CLI archive for subsequent releases.
 - An opt-in backend conformance kit lets third-party `StorageBackend` implementations reuse Pari's atomicity, query-parity, lifecycle, capability, and statistics contract tests without enabling Redis.
 

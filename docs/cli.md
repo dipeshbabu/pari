@@ -51,7 +51,25 @@ or a precomputed Pari signature:
 {"key":2,"signature":[125,992,481,73],"scheme":"pari-affine32-v1"}
 ```
 
-Each raw value is fed to Pari's `MinHash32` as UTF-8 bytes. A precomputed signature must contain exactly the configured `--num-perm` values and must explicitly declare `pari-affine32-v1`; the CLI rejects unknown schemes, missing scheme metadata, incorrect widths, and records containing both `values` and `signature`.
+Affine32 remains the default: each raw value is fed to `MinHash32` as UTF-8
+bytes, and existing commands need no new option. Select the explicit 64-bit
+family for a new index or in-memory deduplication job with
+`--signature-scheme pari-affine64-v1`. Raw values then construct `MinHash64`.
+
+Precomputed affine64 signatures retain full JSON unsigned 64-bit values,
+including values above `4294967295`, and must declare the matching scheme:
+
+```json
+{"key":3,"signature":[17179869191,18446744073709551557],"scheme":"pari-affine64-v1","seed":7}
+```
+
+A precomputed signature must contain exactly the configured `--num-perm`
+values and declare the selected stable scheme. The optional `seed` field records
+the producer seed; when present, Pari rejects it unless it matches the command
+or opened index seed. Producers should include it when that metadata is
+available. Affine32 values must fit `u32`. The CLI rejects missing or mismatched
+schemes, seed mismatches, incorrect counts or widths, and records containing
+both `values` and `signature`, with the input line number in the diagnostic.
 
 Input is processed line by line. Raw JSONL records are never accumulated as a complete corpus.
 
@@ -67,7 +85,12 @@ or:
 {"id":"query-2","signature":[125,992,481,73],"scheme":"pari-affine32-v1"}
 ```
 
-`id` is copied to JSON output for correlation. Precomputed query signatures must match the opened index's permutation count and use the index seed's affine32 permutation family.
+`id` is copied to JSON output for correlation. `search` derives the signature
+family, permutation count, and seed from validated index metadata; it does not
+accept a second family option. Precomputed queries must declare the matching
+scheme and count. A supplied `seed` must match the opened index. `stats`,
+`explain`, and `verify` likewise validate and derive the family from the file,
+so an affine32 index is never opened as affine64 or vice versa.
 
 Use `-` as the input or output path for stdin/stdout.
 
@@ -81,6 +104,19 @@ pari index \
   --num-perm 128 \
   --seed 7 \
   --batch-size 10000 \
+  --json
+```
+
+To build the explicit affine64 equivalent, add the family option:
+
+```bash
+pari index \
+  --input documents.jsonl \
+  --output documents-64.pari \
+  --signature-scheme pari-affine64-v1 \
+  --threshold 0.8 \
+  --num-perm 128 \
+  --seed 7 \
   --json
 ```
 
@@ -132,7 +168,11 @@ Example group:
 {"representative":1,"members":[1,2]}
 ```
 
-The CLI streams JSONL records into `LshIndex32`; it does not retain the original corpus. Group construction uses Pari's native union-find path from `pari-index`.
+The CLI streams JSONL records into the selected concrete `LshIndex32` or
+`LshIndex64`; it does not retain the original corpus. Add
+`--signature-scheme pari-affine64-v1` to either deduplication form for the
+64-bit family. Group construction uses Pari's native union-find path from
+`pari-index`.
 
 ## Inspect and verify
 

@@ -45,10 +45,11 @@ struct Fixture {
     records: PathBuf,
     queries: PathBuf,
     index: PathBuf,
+    signature_scheme: Option<&'static str>,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    fn new(signature_scheme: Option<&'static str>) -> Self {
         let records = temp_path("records", "jsonl");
         let queries = temp_path("queries", "jsonl");
         let index = temp_path("index", "pari");
@@ -70,6 +71,7 @@ impl Fixture {
             records,
             queries,
             index,
+            signature_scheme,
         }
     }
 }
@@ -83,17 +85,19 @@ impl Drop for Fixture {
 }
 
 fn assert_index_contract(fixture: &Fixture) {
-    let output = pari()
-        .args([
-            "index",
-            "--input",
-            fixture.records.to_str().expect("records path"),
-            "--output",
-            fixture.index.to_str().expect("index path"),
-            "--json",
-        ])
-        .output()
-        .expect("index command");
+    let mut command = pari();
+    command.args([
+        "index",
+        "--input",
+        fixture.records.to_str().expect("records path"),
+        "--output",
+        fixture.index.to_str().expect("index path"),
+        "--json",
+    ]);
+    if let Some(scheme) = fixture.signature_scheme {
+        command.args(["--signature-scheme", scheme]);
+    }
+    let output = command.output().expect("index command");
     assert_success(&output);
     assert_exact_keys(
         &parse_json(&output),
@@ -248,30 +252,34 @@ fn assert_verify_contract(fixture: &Fixture) {
 }
 
 fn assert_dedup_contract(fixture: &Fixture, emit: &str, expected: &[&str]) {
-    let output = pari()
-        .args([
-            "dedup",
-            "--input",
-            fixture.records.to_str().expect("records path"),
-            "--emit",
-            emit,
-            "--json",
-        ])
-        .output()
-        .expect("dedup command");
+    let mut command = pari();
+    command.args([
+        "dedup",
+        "--input",
+        fixture.records.to_str().expect("records path"),
+        "--emit",
+        emit,
+        "--json",
+    ]);
+    if let Some(scheme) = fixture.signature_scheme {
+        command.args(["--signature-scheme", scheme]);
+    }
+    let output = command.output().expect("dedup command");
     assert_success(&output);
     assert_exact_keys(&parse_json(&output), expected);
 }
 
 #[test]
 fn v01_json_output_fields_are_pinned() {
-    let fixture = Fixture::new();
     assert_plan_contract();
-    assert_index_contract(&fixture);
-    assert_search_contract(&fixture);
-    assert_stats_contract(&fixture);
-    assert_explain_contract(&fixture);
-    assert_verify_contract(&fixture);
-    assert_dedup_contract(&fixture, "groups", &["members", "representative"]);
-    assert_dedup_contract(&fixture, "pairs", &["left", "right"]);
+    for scheme in [None, Some("pari-affine64-v1")] {
+        let fixture = Fixture::new(scheme);
+        assert_index_contract(&fixture);
+        assert_search_contract(&fixture);
+        assert_stats_contract(&fixture);
+        assert_explain_contract(&fixture);
+        assert_verify_contract(&fixture);
+        assert_dedup_contract(&fixture, "groups", &["members", "representative"]);
+        assert_dedup_contract(&fixture, "pairs", &["left", "right"]);
+    }
 }
