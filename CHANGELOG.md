@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Initial persistent-index creation now atomically refuses occupied or
+  concurrently created destinations instead of replacing them.
 - Persistent commits now use uniquely owned temporary files instead of
   following or truncating a predictable sibling path.
 - Benchmark campaign stages now enforce each profile's declared timeout and
