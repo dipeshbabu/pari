@@ -59,11 +59,40 @@ select = [
   "I",
   "UP",
   "B",
+  "C4",
+  "PERF",
+  "PIE",
+  "PLE",
+  "PLW",
+  "RET",
+  "S",
   "SIM",
+  "TRY002",
+  "TRY004",
+  "TRY201",
+  "TRY300",
+  "TRY400",
+  "TRY401",
+  "RUF005",
+  "RUF006",
+  "RUF010",
+  "RUF012",
+  "RUF015",
+  "RUF018",
+  "RUF019",
+  "RUF022",
+  "RUF024",
 ]
+ignore = ["PERF203"]
 
 [tool.ruff.lint.per-file-ignores]
 "benchmarks/similarity_family_evaluation.py" = ["E402"]
+"examples/text_workload.py" = ["S608"]
+"python/tests/install_wheel.py" = ["S603"]
+"scripts/benchmark_campaign.py" = ["S603"]
+"scripts/check_precommit_samples.py" = ["S603"]
+"scripts/parallel_benchmark.py" = ["S603"]
+"scripts/release.py" = ["S603", "S607"]
 "scripts/tests/test_parallel_benchmark.py" = ["B017"]
 
 [tool.ruff.format]

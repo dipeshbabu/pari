@@ -30,6 +30,44 @@ class FormattingPolicyTests(unittest.TestCase):
         self.assertIn("select = [", pyproject)
         self.assertNotIn("preview = true", pyproject)
 
+    def test_high_signal_antipattern_rules_are_enforced_without_broad_groups(
+        self,
+    ) -> None:
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        workspace = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+        criterion = (ROOT / "benchmarks/criterion/Cargo.toml").read_text(
+            encoding="utf-8"
+        )
+
+        for rule in ("C4", "PERF", "PIE", "PLE", "PLW", "RET", "S"):
+            self.assertIn(f'  "{rule}",', pyproject)
+        for rule in (
+            "TRY002",
+            "TRY004",
+            "TRY201",
+            "TRY300",
+            "TRY400",
+            "TRY401",
+            "RUF005",
+            "RUF006",
+            "RUF010",
+            "RUF012",
+            "RUF015",
+            "RUF018",
+            "RUF019",
+            "RUF022",
+            "RUF024",
+        ):
+            self.assertIn(f'  "{rule}",', pyproject)
+        self.assertIn('ignore = ["PERF203"]', pyproject)
+        self.assertNotIn('"ALL"', pyproject)
+
+        for manifest in (workspace, criterion):
+            self.assertIn('dbg_macro = "deny"', manifest)
+            self.assertIn('todo = "deny"', manifest)
+            self.assertIn('unimplemented = "deny"', manifest)
+            self.assertNotIn('restriction = "deny"', manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

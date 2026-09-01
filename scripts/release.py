@@ -261,8 +261,10 @@ def validate_sdist_archive(archive: Path, expected: set[str] | None = None) -> N
         if relative.suffix.casefold() in FORBIDDEN_SDIST_SUFFIXES:
             errors.append(f"forbidden secret-like sdist file: {value}")
 
-    for missing in sorted(expected - files):
-        errors.append(f"missing expected sdist file: {missing}")
+    errors.extend(
+        f"missing expected sdist file: {missing}"
+        for missing in sorted(expected - files)
+    )
     if errors:
         raise SystemExit(
             "\n".join(f"sdist validation error: {error}" for error in errors)
