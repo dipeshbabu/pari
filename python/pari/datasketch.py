@@ -70,7 +70,7 @@ def from_datasketch(sketch: Any) -> MinHash | MinHash64:
         multipliers, offsets = sketch.permutations
         hashvalues = sketch.hashvalues
         signature = [int(value) for value in hashvalues]
-    except (AttributeError, TypeError, ValueError) as error:
+    except (AttributeError, OverflowError, TypeError, ValueError) as error:
         raise TypeError("expected a Datasketch MinHash-like object") from error
 
     if scheme not in {"affine32", "affine64"}:
@@ -104,7 +104,7 @@ def from_datasketch(sketch: Any) -> MinHash | MinHash64:
     try:
         actual_multipliers = tuple(int(value) for value in multipliers)
         actual_offsets = tuple(int(value) for value in offsets)
-    except (TypeError, ValueError) as error:
+    except (OverflowError, TypeError, ValueError) as error:
         raise TypeError("expected numeric Datasketch permutation arrays") from error
     if len(actual_multipliers) != num_perm or len(actual_offsets) != num_perm:
         raise CompatibilityError(
@@ -142,7 +142,7 @@ def is_compatible(sketch: Any) -> bool:
 
     try:
         from_datasketch(sketch)
-    except (CompatibilityError, ImportError, TypeError):
+    except (CompatibilityError, ImportError, OverflowError, TypeError):
         return False
     return True
 

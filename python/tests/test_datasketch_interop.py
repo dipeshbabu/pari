@@ -268,6 +268,15 @@ class DatasketchInteropTests(unittest.TestCase):
                 self.assertEqual(len(index), 1)
                 self.assertFalse(index.contains(2))
 
+    def test_non_finite_external_numbers_are_incompatible(self) -> None:
+        baseline = MinHash64.from_values(VALUES, num_perm=8, seed=42)
+        external = adapter.to_datasketch(baseline)
+        external.seed = float("inf")
+
+        self.assertFalse(adapter.is_compatible(external))
+        with self.assertRaisesRegex(TypeError, "MinHash-like"):
+            adapter.from_datasketch(external)
+
 
 if __name__ == "__main__":
     unittest.main()
