@@ -6,6 +6,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Repository policy
+
+- Full registry-backed package verification is restored for all four public crates after the coordinated 0.2.0 publication.
+
 ## [0.2.0] - 2026-08-31
 
 ### Added

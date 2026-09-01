@@ -27,8 +27,8 @@ Pari is performance-sensitive infrastructure. Keep changes small enough to revie
      -p pari-core -p pari-format -p pari-index -p pari-store
    cargo +1.81 package --locked -p pari-core
    cargo +1.81 package --locked -p pari-format
-   cargo +1.81 package --locked --no-verify -p pari-index --list
-   cargo +1.81 package --locked --no-verify -p pari-store --list
+   cargo +1.81 package --locked -p pari-index
+   cargo +1.81 package --locked -p pari-store
    ```
 
    Run the checks for every surface the change affects. For Python bindings, build and test the installed wheel rather than importing from the source tree:

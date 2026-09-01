@@ -56,10 +56,8 @@ jobs:
         run: |
           cargo package --locked -p pari-core
           cargo package --locked -p pari-format
-          # The exact 0.2 dependency set does not exist in the registry until
-          # the coordinated #91 tag publishes it in dependency order.
-          cargo package --locked --no-verify -p pari-index --list >/dev/null
-          cargo package --locked --no-verify -p pari-store --list >/dev/null
+          cargo package --locked -p pari-index
+          cargo package --locked -p pari-store
 
   dependency-policy:
     name: Dependency policy

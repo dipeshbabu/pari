@@ -6,7 +6,7 @@ The project is built around a Rust core with Python bindings and a CLI. The goal
 
 ## Status
 
-Pari **0.2.0 alpha** is the current release line for PyPI, crates.io, and [GitHub Releases](https://github.com/dipeshbabu/pari/releases/tag/v0.2.0). Published artifacts come only from the signed `v0.2.0` tag; until that tag exists, this source tree is a release candidate and 0.1.0 remains the latest published version. Pari is still pre-1.0: supported 0.2.x interfaces follow the [v0.x compatibility policy](docs/compatibility.md), while experimental surfaces may change in a future minor release with release notes and migration guidance.
+Pari **0.2.0 alpha** is publicly available from PyPI, crates.io, and [GitHub Releases](https://github.com/dipeshbabu/pari/releases/tag/v0.2.0). Pari is still pre-1.0: supported 0.2.x interfaces follow the [v0.x compatibility policy](docs/compatibility.md), while experimental surfaces may change in a future minor release with release notes and migration guidance.
 
 Choose the interface that fits your workload:
 
