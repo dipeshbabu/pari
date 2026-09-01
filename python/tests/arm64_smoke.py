@@ -42,7 +42,9 @@ def main() -> None:
             index.sync()
         with Index.open(path) as reopened:
             if reopened.search(signature) != [1]:
-                raise AssertionError("persistent create/reopen query did not round-trip")
+                raise AssertionError(
+                    "persistent create/reopen query did not round-trip"
+                )
 
     print(
         json.dumps(

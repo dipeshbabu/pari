@@ -533,7 +533,7 @@ def insert_reference_batch(
     index.add_many(
         [
             (reference.key, sketch)
-            for (reference, _features), sketch in zip(batch, sketches)
+            for (reference, _features), sketch in zip(batch, sketches, strict=True)
         ]
     )
     connection.executemany(
@@ -703,7 +703,7 @@ def audit_batch(
     exact_match_count = 0
     matched_queries = 0
 
-    for (query, features), candidates in zip(batch, candidate_rows):
+    for (query, features), candidates in zip(batch, candidate_rows, strict=True):
         reference_records = lookup_reference_records(connection, candidates)
         query_shingles = frozenset(features)
         matches = []

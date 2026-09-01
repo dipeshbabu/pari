@@ -69,9 +69,7 @@ class MinHashTests(unittest.TestCase):
         expected = MinHash.from_batch(rows, num_perm=32, seed=11, threads=1)
         expected_signatures = [sketch.signature for sketch in expected]
         for threads in (2, 4, None):
-            actual = MinHash.from_batch(
-                rows, num_perm=32, seed=11, threads=threads
-            )
+            actual = MinHash.from_batch(rows, num_perm=32, seed=11, threads=threads)
             self.assertEqual(
                 [sketch.signature for sketch in actual], expected_signatures
             )
@@ -146,7 +144,9 @@ class MinHash64Tests(unittest.TestCase):
         self.assertTrue(left.is_empty)
         self.assertEqual(left.signature, [2**64 - 1] * 32)
 
-    def test_from_signature_accepts_iterables_and_preserves_indexed_errors(self) -> None:
+    def test_from_signature_accepts_iterables_and_preserves_indexed_errors(
+        self,
+    ) -> None:
         values = [2**32 + 17, 2**63 + 23, 2**64 - 1]
         reconstructed = MinHash64.from_signature(
             (value for value in values), seed=2**64 - 1
@@ -157,9 +157,11 @@ class MinHash64Tests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, r"signature\[1\]"):
             MinHash64.from_signature(value for value in [1, "not-an-integer"])
         for invalid in (-1, 2**64):
-            with self.subTest(invalid=invalid):
-                with self.assertRaisesRegex(OverflowError, r"signature\[1\]"):
-                    MinHash64.from_signature(value for value in [1, invalid])
+            with (
+                self.subTest(invalid=invalid),
+                self.assertRaisesRegex(OverflowError, r"signature\[1\]"),
+            ):
+                MinHash64.from_signature(value for value in [1, invalid])
 
     def test_parallel_batch_is_ordered_and_cross_width_is_explicit(self) -> None:
         rows = [
@@ -169,9 +171,7 @@ class MinHash64Tests(unittest.TestCase):
         expected = MinHash64.from_batch(rows, num_perm=32, seed=11, threads=1)
         expected_signatures = [sketch.signature for sketch in expected]
         for threads in (2, 4, None):
-            actual = MinHash64.from_batch(
-                rows, num_perm=32, seed=11, threads=threads
-            )
+            actual = MinHash64.from_batch(rows, num_perm=32, seed=11, threads=threads)
             self.assertEqual(
                 [sketch.signature for sketch in actual], expected_signatures
             )
@@ -188,9 +188,11 @@ class MinHash64Tests(unittest.TestCase):
             lambda: affine64.jaccard(affine32),
             lambda: affine64.merge(affine32),
         ):
-            with self.subTest(operation=operation):
-                with self.assertRaises(CompatibilityError):
-                    operation()
+            with (
+                self.subTest(operation=operation),
+                self.assertRaises(CompatibilityError),
+            ):
+                operation()
         self.assertEqual(affine32.signature, affine32_before)
         self.assertEqual(affine64.signature, affine64_before)
 
@@ -225,9 +227,8 @@ class PlannerTests(unittest.TestCase):
             {"expected_items": 1, "memory_budget_bytes": 0},
             {"expected_items": 1, "storage": "unknown"},
         ):
-            with self.subTest(kwargs=kwargs):
-                with self.assertRaises(ConfigurationError):
-                    plan_lsh(**kwargs)
+            with self.subTest(kwargs=kwargs), self.assertRaises(ConfigurationError):
+                plan_lsh(**kwargs)
 
         plan = plan_lsh(1)
         with self.assertRaises(ConfigurationError):
@@ -277,7 +278,9 @@ class IndexTests(unittest.TestCase):
             explanation = index.explain()
             self.assertEqual(explanation.expected_items, 3)
             self.assertEqual(explanation.parameter_source, "existing")
-            self.assertEqual((explanation.bands, explanation.rows), (stats.bands, stats.rows))
+            self.assertEqual(
+                (explanation.bands, explanation.rows), (stats.bands, stats.rows)
+            )
             self.assertEqual(explanation.requested_storage, "persistent")
 
             self.assertTrue(index.remove(20))
@@ -374,7 +377,9 @@ class Index64Tests(unittest.TestCase):
             explanation = index.explain()
             self.assertEqual(explanation.signature_bytes_per_item, 512)
             self.assertEqual(explanation.parameter_source, "existing")
-            self.assertEqual((explanation.bands, explanation.rows), (stats.bands, stats.rows))
+            self.assertEqual(
+                (explanation.bands, explanation.rows), (stats.bands, stats.rows)
+            )
 
             self.assertTrue(index.remove(20))
             self.assertFalse(index.remove(20))

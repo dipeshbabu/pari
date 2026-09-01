@@ -1,9 +1,11 @@
 /target/
+/benchmarks/criterion/target/
 **/*.rs.bk
 .DS_Store
 .idea/
 .vscode/
 .venv/
+.ruff_cache/
 __pycache__/
 *.pyc
 /dist/

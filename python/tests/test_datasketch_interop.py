@@ -57,9 +57,7 @@ class DatasketchInteropTests(unittest.TestCase):
         external = adapter.to_datasketch(native)
         external.hashvalues[0] ^= np.uint64(1)
         with self.assertRaisesRegex(RuntimeError, "signature parity failed"):
-            benchmark["require_signature_parity"](
-                [native], [external], "affine64-test"
-            )
+            benchmark["require_signature_parity"]([native], [external], "affine64-test")
 
     def test_affine32_round_trip_stays_update_compatible(self) -> None:
         pari = MinHash.from_values(
@@ -206,9 +204,7 @@ class DatasketchInteropTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "interop64.pari"
-            with Index64.create(
-                path, threshold=0.8, num_perm=32, seed=7
-            ) as index:
+            with Index64.create(path, threshold=0.8, num_perm=32, seed=7) as index:
                 index.add_many([(1, imported_first), (2, imported_second)])
                 self.assertEqual(index.search(imported_first), [1])
                 index.sync()

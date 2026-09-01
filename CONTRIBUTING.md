@@ -12,6 +12,9 @@ Pari is performance-sensitive infrastructure. Keep changes small enough to revie
    ```bash
    cargo fmt --all -- --check
    cargo fmt --manifest-path benchmarks/criterion/Cargo.toml --all -- --check
+   python -m pip install "ruff==0.16.5"
+   ruff format --check python scripts benchmarks examples
+   ruff check python scripts benchmarks examples
    python scripts/check_workflow_pins.py
    cargo clippy --workspace --all-targets --all-features -- -D warnings
    cargo clippy --manifest-path benchmarks/criterion/Cargo.toml --all-targets -- -D warnings
@@ -43,6 +46,13 @@ Pari is performance-sensitive infrastructure. Keep changes small enough to revie
    Dependency changes must also pass `cargo deny check advisories licenses bans sources`. Release metadata and packaging changes must pass `python scripts/release.py validate`. The platform, integration, Redis, and release workflows remain authoritative for checks that need their managed environment.
 
    CI may restore the reviewed cargo-deny binary from a cache written only by a successful `main` run. A cache miss is expected after a workflow, toolchain, version, operating-system, or architecture change and must fall back to the exact locked install. Do not make pull-request jobs cache publishers or remove the policy check on a cache hit.
+
+### Formatting policy
+
+- Rust uses the canonical `rustfmt` component from the pinned Rust toolchain. Run `cargo fmt --all` and the separate Criterion-workspace command before committing Rust changes. Repository settings live in `rustfmt.toml`.
+- Maintained Python and `.pyi` files use Ruff 0.16.5 with the explicit stable policy in `pyproject.toml`. Run `ruff check --fix python scripts benchmarks examples` first, then `ruff format python scripts benchmarks examples`. CI uses the corresponding `--check` commands.
+- `examples/code_corpus_fixture/**` is benchmark input, not maintained application source. It is deliberately excluded so a formatter upgrade cannot silently change workload evidence. Markdown is also excluded from Ruff; documentation formatting remains review-driven.
+- Do not enable Ruff preview formatting or implicit default lint selection in CI. Version and rule changes require a focused review because they can mechanically rewrite public examples, generated evidence tooling, and shipped stubs.
 
 5. Add benchmark evidence when a PR claims a performance improvement or changes a hot path.
 6. Update documentation for public APIs and persisted formats.

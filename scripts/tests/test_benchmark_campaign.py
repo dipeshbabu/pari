@@ -24,7 +24,9 @@ SPEC.loader.exec_module(campaign)
 GIT_SHA = "a" * 40
 
 
-def metric(value: float | None, unit: str = "count", direction: str = "neutral") -> dict[str, object]:
+def metric(
+    value: float | None, unit: str = "count", direction: str = "neutral"
+) -> dict[str, object]:
     return {"direction": direction, "unit": unit, "value": value}
 
 
@@ -61,7 +63,9 @@ def report_for(stage: str, profile: dict[str, object]) -> dict[str, object]:
     return {
         "config": config,
         "engine": "datasketch" if stage == "datasketch" else "pari",
-        "environment": {"git_sha": "datasketch-2.0.0" if stage == "datasketch" else GIT_SHA},
+        "environment": {
+            "git_sha": "datasketch-2.0.0" if stage == "datasketch" else GIT_SHA
+        },
         "generated_unix_seconds": 1,
         "metrics": metrics,
         "schema_version": 1,
@@ -120,14 +124,15 @@ class ProfileTests(unittest.TestCase):
         )
 
         self.assertEqual(planned["commands"], [])
-        self.assertEqual(
-            planned["execution"], "blocked_pending_scale-10m_preflight"
-        )
+        self.assertEqual(planned["execution"], "blocked_pending_scale-10m_preflight")
 
 
 class TextCorpusTests(unittest.TestCase):
     def test_generator_is_deterministic_and_records_planted_matches(self) -> None:
-        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+        with (
+            tempfile.TemporaryDirectory() as first,
+            tempfile.TemporaryDirectory() as second,
+        ):
             first_root = Path(first)
             second_root = Path(second)
             first_metadata = campaign.generate_text_corpora(
@@ -182,12 +187,8 @@ class ValidationTests(unittest.TestCase):
                 report = report_for(stage, self.profile)
                 if stage == "synthetic":
                     report["metrics"]["signature.threads"] = metric(1.0, "threads")
-                    report["metrics"]["signature.parallel"] = metric(
-                        0.0, "boolean"
-                    )
-                report_path.write_text(
-                    json.dumps(report), encoding="utf-8"
-                )
+                    report["metrics"]["signature.parallel"] = metric(0.0, "boolean")
+                report_path.write_text(json.dumps(report), encoding="utf-8")
                 artifacts.append(
                     {
                         "command": ["test", stage],
@@ -351,13 +352,9 @@ class CampaignExecutionTests(unittest.TestCase):
                 self.assertEqual(
                     entry["sha256"], campaign.sha256_file(failures[0] / name)
                 )
-            with self.assertRaisesRegex(
-                campaign.CampaignError, "diagnostic evidence"
-            ):
+            with self.assertRaisesRegex(campaign.CampaignError, "diagnostic evidence"):
                 campaign.validate_bundle(failure_path)
-            with self.assertRaisesRegex(
-                campaign.CampaignError, "diagnostic evidence"
-            ):
+            with self.assertRaisesRegex(campaign.CampaignError, "diagnostic evidence"):
                 campaign.render_report(
                     [failure_path], root / "should-not-render.md", require_clean=True
                 )
@@ -365,7 +362,10 @@ class CampaignExecutionTests(unittest.TestCase):
 
     def test_ordinary_failure_is_cleaned_unless_retention_is_requested(self) -> None:
         for preserve in (False, True):
-            with self.subTest(preserve=preserve), tempfile.TemporaryDirectory() as temporary:
+            with (
+                self.subTest(preserve=preserve),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
                 root = Path(temporary)
                 args = self.arguments(
                     root,
@@ -374,7 +374,9 @@ class CampaignExecutionTests(unittest.TestCase):
                 )
                 with (
                     patch.object(campaign, "git_state", return_value=(GIT_SHA, False)),
-                    patch.object(campaign, "run_logged", side_effect=self.failed_command),
+                    patch.object(
+                        campaign, "run_logged", side_effect=self.failed_command
+                    ),
                     patch.object(
                         campaign, "host_environment", return_value=self.host()
                     ),
@@ -389,9 +391,7 @@ class CampaignExecutionTests(unittest.TestCase):
     def test_temp_setup_failure_is_preserved_without_leaking_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            args = self.arguments(
-                root, profile="smoke", preserve_failure_evidence=True
-            )
+            args = self.arguments(root, profile="smoke", preserve_failure_evidence=True)
             original_mkdir = Path.mkdir
 
             def fail_process_temp(path: Path, *values, **options) -> None:
@@ -418,9 +418,7 @@ class CampaignExecutionTests(unittest.TestCase):
     def test_publication_failure_quarantines_every_json_entry_point(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            args = self.arguments(
-                root, profile="smoke", preserve_failure_evidence=True
-            )
+            args = self.arguments(root, profile="smoke", preserve_failure_evidence=True)
             _manifest, profiles = campaign.load_campaign(campaign.DEFAULT_MANIFEST)
             profile = asdict(profiles["smoke"])
             output = args.output.resolve()
@@ -472,9 +470,7 @@ class CampaignExecutionTests(unittest.TestCase):
     def test_failed_wrapper_write_cannot_leave_a_valid_bundle_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            args = self.arguments(
-                root, profile="smoke", preserve_failure_evidence=True
-            )
+            args = self.arguments(root, profile="smoke", preserve_failure_evidence=True)
             _manifest, profiles = campaign.load_campaign(campaign.DEFAULT_MANIFEST)
             profile = asdict(profiles["smoke"])
             output = args.output.resolve()
@@ -536,12 +532,12 @@ class CampaignExecutionTests(unittest.TestCase):
             self.assertIn("bundle quarantine failed", warning.getvalue())
             self.assertIn("wrapper write failure", warning.getvalue())
 
-    def test_partial_bundle_write_is_preserved_after_verified_temp_cleanup(self) -> None:
+    def test_partial_bundle_write_is_preserved_after_verified_temp_cleanup(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            args = self.arguments(
-                root, profile="smoke", preserve_failure_evidence=True
-            )
+            args = self.arguments(root, profile="smoke", preserve_failure_evidence=True)
             _manifest, profiles = campaign.load_campaign(campaign.DEFAULT_MANIFEST)
             profile = asdict(profiles["smoke"])
             partial_bytes = b'{"schema_version": 1, "reports": '
@@ -591,9 +587,7 @@ class CampaignExecutionTests(unittest.TestCase):
     def test_cleanup_failure_leaves_unfinalized_staging_with_no_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            args = self.arguments(
-                root, profile="smoke", preserve_failure_evidence=True
-            )
+            args = self.arguments(root, profile="smoke", preserve_failure_evidence=True)
 
             def fail_with_spill(
                 _command: list[str],
@@ -639,9 +633,7 @@ class CampaignExecutionTests(unittest.TestCase):
     def test_unrecorded_directory_prevents_failure_finalization(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            args = self.arguments(
-                root, profile="smoke", preserve_failure_evidence=True
-            )
+            args = self.arguments(root, profile="smoke", preserve_failure_evidence=True)
 
             def fail_with_unrecorded_directory(
                 _command: list[str],

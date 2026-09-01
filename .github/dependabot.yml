@@ -13,7 +13,7 @@ updates:
       interval: weekly
     groups:
       python-build:
-        patterns: ["maturin"]
+        patterns: ["maturin", "ruff"]
       python-integrations:
         patterns: ["datasketch", "datasets", "polars", "pyarrow"]
   - package-ecosystem: github-actions
