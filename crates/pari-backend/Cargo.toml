@@ -11,13 +11,16 @@ publish = false
 [features]
 default = []
 conformance = []
-redis = ["dep:redis", "conformance"]
+redis = ["dep:redis", "dep:url", "conformance"]
 
 [dependencies]
 pari-core = { path = "../pari-core" }
 pari-format = { path = "../pari-format" }
 pari-index = { path = "../pari-index" }
 redis = { version = "=0.32.7", optional = true, default-features = false }
+# Redis accepts newer URL releases whose ICU dependency manifests use Edition
+# 2024 and do not parse with Cargo 1.81. Remove this constraint when the MSRV moves.
+url = { version = "=2.5.2", optional = true }
 
 [dev-dependencies]
 pari-bench = { path = "../pari-bench" }

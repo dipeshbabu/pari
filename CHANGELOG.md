@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- All non-Python Rust workspace crates and the Criterion harness now compile
+  under Rust 1.81; the secure PyO3 binding declares and tests Rust 1.83.
 - Initial persistent-index creation now atomically refuses occupied or
   concurrently created destinations instead of replacing them.
 - Persistent commits now use uniquely owned temporary files instead of

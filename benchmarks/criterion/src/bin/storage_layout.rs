@@ -14,7 +14,7 @@ use std::{
 use memmap2::{Mmap, MmapOptions};
 use pari_core::MinHash32;
 use pari_index::{LshIndex32, LshParams};
-use redb::{Database, ReadOnlyDatabase, ReadableDatabase, TableDefinition};
+use redb::{Database, TableDefinition};
 use serde::Serialize;
 
 const NUM_PERM: usize = 128;
@@ -168,13 +168,13 @@ impl QueryStore for MmapStore {
 }
 
 struct RedbStore {
-    database: ReadOnlyDatabase,
+    database: Database,
 }
 
 impl RedbStore {
     fn open(path: &Path) -> BenchResult<Self> {
         Ok(Self {
-            database: ReadOnlyDatabase::open(path)?,
+            database: Database::open(path)?,
         })
     }
 }
