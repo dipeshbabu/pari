@@ -38,6 +38,10 @@ An opened local index owns a file handle to the committed generation it opened. 
 
 Atomic replacement behavior while unrelated processes hold the target open is ultimately subject to operating-system and filesystem semantics. Pari does not currently promise portable lock-free concurrent writer plus reader replacement on every filesystem. Deployments that require that guarantee should coordinate reader refreshes at the application level.
 
+## Creation
+
+`PersistentIndex32::create` and `PersistentIndex64::create` write and sync the complete initial snapshot before atomically claiming an absent final name. Creation never replaces an existing file, directory, or symlink, including a broken symlink or a destination created while the snapshot is being written. A collision returns an `AlreadyExists` I/O error and removes only the transaction-owned temporary file. Successful creation syncs the parent directory under the same platform policy as `sync()`.
+
 ## `flush`
 
 `flush()` commits dirty state in this order:

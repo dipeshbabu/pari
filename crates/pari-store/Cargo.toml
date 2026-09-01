@@ -11,6 +11,7 @@ repository.workspace = true
 pari-core = { version = "=0.2.0", path = "../pari-core" }
 pari-format = { version = "=0.2.0", path = "../pari-format" }
 pari-index = { version = "=0.2.0", path = "../pari-index" }
+same-file = "1.0.6"
 
 [lints]
 workspace = true

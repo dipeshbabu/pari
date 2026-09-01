@@ -504,6 +504,7 @@ dependencies = [
  "pari-core",
  "pari-format",
  "pari-index",
+ "same-file",
 ]
 
 [[package]]

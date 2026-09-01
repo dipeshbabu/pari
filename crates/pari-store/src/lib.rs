@@ -39,6 +39,7 @@ use pari_index::{
     explain_lsh, explain_lsh64, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams,
     LshPlan, LshPlanError, LshPlanOptions, QueryMetrics, StorageMode,
 };
+use same_file::Handle;
 
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
@@ -241,16 +242,31 @@ impl PersistentIndexCore {
         params: LshParams,
         scheme: SignatureScheme,
     ) -> Result<Self, StoreError> {
+        Self::create_with_params_and_hook(
+            path,
+            threshold,
+            num_perm,
+            seed,
+            params,
+            scheme,
+            || Ok(()),
+        )
+    }
+
+    fn create_with_params_and_hook(
+        path: &Path,
+        threshold: f64,
+        num_perm: usize,
+        seed: u64,
+        params: LshParams,
+        scheme: SignatureScheme,
+        before_publish: impl FnOnce() -> Result<(), StoreError>,
+    ) -> Result<Self, StoreError> {
         let path = path.to_path_buf();
-        if path.exists() {
-            return Err(StoreError::Io(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("index path {} already exists", path.display()),
-            )));
-        }
+        ensure_destination_absent(&path)?;
         validate_lsh_configuration(scheme, threshold, num_perm, seed, params)?;
         let mut store = Self::empty(path, threshold, num_perm, seed, params, scheme);
-        store.sync()?;
+        store.commit_initial(before_publish)?;
         Ok(store)
     }
 
@@ -550,12 +566,7 @@ impl PersistentIndexCore {
             return Ok(());
         }
 
-        let snapshot = self.encode_snapshot()?;
-        create_parent_if_needed(&self.path)?;
-        let mut temporary = OwnedTemporaryFile::allocate(&self.path)?;
-        if let Err(error) = temporary.write_synced(&snapshot) {
-            return Err(temporary.cleanup_after(error));
-        }
+        let temporary = self.stage_snapshot()?;
 
         // Close the committed base before replacing the file. This is required
         // on Windows and avoids retaining a handle to the old generation.
@@ -566,11 +577,36 @@ impl PersistentIndexCore {
         }
 
         let parent_error = if sync_parent {
-            sync_parent_directory(&self.path).err()
+            sync_parent_directory(&self.path).err().map(StoreError::Io)
         } else {
             None
         };
         self.refresh_after_commit(parent_error)
+    }
+
+    fn commit_initial(
+        &mut self,
+        before_publish: impl FnOnce() -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let temporary = self.stage_snapshot()?;
+        before_publish()?;
+
+        self.base = None;
+        if let Err(error) = temporary.publish_no_replace(&self.path) {
+            self.rebuild_overlay_all()?;
+            return Err(error);
+        }
+        self.refresh_after_commit(None)
+    }
+
+    fn stage_snapshot(&self) -> Result<OwnedTemporaryFile, StoreError> {
+        let snapshot = self.encode_snapshot()?;
+        create_parent_if_needed(&self.path)?;
+        let mut temporary = OwnedTemporaryFile::allocate(&self.path)?;
+        if let Err(error) = temporary.write_synced(&snapshot) {
+            return Err(temporary.cleanup_after(error));
+        }
+        Ok(temporary)
     }
 
     fn refresh_after_commit(&mut self, parent_error: Option<StoreError>) -> Result<(), StoreError> {
@@ -847,10 +883,22 @@ fn create_parent_if_needed(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn ensure_destination_absent(path: &Path) -> Result<(), StoreError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(StoreError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("index path {} already exists", path.display()),
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(StoreError::Io(error)),
+    }
+}
+
 #[derive(Debug)]
 struct OwnedTemporaryFile {
     path: PathBuf,
     file: Option<File>,
+    identity: Handle,
     owns_path: bool,
 }
 
@@ -868,9 +916,17 @@ impl OwnedTemporaryFile {
             let path = parent.join(format!(".pari-tmp-{process_id}-{sequence:016x}"));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => {
+                    let identity = match file.try_clone().and_then(Handle::from_file) {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            drop(file);
+                            return Err(cleanup_failed_allocation(&path, error));
+                        }
+                    };
                     return Ok(Self {
                         path,
                         file: Some(file),
+                        identity,
                         owns_path: true,
                     });
                 }
@@ -899,6 +955,9 @@ impl OwnedTemporaryFile {
     }
 
     fn publish_replace(mut self, target: &Path) -> Result<(), StoreError> {
+        if let Err(error) = self.verify_owned_path() {
+            return Err(self.cleanup_after(error));
+        }
         self.file.take();
         match fs::rename(&self.path, target) {
             Ok(()) => {
@@ -909,17 +968,90 @@ impl OwnedTemporaryFile {
         }
     }
 
-    fn cleanup_after(mut self, operation_error: io::Error) -> StoreError {
+    fn publish_no_replace(self, target: &Path) -> Result<(), StoreError> {
+        self.publish_no_replace_with(target, |path| fs::remove_file(path), sync_parent_directory)
+    }
+
+    fn publish_no_replace_with<R, S>(
+        mut self,
+        target: &Path,
+        remove_temporary: R,
+        sync_directory: S,
+    ) -> Result<(), StoreError>
+    where
+        R: FnOnce(&Path) -> io::Result<()>,
+        S: FnOnce(&Path) -> io::Result<()>,
+    {
+        self.file.take().ok_or_else(|| {
+            StoreError::Io(io::Error::other(
+                "persistent-index temporary file is already closed",
+            ))
+        })?;
+        if let Err(error) = self.verify_owned_path() {
+            return Err(self.cleanup_after(error));
+        }
+
+        if let Err(error) = fs::hard_link(&self.path, target) {
+            return Err(self.cleanup_after(error));
+        }
+        if let Err(error) = remove_temporary(&self.path) {
+            return Err(recover_after_initial_publication(self, target, error));
+        }
+        self.owns_path = false;
+        if let Err(error) = sync_directory(target) {
+            return Err(recover_after_initial_publication(self, target, error));
+        }
+        Ok(())
+    }
+
+    fn remove_owned_path(&mut self) -> io::Result<()> {
         self.file.take();
+        if !self.owns_path {
+            return Ok(());
+        }
+        if let Err(error) = self.verify_owned_path() {
+            if error.kind() == io::ErrorKind::NotFound {
+                self.owns_path = false;
+                return Ok(());
+            }
+            return Err(error);
+        }
         match fs::remove_file(&self.path) {
             Ok(()) => {
                 self.owns_path = false;
-                StoreError::Io(operation_error)
+                Ok(())
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.owns_path = false;
-                StoreError::Io(operation_error)
+                Ok(())
             }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn verify_owned_path(&mut self) -> io::Result<()> {
+        let metadata = fs::symlink_metadata(&self.path)?;
+        if metadata.file_type().is_symlink() {
+            self.owns_path = false;
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "transaction temporary path was replaced by a symlink",
+            ));
+        }
+        let current = Handle::from_path(&self.path)?;
+        if current != self.identity {
+            self.owns_path = false;
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "transaction temporary path was replaced",
+            ));
+        }
+        Ok(())
+    }
+
+    fn cleanup_after(mut self, operation_error: io::Error) -> StoreError {
+        match self.remove_owned_path() {
+            Ok(()) => StoreError::Io(operation_error),
             Err(cleanup_error) => StoreError::Io(io::Error::new(
                 operation_error.kind(),
                 format!(
@@ -932,12 +1064,103 @@ impl OwnedTemporaryFile {
     }
 }
 
+fn recover_after_initial_publication(
+    mut temporary: OwnedTemporaryFile,
+    destination: &Path,
+    original: io::Error,
+) -> StoreError {
+    let kind = original.kind();
+    let rollback = rollback_owned_destination(destination, &temporary.identity)
+        .err()
+        .map(|error| error.to_string());
+    let cleanup = temporary
+        .remove_owned_path()
+        .err()
+        .map(|error| error.to_string());
+    if rollback.is_none() && cleanup.is_none() {
+        return StoreError::Io(original);
+    }
+    StoreError::Io(io::Error::new(
+        kind,
+        PublicationRecoveryError {
+            original,
+            rollback,
+            cleanup,
+        },
+    ))
+}
+
+fn cleanup_failed_allocation(path: &Path, original: io::Error) -> StoreError {
+    let kind = original.kind();
+    match fs::remove_file(path) {
+        Ok(()) => StoreError::Io(original),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => StoreError::Io(original),
+        Err(cleanup) => StoreError::Io(io::Error::new(
+            kind,
+            format!(
+                "{original}; additionally failed to remove transaction-owned {}: {cleanup}",
+                path.display()
+            ),
+        )),
+    }
+}
+
+fn rollback_owned_destination(destination: &Path, identity: &Handle) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(destination) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    let current = match Handle::from_path(destination) {
+        Ok(current) => current,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if &current != identity {
+        return Ok(());
+    }
+    fs::remove_file(destination)?;
+    sync_parent_directory(destination)
+}
+
+#[derive(Debug)]
+struct PublicationRecoveryError {
+    original: io::Error,
+    rollback: Option<String>,
+    cleanup: Option<String>,
+}
+
+impl fmt::Display for PublicationRecoveryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.original)?;
+        if let Some(rollback) = &self.rollback {
+            write!(
+                formatter,
+                "; also failed to roll back destination: {rollback}"
+            )?;
+        }
+        if let Some(cleanup) = &self.cleanup {
+            write!(
+                formatter,
+                "; also failed to remove temporary file: {cleanup}"
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for PublicationRecoveryError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.original)
+    }
+}
+
 impl Drop for OwnedTemporaryFile {
     fn drop(&mut self) {
-        self.file.take();
-        if self.owns_path {
-            let _ = fs::remove_file(&self.path);
-        }
+        let _ = self.remove_owned_path();
     }
 }
 
@@ -1310,7 +1533,7 @@ fn read_u64(bytes: &[u8]) -> Result<u64, StoreError> {
 }
 
 #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
-fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
+fn sync_parent_directory(path: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         let _ = path;
@@ -1360,7 +1583,7 @@ mod tests {
     use std::{
         collections::{BTreeMap, HashMap},
         fs::{self, OpenOptions},
-        io::{Seek, SeekFrom, Write},
+        io::{self, Seek, SeekFrom, Write},
         path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
@@ -1374,7 +1597,7 @@ mod tests {
 
     use super::{
         encode_band_hashes, encode_keys, OwnedTemporaryFile, PersistentIndex32, PersistentIndex64,
-        StoreError,
+        PersistentIndexCore, StoreError,
     };
 
     fn sketch(values: impl IntoIterator<Item = u64>) -> MinHash32 {
@@ -1426,6 +1649,13 @@ mod tests {
             })
             .map(|entry| entry.path())
             .collect()
+    }
+
+    fn assert_already_exists(error: StoreError) {
+        match error {
+            StoreError::Io(error) => assert_eq!(error.kind(), io::ErrorKind::AlreadyExists),
+            other => panic!("expected an AlreadyExists I/O error, got {other}"),
+        }
     }
 
     fn legacy_temporary_path(path: &Path) -> PathBuf {
@@ -1665,6 +1895,26 @@ mod tests {
     }
 
     #[test]
+    fn temporary_cleanup_preserves_a_concurrent_replacement() {
+        let directory = test_directory("temporary-replacement");
+        let target = directory.join("index.pari");
+        let mut temporary =
+            OwnedTemporaryFile::allocate(&target).expect("allocate transaction temporary");
+        let temporary_path = temporary.path.clone();
+        temporary.file.take();
+        fs::remove_file(&temporary_path).expect("remove transaction-owned path");
+        fs::write(&temporary_path, b"concurrent owner").expect("write replacement");
+
+        drop(temporary);
+
+        assert_eq!(
+            fs::read(&temporary_path).expect("read replacement"),
+            b"concurrent owner"
+        );
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
     fn failed_publication_removes_owned_temporary() {
         let directory = test_directory("failed-temporary-publication");
         let target = directory.join("target-directory");
@@ -1681,6 +1931,178 @@ mod tests {
             .expect_err("cannot replace a directory with a file");
 
         assert!(!temporary_path.exists());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn initial_publication_cleanup_rolls_back_only_owned_paths() {
+        let directory = test_directory("initial-publication-cleanup");
+        let rollback_target = directory.join("rollback.pari");
+        let mut rollback_temporary =
+            OwnedTemporaryFile::allocate(&rollback_target).expect("allocate rollback temporary");
+        let rollback_temporary_path = rollback_temporary.path.clone();
+        rollback_temporary
+            .write_synced(b"complete initial snapshot")
+            .expect("write rollback temporary");
+
+        let error = rollback_temporary
+            .publish_no_replace_with(
+                &rollback_target,
+                |_| Err(io::Error::other("forced temporary cleanup failure")),
+                |_| Ok(()),
+            )
+            .expect_err("cleanup failure must fail publication");
+        assert!(error
+            .to_string()
+            .contains("forced temporary cleanup failure"));
+        assert!(!rollback_target.exists());
+        assert!(!rollback_temporary_path.exists());
+
+        let replacement_target = directory.join("replacement.pari");
+        let mut replacement_temporary = OwnedTemporaryFile::allocate(&replacement_target)
+            .expect("allocate replacement temporary");
+        let replacement_temporary_path = replacement_temporary.path.clone();
+        replacement_temporary
+            .write_synced(b"complete initial snapshot")
+            .expect("write replacement temporary");
+        let competing = b"concurrent replacement";
+
+        let error = replacement_temporary
+            .publish_no_replace_with(
+                &replacement_target,
+                |path| fs::remove_file(path),
+                |published| {
+                    fs::remove_file(published)?;
+                    fs::write(published, competing)?;
+                    Err(io::Error::other("forced directory sync failure"))
+                },
+            )
+            .expect_err("directory sync failure must fail publication");
+        assert!(error.to_string().contains("forced directory sync failure"));
+        assert_eq!(
+            fs::read(&replacement_target).expect("read concurrent replacement"),
+            competing
+        );
+        assert!(!replacement_temporary_path.exists());
+        assert!(transaction_artifacts(&directory).is_empty());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initial_recovery_preserves_a_concurrent_destination_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = test_directory("initial-publication-symlink-replacement");
+        let destination = directory.join("destination.pari");
+        let preserved_inode = directory.join("preserved-inode.pari");
+        let mut temporary =
+            OwnedTemporaryFile::allocate(&destination).expect("allocate transaction temporary");
+        temporary
+            .write_synced(b"complete initial snapshot")
+            .expect("write transaction temporary");
+
+        temporary
+            .publish_no_replace_with(
+                &destination,
+                |path| fs::remove_file(path),
+                |published| {
+                    fs::hard_link(published, &preserved_inode)?;
+                    fs::remove_file(published)?;
+                    symlink(&preserved_inode, published)?;
+                    Err(io::Error::other("forced directory sync failure"))
+                },
+            )
+            .expect_err("directory sync failure must fail publication");
+
+        assert!(fs::symlink_metadata(&destination)
+            .expect("inspect replacement symlink")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(&destination).expect("read replacement symlink target"),
+            b"complete initial snapshot"
+        );
+        assert!(transaction_artifacts(&directory).is_empty());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn create_preserves_preexisting_final_names_for_both_widths() {
+        let directory = test_directory("preexisting-create-destinations");
+        let path32 = directory.join("affine32.pari");
+        let path64 = directory.join("affine64.pari");
+        let existing32 = b"existing affine32 owner";
+        let existing64 = b"existing affine64 owner";
+        fs::write(&path32, existing32).expect("write affine32 destination");
+        fs::write(&path64, existing64).expect("write affine64 destination");
+
+        assert_already_exists(
+            PersistentIndex32::create(&path32, 0.8, 128, 7)
+                .expect_err("affine32 create must not replace"),
+        );
+        assert_already_exists(
+            PersistentIndex64::create(&path64, 0.8, 128, 7)
+                .expect_err("affine64 create must not replace"),
+        );
+        assert_eq!(fs::read(&path32).expect("read affine32 owner"), existing32);
+        assert_eq!(fs::read(&path64).expect("read affine64 owner"), existing64);
+        assert!(transaction_artifacts(&directory).is_empty());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_preserves_a_broken_destination_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = test_directory("broken-create-symlink");
+        let destination = directory.join("index.pari");
+        let missing = directory.join("missing-target");
+        symlink(&missing, &destination).expect("create broken destination symlink");
+        assert!(!destination.exists(), "test symlink must be broken");
+
+        assert_already_exists(
+            PersistentIndex32::create(&destination, 0.8, 128, 7)
+                .expect_err("create must preserve a broken symlink"),
+        );
+        assert!(fs::symlink_metadata(&destination)
+            .expect("inspect destination symlink")
+            .file_type()
+            .is_symlink());
+        assert!(transaction_artifacts(&directory).is_empty());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn concurrent_destination_wins_initial_publication() {
+        let directory = test_directory("concurrent-create-destination");
+        let destination = directory.join("index.pari");
+        let competing = b"concurrently created destination";
+        let params = LshIndex32::new(0.8, 128, 7)
+            .expect("valid parameters")
+            .params();
+
+        let error = PersistentIndexCore::create_with_params_and_hook(
+            &destination,
+            0.8,
+            128,
+            7,
+            params,
+            SignatureScheme::PariAffine32V1,
+            || {
+                fs::write(&destination, competing)?;
+                Ok(())
+            },
+        )
+        .expect_err("concurrent destination must win");
+
+        assert_already_exists(error);
+        assert_eq!(
+            fs::read(&destination).expect("read concurrent destination"),
+            competing
+        );
+        assert!(transaction_artifacts(&directory).is_empty());
         fs::remove_dir_all(directory).expect("remove test directory");
     }
 
@@ -1756,6 +2178,12 @@ mod tests {
         store64.sync().expect("commit affine64");
         drop(store64);
 
+        let reopened32 = PersistentIndex32::open(&path32).expect("reopen affine32 index");
+        let reopened64 = PersistentIndex64::open(&path64).expect("reopen affine64 index");
+        assert!(reopened32.contains(10));
+        assert!(reopened64.contains(20));
+        drop(reopened32);
+        drop(reopened64);
         assert!(transaction_artifacts(&directory).is_empty());
         fs::remove_dir_all(directory).expect("remove test directory");
     }
