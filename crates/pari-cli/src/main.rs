@@ -13,15 +13,16 @@ use std::{
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
-use pari_core::{MinHash32, AFFINE32_SCHEME};
+use pari_core::{MinHash32, MinHash64, AFFINE32_SCHEME, AFFINE64_SCHEME};
 use pari_format::{
     decode_bucket_segment, read_bucket_members, validate_global_bucket_order, FileLayout,
-    SectionKind,
+    SectionKind, SignatureScheme,
 };
 use pari_index::{
-    plan_lsh, BucketDistribution, LshIndex32, LshPlan, LshPlanOptions, QueryMetrics, StorageMode,
+    plan_lsh, BucketDistribution, DuplicateGroup, LshIndex32, LshIndex64, LshPlan, LshPlanOptions,
+    QueryMetrics, StorageMode,
 };
-use pari_store::PersistentIndex32;
+use pari_store::{PersistentIndex32, PersistentIndex64, StoreStats};
 use same_file::Handle;
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +71,9 @@ struct IndexArgs {
     num_perm: usize,
     #[arg(long, default_value_t = 1)]
     seed: u64,
+    /// Signature family. Omission preserves the affine32 format and behavior.
+    #[arg(long, value_enum, default_value_t = CliSignatureScheme::PariAffine32V1)]
+    signature_scheme: CliSignatureScheme,
     /// Records committed per batch. Smaller values reduce uncommitted overlay memory.
     #[arg(long, default_value_t = 10_000)]
     batch_size: usize,
@@ -101,6 +105,14 @@ enum DedupOutput {
     Groups,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliSignatureScheme {
+    #[value(name = "pari-affine32-v1")]
+    PariAffine32V1,
+    #[value(name = "pari-affine64-v1")]
+    PariAffine64V1,
+}
+
 #[derive(Debug, clap::Args)]
 struct DedupArgs {
     /// JSONL input path, or '-' for stdin.
@@ -115,6 +127,9 @@ struct DedupArgs {
     num_perm: usize,
     #[arg(long, default_value_t = 1)]
     seed: u64,
+    /// Signature family. Omission preserves affine32 behavior.
+    #[arg(long, value_enum, default_value_t = CliSignatureScheme::PariAffine32V1)]
+    signature_scheme: CliSignatureScheme,
     #[arg(long, value_enum, default_value_t = DedupOutput::Groups)]
     emit: DedupOutput,
     /// Minimum component size when emitting groups.
@@ -207,9 +222,12 @@ struct Record {
     #[serde(default)]
     values: Option<Vec<String>>,
     #[serde(default)]
-    signature: Option<Vec<u32>>,
+    signature: Option<Vec<u64>>,
     #[serde(default)]
     scheme: Option<String>,
+    /// Optional producer seed metadata, validated when present.
+    #[serde(default)]
+    seed: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,9 +238,12 @@ struct QueryRecord {
     #[serde(default)]
     values: Option<Vec<String>>,
     #[serde(default)]
-    signature: Option<Vec<u32>>,
+    signature: Option<Vec<u64>>,
     #[serde(default)]
     scheme: Option<String>,
+    /// Optional producer seed metadata, validated when present.
+    #[serde(default)]
+    seed: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -646,8 +667,11 @@ fn plan(args: &PlanArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn explain(args: &ExplainArgs) -> Result<(), Box<dyn Error>> {
-    let store = PersistentIndex32::open(&args.index)?;
-    print_plan(store.explain()?, args.json);
+    let explanation = match index_signature_scheme(&args.index)? {
+        SignatureScheme::PariAffine32V1 => PersistentIndex32::open(&args.index)?.explain()?,
+        SignatureScheme::PariAffine64V1 => PersistentIndex64::open(&args.index)?.explain()?,
+    };
+    print_plan(explanation, args.json);
     Ok(())
 }
 
@@ -791,6 +815,13 @@ fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn build_index(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn Error>> {
+    match args.signature_scheme {
+        CliSignatureScheme::PariAffine32V1 => build_index32(args, output),
+        CliSignatureScheme::PariAffine64V1 => build_index64(args, output),
+    }
+}
+
+fn build_index32(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn Error>> {
     let mut store = PersistentIndex32::create(output, args.threshold, args.num_perm, args.seed)?;
     let reporter = ProgressReporter::new(&args.progress)?;
     let reader = open_reader(&args.input)?;
@@ -799,17 +830,18 @@ fn build_index(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn 
     for_json_lines(reader, |_line, record: Record| {
         batch.push((
             record.key,
-            make_sketch(
+            make_sketch32(
                 record.values.as_deref(),
                 record.signature.as_deref(),
                 record.scheme.as_deref(),
+                record.seed,
                 args.num_perm,
                 args.seed,
             )?,
         ));
         if batch.len() == args.batch_size {
             let batch_len = batch.len();
-            insert_batch(&mut store, &batch)?;
+            store.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
             store.sync()?;
             batch.clear();
             completed = completed.saturating_add(batch_len);
@@ -821,7 +853,7 @@ fn build_index(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn 
     })?;
     if !batch.is_empty() {
         let batch_len = batch.len();
-        insert_batch(&mut store, &batch)?;
+        store.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
         completed = completed.saturating_add(batch_len);
     }
     store.sync()?;
@@ -829,25 +861,73 @@ fn build_index(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn 
         reporter.emit("index", completed, None, true, None, None)?;
     }
     let current = store.stats()?;
-    let summary = IndexSummary {
-        items: current.items,
-        file_bytes: current.file_bytes,
-        bands: current.bands,
-        rows: current.rows,
-    };
+    let summary = index_summary(&current);
     store.close()?;
     Ok(summary)
 }
 
-fn insert_batch(
-    store: &mut PersistentIndex32,
-    batch: &[(u64, MinHash32)],
-) -> Result<(), Box<dyn Error>> {
-    store.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
-    Ok(())
+fn build_index64(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn Error>> {
+    let mut store = PersistentIndex64::create(output, args.threshold, args.num_perm, args.seed)?;
+    let reporter = ProgressReporter::new(&args.progress)?;
+    let reader = open_reader(&args.input)?;
+    let mut batch = Vec::with_capacity(args.batch_size);
+    let mut completed = 0_usize;
+    for_json_lines(reader, |_line, record: Record| {
+        batch.push((
+            record.key,
+            make_sketch64(
+                record.values.as_deref(),
+                record.signature.as_deref(),
+                record.scheme.as_deref(),
+                record.seed,
+                args.num_perm,
+                args.seed,
+            )?,
+        ));
+        if batch.len() == args.batch_size {
+            let batch_len = batch.len();
+            store.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
+            store.sync()?;
+            batch.clear();
+            completed = completed.saturating_add(batch_len);
+            if let Some(reporter) = &reporter {
+                reporter.emit("index", completed, None, false, None, None)?;
+            }
+        }
+        Ok(())
+    })?;
+    if !batch.is_empty() {
+        let batch_len = batch.len();
+        store.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
+        completed = completed.saturating_add(batch_len);
+    }
+    store.sync()?;
+    if let Some(reporter) = &reporter {
+        reporter.emit("index", completed, None, true, None, None)?;
+    }
+    let current = store.stats()?;
+    let summary = index_summary(&current);
+    store.close()?;
+    Ok(summary)
+}
+
+fn index_summary(current: &StoreStats) -> IndexSummary {
+    IndexSummary {
+        items: current.items,
+        file_bytes: current.file_bytes,
+        bands: current.bands,
+        rows: current.rows,
+    }
 }
 
 fn search(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
+    match index_signature_scheme(&args.index)? {
+        SignatureScheme::PariAffine32V1 => search32(args),
+        SignatureScheme::PariAffine64V1 => search64(args),
+    }
+}
+
+fn search32(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
     let reporter = ProgressReporter::new(&args.progress)?;
     let mut store = PersistentIndex32::open(&args.index)?;
     store.set_observability(reporter.is_some());
@@ -856,10 +936,77 @@ fn search(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
     let mut query_index = 0_usize;
     let mut candidate_count = 0_u64;
     for_json_lines(reader, |_line, query: QueryRecord| {
-        let sketch = make_sketch(
+        let sketch = make_sketch32(
             query.values.as_deref(),
             query.signature.as_deref(),
             query.scheme.as_deref(),
+            query.seed,
+            store.num_perm(),
+            store.seed(),
+        )?;
+        let candidates = store.query(&sketch)?;
+        if reporter.is_some() {
+            candidate_count = candidate_count.saturating_add(u64::try_from(candidates.len())?);
+        }
+        if args.json {
+            serde_json::to_writer(
+                &mut writer,
+                &SearchResult {
+                    query: query_index,
+                    id: &query.id,
+                    candidates,
+                },
+            )?;
+            writeln!(writer)?;
+        } else {
+            let id = query.id.as_deref().unwrap_or("-");
+            writeln!(writer, "{query_index}\t{id}\t{}", join_u64(&candidates))?;
+        }
+        query_index += 1;
+        if let Some(reporter) = &reporter {
+            if reporter.is_due(query_index) {
+                let possible = query_index.saturating_mul(store.len());
+                reporter.emit(
+                    "search",
+                    query_index,
+                    None,
+                    false,
+                    Some(candidate_count),
+                    Some(ratio(candidate_count, possible)),
+                )?;
+            }
+        }
+        Ok(())
+    })?;
+    writer.flush()?;
+    if let Some(reporter) = &reporter {
+        let possible = query_index.saturating_mul(store.len());
+        reporter.emit(
+            "search",
+            query_index,
+            None,
+            true,
+            Some(candidate_count),
+            Some(ratio(candidate_count, possible)),
+        )?;
+    }
+    Ok(())
+}
+
+fn search64(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
+    let reporter = ProgressReporter::new(&args.progress)?;
+    let mut store = PersistentIndex64::open(&args.index)?;
+    store.set_observability(reporter.is_some());
+    let reader = open_reader(&args.input)?;
+    let mut writer = BufWriter::new(io::stdout().lock());
+    let mut query_index = 0_usize;
+    let mut candidate_count = 0_u64;
+    for_json_lines(reader, |_line, query: QueryRecord| {
+        let sketch = make_sketch64(
+            query.values.as_deref(),
+            query.signature.as_deref(),
+            query.scheme.as_deref(),
+            query.seed,
             store.num_perm(),
             store.seed(),
         )?;
@@ -919,16 +1066,24 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     if args.batch_size == 0 {
         return Err("--batch-size must be positive".into());
     }
+    match args.signature_scheme {
+        CliSignatureScheme::PariAffine32V1 => dedup32(args),
+        CliSignatureScheme::PariAffine64V1 => dedup64(args),
+    }
+}
+
+fn dedup32(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     let reporter = ProgressReporter::new(&args.progress)?;
     let mut index = LshIndex32::new(args.threshold, args.num_perm, args.seed)?;
     let reader = open_reader(&args.input)?;
     let mut batch = Vec::with_capacity(args.batch_size);
     let mut completed = 0_usize;
     for_json_lines(reader, |_line, record: Record| {
-        let sketch = make_sketch(
+        let sketch = make_sketch32(
             record.values.as_deref(),
             record.signature.as_deref(),
             record.scheme.as_deref(),
+            record.seed,
             args.num_perm,
             args.seed,
         )?;
@@ -952,52 +1107,137 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     if let Some(reporter) = &reporter {
         reporter.emit("dedup_index", completed, None, true, None, None)?;
     }
-    let mut writer = open_writer(&args.output)?;
     match args.emit {
-        DedupOutput::Pairs => {
-            for (left, right) in index.candidate_pairs() {
-                if args.json {
-                    serde_json::to_writer(&mut writer, &PairResult { left, right })?;
-                    writeln!(writer)?;
-                } else {
-                    writeln!(writer, "{left}\t{right}")?;
-                }
-            }
-        }
+        DedupOutput::Pairs => write_pairs(args, index.candidate_pairs())?,
         DedupOutput::Groups => {
             let groups = index.duplicate_groups_with(args.min_size, |_, _| true);
-            for group in &groups {
-                if args.json {
-                    serde_json::to_writer(
-                        &mut writer,
-                        &GroupResult {
-                            representative: group.representative(),
-                            members: group.members(),
-                        },
-                    )?;
-                    writeln!(writer)?;
-                } else {
-                    writeln!(
-                        writer,
-                        "{}\t{}",
-                        group.representative(),
-                        join_u64(group.members())
-                    )?;
-                }
-            }
+            write_groups(args, &groups)?;
         }
     }
-    writer.flush()?;
     if let Some(reporter) = &reporter {
         reporter.emit("dedup_output", completed, Some(completed), true, None, None)?;
     }
     Ok(())
 }
 
+fn dedup64(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
+    let reporter = ProgressReporter::new(&args.progress)?;
+    let mut index = LshIndex64::new(args.threshold, args.num_perm, args.seed)?;
+    let reader = open_reader(&args.input)?;
+    let mut batch = Vec::with_capacity(args.batch_size);
+    let mut completed = 0_usize;
+    for_json_lines(reader, |_line, record: Record| {
+        let sketch = make_sketch64(
+            record.values.as_deref(),
+            record.signature.as_deref(),
+            record.scheme.as_deref(),
+            record.seed,
+            args.num_perm,
+            args.seed,
+        )?;
+        batch.push((record.key, sketch));
+        if batch.len() == args.batch_size {
+            let batch_len = batch.len();
+            index.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
+            batch.clear();
+            completed = completed.saturating_add(batch_len);
+            if let Some(reporter) = &reporter {
+                reporter.emit("dedup_index", completed, None, false, None, None)?;
+            }
+        }
+        Ok(())
+    })?;
+    if !batch.is_empty() {
+        let batch_len = batch.len();
+        index.insert_many(batch.iter().map(|(key, sketch)| (*key, sketch)))?;
+        completed = completed.saturating_add(batch_len);
+    }
+    if let Some(reporter) = &reporter {
+        reporter.emit("dedup_index", completed, None, true, None, None)?;
+    }
+    match args.emit {
+        DedupOutput::Pairs => write_pairs(args, index.candidate_pairs())?,
+        DedupOutput::Groups => {
+            let groups = index.duplicate_groups_with(args.min_size, |_, _| true);
+            write_groups(args, &groups)?;
+        }
+    }
+    if let Some(reporter) = &reporter {
+        reporter.emit("dedup_output", completed, Some(completed), true, None, None)?;
+    }
+    Ok(())
+}
+
+fn write_pairs(
+    args: &DedupArgs,
+    pairs: impl IntoIterator<Item = (u64, u64)>,
+) -> Result<(), Box<dyn Error>> {
+    let mut writer = open_writer(&args.output)?;
+    for (left, right) in pairs {
+        if args.json {
+            serde_json::to_writer(&mut writer, &PairResult { left, right })?;
+            writeln!(writer)?;
+        } else {
+            writeln!(writer, "{left}\t{right}")?;
+        }
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_groups(args: &DedupArgs, groups: &[DuplicateGroup]) -> Result<(), Box<dyn Error>> {
+    let mut writer = open_writer(&args.output)?;
+    for group in groups {
+        if args.json {
+            serde_json::to_writer(
+                &mut writer,
+                &GroupResult {
+                    representative: group.representative(),
+                    members: group.members(),
+                },
+            )?;
+            writeln!(writer)?;
+        } else {
+            writeln!(
+                writer,
+                "{}\t{}",
+                group.representative(),
+                join_u64(group.members())
+            )?;
+        }
+    }
+    writer.flush()?;
+    Ok(())
+}
+
 fn stats(args: &StatsArgs) -> Result<(), Box<dyn Error>> {
-    let store = PersistentIndex32::open(&args.index)?;
-    let current = store.stats()?;
-    if args.json {
+    match index_signature_scheme(&args.index)? {
+        SignatureScheme::PariAffine32V1 => {
+            let store = PersistentIndex32::open(&args.index)?;
+            print_stats(
+                store.stats()?,
+                store.num_perm(),
+                store.seed(),
+                store.threshold(),
+                args.json,
+            );
+        }
+        SignatureScheme::PariAffine64V1 => {
+            let store = PersistentIndex64::open(&args.index)?;
+            print_stats(
+                store.stats()?,
+                store.num_perm(),
+                store.seed(),
+                store.threshold(),
+                args.json,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn print_stats(current: StoreStats, num_perm: usize, seed: u64, threshold: f64, json: bool) {
+    if json {
         println!(
             "{}",
             serde_json::json!({
@@ -1012,17 +1252,17 @@ fn stats(args: &StatsArgs) -> Result<(), Box<dyn Error>> {
                 "committed_bucket_distribution": bucket_distribution_json(current.committed_distribution),
                 "overlay_bucket_distribution": bucket_distribution_json(current.overlay_distribution),
                 "query_metrics": current.queries.map(query_metrics_json),
-                "num_perm": store.num_perm(),
-                "seed": store.seed(),
-                "threshold": store.threshold(),
+                "num_perm": num_perm,
+                "seed": seed,
+                "threshold": threshold,
             })
         );
     } else {
         println!("items: {}", current.items);
         println!("file bytes: {}", current.file_bytes);
-        println!("threshold: {}", store.threshold());
-        println!("num perm: {}", store.num_perm());
-        println!("seed: {}", store.seed());
+        println!("threshold: {threshold}");
+        println!("num perm: {num_perm}");
+        println!("seed: {seed}");
         println!("bands: {}", current.bands);
         println!("rows: {}", current.rows);
         println!("committed buckets: {}", current.committed_buckets);
@@ -1050,7 +1290,6 @@ fn stats(args: &StatsArgs) -> Result<(), Box<dyn Error>> {
         );
         println!("dirty: {}", current.dirty);
     }
-    Ok(())
 }
 
 fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
@@ -1118,10 +1357,11 @@ fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn make_sketch(
+fn make_sketch32(
     values: Option<&[String]>,
-    signature: Option<&[u32]>,
+    signature: Option<&[u64]>,
     scheme: Option<&str>,
+    signature_seed: Option<u64>,
     num_perm: usize,
     seed: u64,
 ) -> Result<MinHash32, Box<dyn Error>> {
@@ -1129,6 +1369,9 @@ fn make_sketch(
         (Some(values), None) => {
             if scheme.is_some() {
                 return Err("scheme is only valid with a precomputed signature".into());
+            }
+            if signature_seed.is_some() {
+                return Err("seed is only valid with a precomputed signature".into());
             }
             let mut sketch = MinHash32::new(num_perm, seed)?;
             for value in values {
@@ -1151,13 +1394,92 @@ fn make_sketch(
                 )
                 .into());
             }
-            Ok(MinHash32::from_signature(signature.to_vec(), seed)?)
+            validate_signature_seed(signature_seed, seed)?;
+            let signature = signature
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(index, value)| {
+                    u32::try_from(value).map_err(|_| {
+                        format!(
+                            "precomputed affine32 signature value {index} ({value}) exceeds {}",
+                            u32::MAX
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(MinHash32::from_signature(signature, seed)?)
         }
         (Some(_), Some(_)) => {
             Err("record must contain either values or signature, not both".into())
         }
         (None, None) => Err("record must contain either values or signature".into()),
     }
+}
+
+fn make_sketch64(
+    values: Option<&[String]>,
+    signature: Option<&[u64]>,
+    scheme: Option<&str>,
+    signature_seed: Option<u64>,
+    num_perm: usize,
+    seed: u64,
+) -> Result<MinHash64, Box<dyn Error>> {
+    match (values, signature) {
+        (Some(values), None) => {
+            if scheme.is_some() {
+                return Err("scheme is only valid with a precomputed signature".into());
+            }
+            if signature_seed.is_some() {
+                return Err("seed is only valid with a precomputed signature".into());
+            }
+            let mut sketch = MinHash64::new(num_perm, seed)?;
+            for value in values {
+                sketch.update(value.as_bytes());
+            }
+            Ok(sketch)
+        }
+        (None, Some(signature)) => {
+            let scheme = scheme.ok_or("precomputed signatures require a scheme field")?;
+            if scheme != AFFINE64_SCHEME {
+                return Err(format!(
+                    "incompatible signature scheme {scheme:?}; expected {AFFINE64_SCHEME:?}"
+                )
+                .into());
+            }
+            if signature.len() != num_perm {
+                return Err(format!(
+                    "precomputed signature has {} values; expected {num_perm}",
+                    signature.len()
+                )
+                .into());
+            }
+            validate_signature_seed(signature_seed, seed)?;
+            Ok(MinHash64::from_signature(signature.to_vec(), seed)?)
+        }
+        (Some(_), Some(_)) => {
+            Err("record must contain either values or signature, not both".into())
+        }
+        (None, None) => Err("record must contain either values or signature".into()),
+    }
+}
+
+fn validate_signature_seed(actual: Option<u64>, expected: u64) -> Result<(), Box<dyn Error>> {
+    if let Some(actual) = actual {
+        if actual != expected {
+            return Err(format!(
+                "precomputed signature seed {actual} does not match configured seed {expected}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn index_signature_scheme(path: &Path) -> Result<SignatureScheme, Box<dyn Error>> {
+    let mut file = File::open(path)?;
+    let layout = FileLayout::read_from(&mut file)?;
+    Ok(layout.metadata().signature_scheme())
 }
 
 fn for_json_lines<T, F>(

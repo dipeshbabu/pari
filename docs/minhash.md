@@ -38,6 +38,8 @@ Both `MinHash32` and `MinHash64` support:
 - `update`
 - `update_many`
 - ordered `from_batch` and `from_batch_with` construction with bounded CPU parallelism
+- explicit `from_signature` reconstruction after the caller validates the
+  matching named scheme and seed
 - `jaccard`
 - `merge`
 - `clear`
