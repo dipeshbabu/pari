@@ -147,7 +147,7 @@ let index = BackendIndex32::create(
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Retention is refreshed after successful index mutations. Queries do not refresh retention, so TTL represents time since the last successful mutation rather than time since the last read.
+Retention is configured as an exact whole number of seconds and is refreshed after successful index mutations. Sub-second, fractional-second, and values above Redis scripting's exact integer range are rejected instead of being rounded or disabling expiration. Queries do not refresh retention, so TTL represents time since the last successful mutation rather than time since the last read.
 
 All three namespace keys receive the same configured retention. When the metadata key expires, `BackendIndex32::open` returns `NotFound`. Empty Redis hashes or sorted sets may disappear before metadata after deleting their final member; this does not change namespace ownership or open semantics.
 
