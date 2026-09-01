@@ -42,9 +42,10 @@ Rust:
 - `pari_core::MinHash64`
 - the named `pari-affine32-v1` and `pari-affine64-v1` signature schemes
 - `pari_index::LshIndex32` candidate semantics
+- `pari_index::LshIndex64` affine64 candidate semantics
 - bounded ordered batch signature construction and `pari_core::BatchThreads`
 - `pari_index` candidate-pair and duplicate-group APIs
-- `LshIndex32` and `PersistentIndex32` query observation and exact bucket statistics
+- `LshIndex32`, `LshIndex64`, and `PersistentIndex32` query observation and exact bucket statistics
 - `pari_store::PersistentIndex32` local persistence behavior
 - the version-1 `.pari` container reader and writer
 

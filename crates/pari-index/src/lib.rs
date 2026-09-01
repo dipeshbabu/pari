@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
 //! Batch-first locality-sensitive hashing indexes for Pari.
 //!
-//! The first index targets [`pari_core::MinHash32`]. It returns approximate
-//! candidates rather than pretending LSH band collisions are exact similarity
-//! verification. Application-specific verification can be layered on later.
+//! The in-memory indexes target [`pari_core::MinHash32`] and
+//! [`pari_core::MinHash64`]. They return approximate candidates rather than
+//! pretending LSH band collisions are exact similarity verification.
+//! Application-specific verification can be layered on later.
 
 use std::{
     cmp::Ordering,
@@ -14,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use pari_core::MinHash32;
+use pari_core::{MinHash32, MinHash64};
 
 mod grouping;
 mod planner;
@@ -56,8 +57,9 @@ impl LshParams {
 
     /// Choose bands and rows with Pari's canonical threshold optimizer.
     ///
-    /// This is the same tuning path used by [`LshIndex32::new`] and the public
-    /// planner, so callers never need to reproduce Pari's probability model.
+    /// This is the same tuning path used by [`LshIndex32::new`],
+    /// [`LshIndex64::new`], and the public planner, so callers never need to
+    /// reproduce Pari's probability model.
     pub fn tune(threshold: f64, num_perm: usize) -> Result<Self, LshError> {
         validate_threshold(threshold)?;
         validate_num_perm(num_perm)?;
@@ -330,18 +332,8 @@ impl fmt::Display for LshError {
 
 impl Error for LshError {}
 
-/// An in-memory threshold LSH index for [`MinHash32`].
-///
-/// The index stores compact `u32` identifiers in hash buckets and keeps user
-/// keys outside the hot bucket path. Query results are LSH candidates, sorted
-/// by external key for deterministic output; they are not exact Jaccard
-/// verification results.
 #[derive(Debug)]
-pub struct LshIndex32 {
-    threshold: f64,
-    num_perm: usize,
-    seed: u64,
-    params: LshParams,
+struct IndexData {
     buckets: Vec<HashMap<u64, Vec<u32>>>,
     key_to_id: HashMap<u64, u32>,
     id_to_key: Vec<Option<u64>>,
@@ -349,135 +341,19 @@ pub struct LshIndex32 {
     query_observer: Option<Box<QueryObserver>>,
 }
 
-impl LshIndex32 {
-    /// Create an index and automatically choose bands and rows for `threshold`.
-    ///
-    /// Automatic tuning numerically minimizes equal-weight false-positive and
-    /// false-negative probability area, following the same objective used by
-    /// datasketch's `MinHash` LSH optimizer without requiring `SciPy` at runtime.
-    pub fn new(threshold: f64, num_perm: usize, seed: u64) -> Result<Self, LshError> {
-        let params = LshParams::tune(threshold, num_perm)?;
-        Self::with_params(threshold, num_perm, seed, params)
-    }
-
-    /// Explain the configured LSH curve and modeled storage implications.
-    ///
-    /// This only uses configuration and the current item count. It does not
-    /// scan bucket memberships.
-    pub fn explain(&self) -> Result<LshPlan, LshPlanError> {
-        explain_lsh(
-            LshPlanOptions::new(
-                u64::try_from(self.len()).unwrap_or(u64::MAX),
-                self.threshold,
-                self.num_perm,
-            )
-            .storage_mode(StorageMode::Memory),
-            self.params,
-        )
-    }
-
-    /// Create an index with explicit banding parameters.
-    pub fn with_params(
-        threshold: f64,
-        num_perm: usize,
-        seed: u64,
-        params: LshParams,
-    ) -> Result<Self, LshError> {
-        validate_threshold(threshold)?;
-        validate_num_perm(num_perm)?;
-        validate_params(params, num_perm)?;
-
-        let buckets = std::iter::repeat_with(HashMap::new)
-            .take(params.bands)
-            .collect();
-
-        Ok(Self {
-            threshold,
-            num_perm,
-            seed,
-            params,
+impl IndexData {
+    fn new(bands: usize) -> Self {
+        let buckets = std::iter::repeat_with(HashMap::new).take(bands).collect();
+        Self {
             buckets,
             key_to_id: HashMap::new(),
             id_to_key: Vec::new(),
             band_hashes: Vec::new(),
             query_observer: None,
-        })
+        }
     }
 
-    /// Insert one key and signature.
-    pub fn insert(&mut self, key: u64, sketch: &MinHash32) -> Result<(), LshError> {
-        self.insert_many(std::iter::once((key, sketch)))
-    }
-
-    /// Insert a batch atomically with respect to validation failures.
-    ///
-    /// The entire batch is checked for duplicate keys, incompatible signatures,
-    /// and internal capacity before the first bucket is mutated.
-    pub fn insert_many<'a>(
-        &mut self,
-        items: impl IntoIterator<Item = (u64, &'a MinHash32)>,
-    ) -> Result<(), LshError> {
-        let items: Vec<_> = items.into_iter().collect();
-        let mut batch_keys = HashSet::with_capacity(items.len());
-
-        for (key, sketch) in &items {
-            if self.key_to_id.contains_key(key) || !batch_keys.insert(*key) {
-                return Err(LshError::DuplicateKey { key: *key });
-            }
-            self.ensure_compatible(sketch)?;
-        }
-        self.ensure_capacity(items.len())?;
-
-        for (key, sketch) in items {
-            self.insert_validated(key, sketch);
-        }
-        Ok(())
-    }
-
-    /// Query approximate candidates for one signature.
-    pub fn query(&self, sketch: &MinHash32) -> Result<Vec<u64>, LshError> {
-        let started = self.query_observer.as_ref().map(|_| Instant::now());
-        self.ensure_compatible(sketch)?;
-        let mut candidates = HashSet::new();
-        self.collect_candidate_ids(sketch.signature(), &mut candidates);
-        let output = self.keys_for_candidates(&candidates);
-        if let (Some(observer), Some(started)) = (&self.query_observer, started) {
-            observer.record(1, output.len(), self.len(), started.elapsed());
-        }
-        Ok(output)
-    }
-
-    /// Query many signatures while reusing the candidate scratch set.
-    pub fn query_many<'a>(
-        &self,
-        sketches: impl IntoIterator<Item = &'a MinHash32>,
-    ) -> Result<Vec<Vec<u64>>, LshError> {
-        let started = self.query_observer.as_ref().map(|_| Instant::now());
-        let mut output = Vec::new();
-        let mut candidates = HashSet::new();
-        let mut candidate_count = 0_usize;
-
-        for sketch in sketches {
-            self.ensure_compatible(sketch)?;
-            candidates.clear();
-            self.collect_candidate_ids(sketch.signature(), &mut candidates);
-            let keys = self.keys_for_candidates(&candidates);
-            candidate_count = candidate_count.saturating_add(keys.len());
-            output.push(keys);
-        }
-        if let (Some(observer), Some(started)) = (&self.query_observer, started) {
-            observer.record(
-                output.len(),
-                candidate_count,
-                output.len().saturating_mul(self.len()),
-                started.elapsed(),
-            );
-        }
-        Ok(output)
-    }
-
-    /// Remove a key if it exists, returning whether anything changed.
-    pub fn remove(&mut self, key: u64) -> bool {
+    fn remove(&mut self, key: u64) -> bool {
         let Some(&id) = self.key_to_id.get(&key) else {
             return false;
         };
@@ -509,60 +385,27 @@ impl LshIndex32 {
         true
     }
 
-    /// Return whether an external key is currently indexed.
-    #[must_use]
-    pub fn contains(&self, key: u64) -> bool {
+    fn contains(&self, key: u64) -> bool {
         self.key_to_id.contains_key(&key)
     }
 
-    /// Return the number of live keys.
-    #[must_use]
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.key_to_id.len()
     }
 
-    /// Return whether the index contains no live keys.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.key_to_id.is_empty()
     }
 
-    /// Return the configured target threshold.
-    #[must_use]
-    pub const fn threshold(&self) -> f64 {
-        self.threshold
-    }
-
-    /// Return the configured signature length.
-    #[must_use]
-    pub const fn num_perm(&self) -> usize {
-        self.num_perm
-    }
-
-    /// Return the required `MinHash` seed.
-    #[must_use]
-    pub const fn seed(&self) -> u64 {
-        self.seed
-    }
-
-    /// Return the selected banding parameters.
-    #[must_use]
-    pub const fn params(&self) -> LshParams {
-        self.params
-    }
-
-    /// Enable or disable process-local query observation.
-    pub fn set_observability(&mut self, enabled: bool) {
+    fn set_observability(&mut self, enabled: bool) {
         self.query_observer = enabled.then(|| Box::new(QueryObserver::default()));
     }
 
-    /// Return exact on-demand bucket diagnostics and optional query metrics.
-    #[must_use]
-    pub fn stats(&self) -> LshStats {
+    fn stats(&self, params: LshParams) -> LshStats {
         LshStats {
             items: self.len(),
-            bands: self.params.bands,
-            rows: self.params.rows,
+            bands: params.bands,
+            rows: params.rows,
             buckets: BucketDistribution::from_sizes(
                 self.buckets
                     .iter()
@@ -573,22 +416,6 @@ impl LshIndex32 {
                 .as_ref()
                 .map(|observer| observer.snapshot()),
         }
-    }
-
-    fn ensure_compatible(&self, sketch: &MinHash32) -> Result<(), LshError> {
-        if sketch.seed() != self.seed {
-            return Err(LshError::IncompatibleSeed {
-                expected: self.seed,
-                actual: sketch.seed(),
-            });
-        }
-        if sketch.num_perm() != self.num_perm {
-            return Err(LshError::IncompatiblePermutationCount {
-                expected: self.num_perm,
-                actual: sketch.num_perm(),
-            });
-        }
-        Ok(())
     }
 
     fn ensure_capacity(&self, additional: usize) -> Result<(), LshError> {
@@ -604,10 +431,8 @@ impl LshIndex32 {
         Ok(())
     }
 
-    fn insert_validated(&mut self, key: u64, sketch: &MinHash32) {
+    fn insert_validated(&mut self, key: u64, hashes: Vec<u64>) {
         let id = u32::try_from(self.id_to_key.len()).expect("capacity validated before insertion");
-        let hashes = self.compute_band_hashes(sketch.signature());
-
         for (table, hash) in self.buckets.iter_mut().zip(&hashes) {
             table.entry(*hash).or_default().push(id);
         }
@@ -617,21 +442,9 @@ impl LshIndex32 {
         self.band_hashes.push(Some(hashes));
     }
 
-    fn compute_band_hashes(&self, signature: &[u32]) -> Vec<u64> {
-        let used = self
-            .params
-            .used_permutations()
-            .expect("validated LSH parameters cannot overflow");
-        signature[..used]
-            .chunks_exact(self.params.rows)
-            .map(hash_band)
-            .collect()
-    }
-
-    fn collect_candidate_ids(&self, signature: &[u32], output: &mut HashSet<u32>) {
-        let hashes = self.compute_band_hashes(signature);
+    fn collect_candidate_ids(&self, hashes: &[u64], output: &mut HashSet<u32>) {
         for (table, hash) in self.buckets.iter().zip(hashes) {
-            if let Some(ids) = table.get(&hash) {
+            if let Some(ids) = table.get(hash) {
                 output.extend(ids.iter().copied());
             }
         }
@@ -650,6 +463,249 @@ impl LshIndex32 {
         keys
     }
 }
+
+/// An in-memory threshold LSH index for [`MinHash32`].
+///
+/// The index stores compact `u32` identifiers in hash buckets and keeps user
+/// keys outside the hot bucket path. Query results are approximate LSH
+/// candidates, sorted by external key for deterministic output; they are not
+/// exact Jaccard verification results.
+#[derive(Debug)]
+pub struct LshIndex32 {
+    threshold: f64,
+    num_perm: usize,
+    seed: u64,
+    params: LshParams,
+    data: IndexData,
+}
+
+/// An in-memory threshold LSH index for [`MinHash64`].
+///
+/// This is an explicit affine64 index: signature values are hashed at their
+/// full `u64` width and are never narrowed to the affine32 domain. Query
+/// results are approximate LSH candidates, sorted by external key for
+/// deterministic output; they are not exact Jaccard verification results.
+/// Persistence is intentionally deferred to a later slice of issue #124.
+#[derive(Debug)]
+pub struct LshIndex64 {
+    threshold: f64,
+    num_perm: usize,
+    seed: u64,
+    params: LshParams,
+    data: IndexData,
+}
+
+macro_rules! impl_lsh_index {
+    ($index:ident, $sketch:ty, $value:ty, $value_bytes:literal, $hash_band:ident) => {
+        impl $index {
+            /// Create an index and automatically choose bands and rows for `threshold`.
+            ///
+            /// Automatic tuning numerically minimizes equal-weight false-positive and
+            /// false-negative probability area, following the same objective used by
+            /// datasketch's `MinHash` LSH optimizer without requiring `SciPy` at runtime.
+            pub fn new(threshold: f64, num_perm: usize, seed: u64) -> Result<Self, LshError> {
+                let params = LshParams::tune(threshold, num_perm)?;
+                Self::with_params(threshold, num_perm, seed, params)
+            }
+
+            /// Explain the configured LSH curve and modeled storage implications.
+            ///
+            /// This only uses configuration and the current item count. It does not
+            /// scan bucket memberships.
+            pub fn explain(&self) -> Result<LshPlan, LshPlanError> {
+                planner::explain_lsh_with_value_bytes(
+                    LshPlanOptions::new(
+                        u64::try_from(self.len()).unwrap_or(u64::MAX),
+                        self.threshold,
+                        self.num_perm,
+                    )
+                    .storage_mode(StorageMode::Memory),
+                    self.params,
+                    $value_bytes,
+                )
+            }
+
+            /// Create an index with explicit banding parameters.
+            pub fn with_params(
+                threshold: f64,
+                num_perm: usize,
+                seed: u64,
+                params: LshParams,
+            ) -> Result<Self, LshError> {
+                validate_threshold(threshold)?;
+                validate_num_perm(num_perm)?;
+                validate_params(params, num_perm)?;
+                Ok(Self {
+                    threshold,
+                    num_perm,
+                    seed,
+                    params,
+                    data: IndexData::new(params.bands),
+                })
+            }
+
+            /// Insert one key and signature.
+            pub fn insert(&mut self, key: u64, sketch: &$sketch) -> Result<(), LshError> {
+                self.insert_many(std::iter::once((key, sketch)))
+            }
+
+            /// Insert a batch atomically with respect to validation failures.
+            ///
+            /// The entire batch is checked for duplicate keys, incompatible signatures,
+            /// and internal capacity before the first bucket is mutated.
+            pub fn insert_many<'a>(
+                &mut self,
+                items: impl IntoIterator<Item = (u64, &'a $sketch)>,
+            ) -> Result<(), LshError> {
+                let items: Vec<_> = items.into_iter().collect();
+                let mut batch_keys = HashSet::with_capacity(items.len());
+                for (key, sketch) in &items {
+                    if self.data.key_to_id.contains_key(key) || !batch_keys.insert(*key) {
+                        return Err(LshError::DuplicateKey { key: *key });
+                    }
+                    self.ensure_compatible(sketch)?;
+                }
+                self.data.ensure_capacity(items.len())?;
+                for (key, sketch) in items {
+                    let hashes = self.compute_band_hashes(sketch.signature());
+                    self.data.insert_validated(key, hashes);
+                }
+                Ok(())
+            }
+
+            /// Query approximate candidates for one signature.
+            pub fn query(&self, sketch: &$sketch) -> Result<Vec<u64>, LshError> {
+                let started = self.data.query_observer.as_ref().map(|_| Instant::now());
+                self.ensure_compatible(sketch)?;
+                let hashes = self.compute_band_hashes(sketch.signature());
+                let mut candidates = HashSet::new();
+                self.data.collect_candidate_ids(&hashes, &mut candidates);
+                let output = self.data.keys_for_candidates(&candidates);
+                if let (Some(observer), Some(started)) = (&self.data.query_observer, started) {
+                    observer.record(1, output.len(), self.len(), started.elapsed());
+                }
+                Ok(output)
+            }
+
+            /// Query many signatures while reusing the candidate scratch set.
+            pub fn query_many<'a>(
+                &self,
+                sketches: impl IntoIterator<Item = &'a $sketch>,
+            ) -> Result<Vec<Vec<u64>>, LshError> {
+                let started = self.data.query_observer.as_ref().map(|_| Instant::now());
+                let mut output = Vec::new();
+                let mut candidates = HashSet::new();
+                let mut candidate_count = 0_usize;
+                for sketch in sketches {
+                    self.ensure_compatible(sketch)?;
+                    let hashes = self.compute_band_hashes(sketch.signature());
+                    candidates.clear();
+                    self.data.collect_candidate_ids(&hashes, &mut candidates);
+                    let keys = self.data.keys_for_candidates(&candidates);
+                    candidate_count = candidate_count.saturating_add(keys.len());
+                    output.push(keys);
+                }
+                if let (Some(observer), Some(started)) = (&self.data.query_observer, started) {
+                    observer.record(
+                        output.len(),
+                        candidate_count,
+                        output.len().saturating_mul(self.len()),
+                        started.elapsed(),
+                    );
+                }
+                Ok(output)
+            }
+
+            /// Remove a key if it exists, returning whether anything changed.
+            pub fn remove(&mut self, key: u64) -> bool {
+                self.data.remove(key)
+            }
+
+            /// Return whether an external key is currently indexed.
+            #[must_use]
+            pub fn contains(&self, key: u64) -> bool {
+                self.data.contains(key)
+            }
+
+            /// Return the number of live keys.
+            #[must_use]
+            pub fn len(&self) -> usize {
+                self.data.len()
+            }
+
+            /// Return whether the index contains no live keys.
+            #[must_use]
+            pub fn is_empty(&self) -> bool {
+                self.data.is_empty()
+            }
+
+            /// Return the configured target threshold.
+            #[must_use]
+            pub const fn threshold(&self) -> f64 {
+                self.threshold
+            }
+
+            /// Return the configured signature length.
+            #[must_use]
+            pub const fn num_perm(&self) -> usize {
+                self.num_perm
+            }
+
+            /// Return the required `MinHash` seed.
+            #[must_use]
+            pub const fn seed(&self) -> u64 {
+                self.seed
+            }
+
+            /// Return the selected banding parameters.
+            #[must_use]
+            pub const fn params(&self) -> LshParams {
+                self.params
+            }
+
+            /// Enable or disable process-local query observation.
+            pub fn set_observability(&mut self, enabled: bool) {
+                self.data.set_observability(enabled);
+            }
+
+            /// Return exact on-demand bucket diagnostics and optional query metrics.
+            #[must_use]
+            pub fn stats(&self) -> LshStats {
+                self.data.stats(self.params)
+            }
+
+            fn ensure_compatible(&self, sketch: &$sketch) -> Result<(), LshError> {
+                if sketch.seed() != self.seed {
+                    return Err(LshError::IncompatibleSeed {
+                        expected: self.seed,
+                        actual: sketch.seed(),
+                    });
+                }
+                if sketch.num_perm() != self.num_perm {
+                    return Err(LshError::IncompatiblePermutationCount {
+                        expected: self.num_perm,
+                        actual: sketch.num_perm(),
+                    });
+                }
+                Ok(())
+            }
+
+            fn compute_band_hashes(&self, signature: &[$value]) -> Vec<u64> {
+                let used = self
+                    .params
+                    .used_permutations()
+                    .expect("validated LSH parameters cannot overflow");
+                signature[..used]
+                    .chunks_exact(self.params.rows)
+                    .map($hash_band)
+                    .collect()
+            }
+        }
+    };
+}
+
+impl_lsh_index!(LshIndex32, MinHash32, u32, 4, hash_band32);
+impl_lsh_index!(LshIndex64, MinHash64, u64, 8, hash_band64);
 
 fn validate_threshold(threshold: f64) -> Result<(), LshError> {
     if !threshold.is_finite() || threshold <= 0.0 || threshold > 1.0 {
@@ -740,10 +796,20 @@ fn simpson_integral(function: impl Fn(f64) -> f64, start: f64, end: f64) -> f64 
     total * step / 3.0
 }
 
-fn hash_band(values: &[u32]) -> u64 {
+fn hash_band32(values: &[u32]) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
     for value in values {
         hash ^= u64::from(*value);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash ^= u64::try_from(values.len()).expect("band length is bounded by num_perm");
+    avalanche64(hash)
+}
+
+fn hash_band64(values: &[u64]) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for value in values {
+        hash ^= *value;
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash ^= u64::try_from(values.len()).expect("band length is bounded by num_perm");
@@ -762,9 +828,11 @@ fn avalanche64(mut value: u64) -> u64 {
 mod tests {
     use std::thread;
 
-    use pari_core::MinHash32;
+    use pari_core::{MinHash32, MinHash64};
 
-    use super::{BucketDistribution, LshError, LshIndex32, LshParams};
+    use super::{
+        hash_band64, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams, StorageMode,
+    };
 
     #[test]
     fn bucket_distribution_uses_exact_nearest_rank_summaries() {
@@ -817,6 +885,14 @@ mod tests {
 
     fn sketch(values: impl IntoIterator<Item = u64>, num_perm: usize, seed: u64) -> MinHash32 {
         let mut sketch = MinHash32::new(num_perm, seed).expect("valid test sketch");
+        for value in values {
+            sketch.update(&value.to_le_bytes());
+        }
+        sketch
+    }
+
+    fn sketch64(values: impl IntoIterator<Item = u64>, num_perm: usize, seed: u64) -> MinHash64 {
+        let mut sketch = MinHash64::new(num_perm, seed).expect("valid test sketch");
         for value in values {
             sketch.update(&value.to_le_bytes());
         }
@@ -981,6 +1057,150 @@ mod tests {
                     handle.join().expect("query thread should not panic"),
                     vec![42]
                 );
+            }
+        });
+    }
+
+    #[test]
+    fn affine64_band_hash_is_stable_and_uses_upper_bits() {
+        let values = [0x0000_0001_0000_0002, 0xFEDC_BA98_7654_3210];
+        assert_eq!(hash_band64(&values), 0x7798_AC83_D0A3_B103);
+        assert_ne!(
+            hash_band64(&values),
+            hash_band64(&[0x0000_0000_0000_0002, 0x0000_0000_7654_3210])
+        );
+    }
+
+    #[test]
+    fn index64_finds_controlled_affine64_candidates() {
+        let query = sketch64(0..100, 128, 7);
+        let near = sketch64((0..90).chain(100..110), 128, 7);
+        let far = sketch64(1_000..1_100, 128, 7);
+        let mut index = LshIndex64::with_params(0.8, 128, 7, LshParams::new(32, 4)).expect("index");
+        index
+            .insert_many([(20, &near), (30, &far)])
+            .expect("valid batch");
+
+        assert_eq!(index.query(&query).expect("compatible query"), vec![20]);
+        assert_eq!(
+            index.query_many([&query, &far]).expect("query batch"),
+            vec![vec![20], vec![30]]
+        );
+    }
+
+    #[test]
+    fn index64_scalar_batch_and_sorted_result_parity() {
+        let first = sketch64(0..100, 128, 9);
+        let second = sketch64(50..150, 128, 9);
+        let third = sketch64(1_000..1_100, 128, 9);
+        let params = LshParams::new(32, 4);
+        let mut scalar = LshIndex64::with_params(0.8, 128, 9, params).expect("index");
+        let mut batch = LshIndex64::with_params(0.8, 128, 9, params).expect("index");
+
+        scalar.insert(9, &first).expect("insert");
+        scalar.insert(1, &first).expect("insert");
+        scalar.insert(5, &second).expect("insert");
+        scalar.insert(30, &third).expect("insert");
+        batch
+            .insert_many([(9, &first), (1, &first), (5, &second), (30, &third)])
+            .expect("batch");
+
+        let queries = [&first, &second, &third];
+        assert_eq!(
+            scalar.query_many(queries).expect("queries"),
+            batch.query_many(queries).expect("queries")
+        );
+        assert_eq!(batch.query(&first).expect("query"), vec![1, 5, 9]);
+    }
+
+    #[test]
+    fn index64_batch_validation_is_atomic() {
+        let expected = sketch64(0..100, 128, 5);
+        let second = sketch64(50..150, 128, 5);
+        let wrong_seed = sketch64(0..100, 128, 6);
+        let wrong_length = sketch64(0..100, 64, 5);
+        let mut index = LshIndex64::with_params(0.8, 128, 5, LshParams::new(32, 4)).expect("index");
+        index.insert(1, &expected).expect("insert");
+
+        assert!(matches!(
+            index.insert_many([(2, &second), (1, &expected)]),
+            Err(LshError::DuplicateKey { key: 1 })
+        ));
+        assert!(!index.contains(2));
+        assert!(matches!(
+            index.insert_many([(2, &second), (3, &wrong_seed)]),
+            Err(LshError::IncompatibleSeed {
+                expected: 5,
+                actual: 6
+            })
+        ));
+        assert!(!index.contains(2));
+        assert!(!index.contains(3));
+        assert!(matches!(
+            index.query(&wrong_length),
+            Err(LshError::IncompatiblePermutationCount {
+                expected: 128,
+                actual: 64
+            })
+        ));
+        assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn index64_removal_stats_observability_and_explain_match_contract() {
+        let first = sketch64(0..100, 128, 12);
+        let second = sketch64(0..100, 128, 12);
+        let mut index = LshIndex64::new(0.8, 128, 12).expect("index");
+        assert!((index.threshold() - 0.8).abs() < f64::EPSILON);
+        assert_eq!(index.num_perm(), 128);
+        assert_eq!(index.seed(), 12);
+        assert_eq!(index.params(), LshParams::new(9, 13));
+        assert!(index.is_empty());
+        index
+            .insert_many([(2, &first), (1, &second)])
+            .expect("insert");
+        assert!(index.contains(2));
+        assert!(index.stats().queries.is_none());
+
+        index.set_observability(true);
+        assert_eq!(index.query(&first).expect("query"), vec![1, 2]);
+        let stats = index.stats();
+        assert_eq!(stats.items, 2);
+        assert_eq!(stats.bands, index.params().bands);
+        assert_eq!(stats.rows, index.params().rows);
+        assert_eq!(stats.buckets.memberships, 18);
+        let queries = stats.queries.expect("observability");
+        assert_eq!(queries.operations, 1);
+        assert_eq!(queries.queries, 1);
+        assert_eq!(queries.candidates, 2);
+        assert_eq!(queries.possible_candidates, 2);
+        assert!(queries.total_latency_ns > 0);
+
+        let plan = index.explain().expect("explain");
+        assert_eq!(plan.expected_items, 2);
+        assert_eq!(plan.params, index.params());
+        assert_eq!(plan.sizes.signature_bytes_per_item, 1_024);
+        assert_eq!(plan.requested_storage, StorageMode::Memory);
+
+        assert!(index.remove(2));
+        assert!(!index.remove(2));
+        assert!(!index.contains(2));
+        assert_eq!(index.query(&first).expect("query"), vec![1]);
+    }
+
+    #[test]
+    fn index64_immutable_queries_can_run_concurrently() {
+        let signature = sketch64(0..100, 128, 21);
+        let mut index =
+            LshIndex64::with_params(0.8, 128, 21, LshParams::new(32, 4)).expect("index");
+        index.insert(42, &signature).expect("insert");
+
+        thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| index.query(&signature).expect("query")))
+                .collect();
+            for handle in handles {
+                assert_eq!(handle.join().expect("query thread"), vec![42]);
             }
         });
     }

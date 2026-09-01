@@ -4,7 +4,10 @@ Pari can turn LSH bucket collisions directly into connected duplicate groups in 
 
 ## Direct grouping
 
-`LshIndex32::duplicate_groups()` scans each bucket and unions colliding internal IDs with path compression and union by rank. Auxiliary grouping memory is proportional to the index's internal item slots, not the number of candidate edges.
+`LshIndex32::duplicate_groups()` and `LshIndex64::duplicate_groups()` scan each
+bucket and union colliding internal IDs with path compression and union by
+rank. Auxiliary grouping memory is proportional to the index's internal item
+slots, not the number of candidate edges.
 
 The unverified path joins each live bucket member to one anchor, so its union work is linear in total bucket memberships rather than quadratic in bucket size. The verified path still visits candidate pairs because acceptance can differ for every pair.
 
