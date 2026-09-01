@@ -1,6 +1,6 @@
 # Persistent local indexes
 
-Pari's local persistent index is designed around explicit committed generations. `PersistentIndex32` keeps compact lookup metadata in memory, reads committed bucket memberships from disk on demand, and stores mutations in an in-memory overlay until the next commit.
+Pari's local persistent indexes are designed around explicit committed generations. `PersistentIndex32` and `PersistentIndex64` keep compact lookup metadata in memory, read committed bucket memberships from disk on demand, and store mutations in an in-memory overlay until the next commit. The types are deliberately distinct: the 32-bit type accepts only `pari-affine32-v1`, while the 64-bit type accepts only `pari-affine64-v1`.
 
 The local backend is intended to cover the space between an in-memory index and a shared remote backend. It is deliberately a single-writer file format rather than a database or a cross-process coordination protocol.
 
@@ -10,10 +10,11 @@ The current local format uses the versioned `PARIIDX` container from `pari-forma
 
 Bucket membership is split into sorted, independently checksummed segments. Reopening validates metadata and bucket directories but does not reconstruct every bucket membership into hash maps. Candidate member ranges are read and verified only when a query touches them.
 
-The first stable v1 compatibility fixture lives at:
+The stable v1 compatibility fixtures live at:
 
 ```text
 crates/pari-store/tests/fixtures/v1-empty.hex
+crates/pari-store/tests/fixtures/v1-empty-affine64.hex
 ```
 
 CI verifies both directions:
@@ -25,7 +26,7 @@ Changing those bytes is therefore a persisted-format compatibility change, not a
 
 ## Writer model
 
-Use one `PersistentIndex32` writer for an index path at a time.
+Use one persistent-index writer for an index path at a time.
 
 Pari does not take a hidden global or cross-process lock. Two writers targeting the same path can race and are unsupported. If several processes need to mutate one logical index, coordinate ownership outside Pari or use a shared backend designed for that purpose.
 
@@ -66,7 +67,7 @@ Calling `sync()` on a clean index still syncs the containing directory where the
 
 `close()` consumes the index handle and calls `sync()` first. A successful `close()` therefore has the same durability contract as a successful `sync()`.
 
-Dropping a dirty `PersistentIndex32` without calling `flush`, `sync`, or `close` does not implicitly commit the in-memory overlay.
+Dropping a dirty `PersistentIndex32` or `PersistentIndex64` without calling `flush`, `sync`, or `close` does not implicitly commit the in-memory overlay.
 
 ## Crash and interrupted-write behavior
 
@@ -80,9 +81,9 @@ After the atomic rename succeeds, the new target is the logical committed genera
 
 ## Corruption behavior
 
-Pari does not silently recover around corrupt committed data. Version metadata, section bounds, outer checksums, bucket directories, and bucket member ranges are validated and return typed errors when invalid.
+Pari does not silently recover around corrupt committed data. Version metadata, signature scheme and width, section bounds, outer checksums, bucket directories, and bucket member ranges are validated and return typed errors when invalid. Cross-width opens fail before mutation or query.
 
-Directory corruption is detected during open. A corrupt member range that was not needed during open is detected when a query reads that bucket. `LazyIndex32::verify()` can be used when a caller wants to read and validate complete bucket sections proactively.
+Directory corruption is detected during open. A corrupt member range that was not needed during open is detected when a query reads that bucket. `LazyIndex32::verify()` and `LazyIndex64::verify()` can be used when a caller wants to read and validate complete bucket sections proactively.
 
 ## Backup and copy
 
@@ -98,7 +99,7 @@ A copied committed target is self-contained. It does not depend on sidecar datab
 
 ## Bounded construction
 
-`PersistentIndex32` is optimized for incremental local mutation and compaction. For large initial builds, use `pari-store-build`, which spills fixed-width records into bounded sorted runs and externally merges them into the same canonical segmented format used by the local and lazy readers.
+`PersistentIndex32` and `PersistentIndex64` are optimized for incremental local mutation and compaction. For large initial builds, use `pari-store-build`, which spills fixed-width band-hash records into bounded sorted runs and externally merges them into the same canonical segmented format used by the local and lazy readers. Both the reference and bounded builders accept either supported signature family and preserve the source scheme and width exactly.
 
 The external builder's memory contract is bounded by the configured spill buffer, merge heap, one bounded segment directory, fixed copy buffers, and metadata rather than total bucket membership.
 

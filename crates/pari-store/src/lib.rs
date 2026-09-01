@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Crash-safe local persistence for Pari similarity indexes.
+//! Crash-safe affine32 and affine64 local persistence for Pari similarity indexes.
 //!
 //! Committed snapshots keep keys and per-key LSH band hashes as stable metadata
 //! while bucket membership uses the canonical checksummed segments from
@@ -11,6 +11,7 @@
 //! remove-then-reinsert semantics remain correct. `flush` and `sync` compact
 //! committed state plus the overlay into a fresh atomic snapshot. Phase-1
 //! snapshots without bucket segments remain readable and upgrade on next sync.
+//! Width-specific public types reject snapshots from the other signature family.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -23,7 +24,7 @@ use std::{
     time::Instant,
 };
 
-use pari_core::MinHash32;
+use pari_core::{MinHash32, MinHash64};
 use pari_format::{
     bucket_record_size, decode_bucket_segment, encode_bucket_segment, read_bucket_members,
     validate_global_bucket_order, Algorithm, BucketError, BucketKey, BucketLocation, BucketRecord,
@@ -32,8 +33,8 @@ use pari_format::{
     BUCKET_SEGMENT_TARGET_BYTES,
 };
 use pari_index::{
-    explain_lsh, BucketDistribution, LshError, LshIndex32, LshParams, LshPlan, LshPlanError,
-    LshPlanOptions, QueryMetrics, StorageMode,
+    explain_lsh, explain_lsh64, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams,
+    LshPlan, LshPlanError, LshPlanOptions, QueryMetrics, StorageMode,
 };
 
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
@@ -209,14 +210,14 @@ impl LazyBase {
     }
 }
 
-/// A persistent `MinHash32` LSH index with lazy committed-bucket reads.
 #[derive(Debug)]
-pub struct PersistentIndex32 {
+struct PersistentIndexCore {
     path: PathBuf,
     threshold: f64,
     num_perm: usize,
     seed: u64,
     params: LshParams,
+    scheme: SignatureScheme,
     base: Option<LazyBase>,
     overlay_buckets: Vec<HashMap<u64, Vec<u64>>>,
     overlay_keys: HashSet<u64>,
@@ -226,49 +227,33 @@ pub struct PersistentIndex32 {
     query_metrics: Option<Mutex<QueryMetrics>>,
 }
 
-impl PersistentIndex32 {
-    /// Create a new empty index and immediately commit its initial snapshot.
-    pub fn create(
-        path: impl AsRef<Path>,
-        threshold: f64,
-        num_perm: usize,
-        seed: u64,
-    ) -> Result<Self, StoreError> {
-        let reference = LshIndex32::new(threshold, num_perm, seed)?;
-        Self::create_with_params(path, threshold, num_perm, seed, reference.params())
-    }
-
-    /// Create a new empty index with explicit LSH banding parameters.
-    pub fn create_with_params(
-        path: impl AsRef<Path>,
+impl PersistentIndexCore {
+    fn create_with_params(
+        path: &Path,
         threshold: f64,
         num_perm: usize,
         seed: u64,
         params: LshParams,
+        scheme: SignatureScheme,
     ) -> Result<Self, StoreError> {
-        let path = path.as_ref().to_path_buf();
+        let path = path.to_path_buf();
         if path.exists() {
             return Err(StoreError::Io(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 format!("index path {} already exists", path.display()),
             )));
         }
-        LshIndex32::with_params(threshold, num_perm, seed, params)?;
-        let mut store = Self::empty(path, threshold, num_perm, seed, params);
+        validate_lsh_configuration(scheme, threshold, num_perm, seed, params)?;
+        let mut store = Self::empty(path, threshold, num_perm, seed, params, scheme);
         store.sync()?;
         Ok(store)
     }
 
-    /// Open and validate the last committed snapshot at `path`.
-    ///
-    /// Current snapshots load key metadata plus bucket locations only. Legacy
-    /// phase-1 snapshots are accepted by rebuilding their buckets into the
-    /// mutation overlay and are marked dirty so the next sync upgrades them.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let path = path.as_ref().to_path_buf();
+    fn open(path: &Path, scheme: SignatureScheme) -> Result<Self, StoreError> {
+        let path = path.to_path_buf();
         let mut file = File::open(&path)?;
         let layout = FileLayout::read_from(&mut file)?;
-        validate_store_metadata(layout.metadata())?;
+        validate_store_metadata(layout.metadata(), scheme)?;
         let num_perm = usize::try_from(layout.metadata().num_perm())
             .map_err(|_| StoreError::LengthOverflow)?;
         let bands =
@@ -278,12 +263,12 @@ impl PersistentIndex32 {
         let threshold = layout.metadata().threshold();
         let seed = layout.metadata().seed();
         let params = LshParams::new(bands, rows);
-        LshIndex32::with_params(threshold, num_perm, seed, params)?;
+        validate_lsh_configuration(scheme, threshold, num_perm, seed, params)?;
 
         let key_hashes = read_key_metadata(&layout, &mut file, bands)?;
         let bucket_descriptors = collect_bucket_descriptors(&layout)?;
         if bucket_descriptors.is_empty() {
-            return Self::open_legacy(path, threshold, num_perm, seed, params, key_hashes);
+            return Self::open_legacy(path, threshold, num_perm, seed, params, scheme, key_hashes);
         }
 
         let mut buckets = Vec::new();
@@ -300,6 +285,7 @@ impl PersistentIndex32 {
             num_perm,
             seed,
             params,
+            scheme,
             base: Some(LazyBase {
                 file: Mutex::new(file),
                 layout,
@@ -314,23 +300,12 @@ impl PersistentIndex32 {
         })
     }
 
-    /// Insert one external key and signature.
-    pub fn insert(&mut self, key: u64, sketch: &MinHash32) -> Result<(), StoreError> {
-        self.insert_many(std::iter::once((key, sketch)))
-    }
-
-    /// Insert a batch after validating the complete batch before mutation.
-    pub fn insert_many<'a>(
-        &mut self,
-        items: impl IntoIterator<Item = (u64, &'a MinHash32)>,
-    ) -> Result<(), StoreError> {
-        let mut prepared = Vec::new();
+    fn insert_hashes_many(&mut self, prepared: Vec<(u64, Vec<u64>)>) -> Result<(), StoreError> {
         let mut batch_keys = HashSet::new();
-        for (key, sketch) in items {
-            if self.key_hashes.contains_key(&key) || !batch_keys.insert(key) {
-                return Err(StoreError::DuplicateKey { key });
+        for (key, _) in &prepared {
+            if self.key_hashes.contains_key(key) || !batch_keys.insert(*key) {
+                return Err(StoreError::DuplicateKey { key: *key });
             }
-            prepared.push((key, self.band_hashes(sketch)?));
         }
 
         for (key, hashes) in prepared {
@@ -342,8 +317,7 @@ impl PersistentIndex32 {
         Ok(())
     }
 
-    /// Remove a key if present, returning whether the index changed.
-    pub fn remove(&mut self, key: u64) -> bool {
+    fn remove(&mut self, key: u64) -> bool {
         let Some(hashes) = self.key_hashes.remove(&key) else {
             return false;
         };
@@ -356,29 +330,28 @@ impl PersistentIndex32 {
         true
     }
 
-    /// Query approximate candidates for one compatible signature.
-    pub fn query(&self, sketch: &MinHash32) -> Result<Vec<u64>, StoreError> {
-        let started = self.query_metrics.as_ref().map(|_| Instant::now());
-        let hashes = self.band_hashes(sketch)?;
+    fn query_hashes(
+        &self,
+        hashes: &[u64],
+        started: Option<Instant>,
+    ) -> Result<Vec<u64>, StoreError> {
         let mut candidates = HashSet::new();
-        self.collect_candidates(&hashes, &mut candidates)?;
+        self.collect_candidates(hashes, &mut candidates)?;
         let mut keys: Vec<_> = candidates.into_iter().collect();
         keys.sort_unstable();
         self.record_query_metrics(1, keys.len(), self.len(), started);
         Ok(keys)
     }
 
-    /// Query many signatures while reusing candidate scratch storage.
-    pub fn query_many<'a>(
+    fn query_hashes_many(
         &self,
-        sketches: impl IntoIterator<Item = &'a MinHash32>,
+        hashes_by_query: impl IntoIterator<Item = Vec<u64>>,
+        started: Option<Instant>,
     ) -> Result<Vec<Vec<u64>>, StoreError> {
-        let started = self.query_metrics.as_ref().map(|_| Instant::now());
         let mut output = Vec::new();
         let mut candidates = HashSet::new();
         let mut candidate_count = 0_usize;
-        for sketch in sketches {
-            let hashes = self.band_hashes(sketch)?;
+        for hashes in hashes_by_query {
             candidates.clear();
             self.collect_candidates(&hashes, &mut candidates)?;
             let mut keys: Vec<_> = candidates.iter().copied().collect();
@@ -395,88 +368,40 @@ impl PersistentIndex32 {
         Ok(output)
     }
 
-    /// Return whether a live key exists.
-    #[must_use]
-    pub fn contains(&self, key: u64) -> bool {
-        self.key_hashes.contains_key(&key)
-    }
-
-    /// Return the number of live keys.
-    #[must_use]
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.key_hashes.len()
     }
 
-    /// Return whether no live keys are indexed.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.key_hashes.is_empty()
-    }
-
-    /// Return the configured similarity threshold.
-    #[must_use]
-    pub const fn threshold(&self) -> f64 {
-        self.threshold
-    }
-
-    /// Return the configured signature length.
-    #[must_use]
-    pub const fn num_perm(&self) -> usize {
-        self.num_perm
-    }
-
-    /// Return the required `MinHash` seed.
-    #[must_use]
-    pub const fn seed(&self) -> u64 {
-        self.seed
-    }
-
-    /// Return the configured LSH banding parameters.
-    #[must_use]
-    pub const fn params(&self) -> LshParams {
-        self.params
-    }
-
-    /// Explain this index's persisted configuration without scanning buckets.
-    pub fn explain(&self) -> Result<LshPlan, LshPlanError> {
-        explain_lsh(
-            LshPlanOptions::new(
-                u64::try_from(self.len()).unwrap_or(u64::MAX),
-                self.threshold,
-                self.num_perm,
-            )
-            .storage_mode(StorageMode::Persistent),
-            self.params,
+    fn explain(&self) -> Result<LshPlan, LshPlanError> {
+        let options = LshPlanOptions::new(
+            u64::try_from(self.len()).unwrap_or(u64::MAX),
+            self.threshold,
+            self.num_perm,
         )
+        .storage_mode(StorageMode::Persistent);
+        match self.scheme {
+            SignatureScheme::PariAffine32V1 => explain_lsh(options, self.params),
+            SignatureScheme::PariAffine64V1 => explain_lsh64(options, self.params),
+        }
     }
 
-    /// Enable or disable process-local query observation.
-    pub fn set_observability(&mut self, enabled: bool) {
+    fn set_observability(&mut self, enabled: bool) {
         self.query_metrics = enabled.then(|| Mutex::new(QueryMetrics::default()));
     }
 
-    /// Commit dirty state to an atomic snapshot.
-    ///
-    /// The snapshot file itself is synced before rename. Use [`Self::sync`] for
-    /// the strongest post-rename durability step the current platform supports.
-    pub fn flush(&mut self) -> Result<(), StoreError> {
+    fn flush(&mut self) -> Result<(), StoreError> {
         self.commit(false)
     }
 
-    /// Commit dirty state and apply the platform-supported post-rename
-    /// durability step. Unix-like platforms sync the containing directory;
-    /// Windows has no portable directory `fsync` equivalent in `std`.
-    pub fn sync(&mut self) -> Result<(), StoreError> {
+    fn sync(&mut self) -> Result<(), StoreError> {
         self.commit(true)
     }
 
-    /// Sync pending state and consume the index handle.
-    pub fn close(mut self) -> Result<(), StoreError> {
+    fn close(mut self) -> Result<(), StoreError> {
         self.sync()
     }
 
-    /// Return current in-memory and committed-file statistics.
-    pub fn stats(&self) -> Result<StoreStats, StoreError> {
+    fn stats(&self) -> Result<StoreStats, StoreError> {
         let file_bytes = match fs::metadata(&self.path) {
             Ok(metadata) => metadata.len(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
@@ -517,13 +442,21 @@ impl PersistentIndex32 {
         })
     }
 
-    fn empty(path: PathBuf, threshold: f64, num_perm: usize, seed: u64, params: LshParams) -> Self {
+    fn empty(
+        path: PathBuf,
+        threshold: f64,
+        num_perm: usize,
+        seed: u64,
+        params: LshParams,
+        scheme: SignatureScheme,
+    ) -> Self {
         Self {
             path,
             threshold,
             num_perm,
             seed,
             params,
+            scheme,
             base: None,
             overlay_buckets: empty_bucket_tables(params.bands),
             overlay_keys: HashSet::new(),
@@ -555,36 +488,14 @@ impl PersistentIndex32 {
         num_perm: usize,
         seed: u64,
         params: LshParams,
+        scheme: SignatureScheme,
         key_hashes: BTreeMap<u64, Vec<u64>>,
     ) -> Result<Self, StoreError> {
-        let mut store = Self::empty(path, threshold, num_perm, seed, params);
+        let mut store = Self::empty(path, threshold, num_perm, seed, params, scheme);
         store.key_hashes = key_hashes;
         store.rebuild_overlay_all()?;
         store.dirty = true;
         Ok(store)
-    }
-
-    fn band_hashes(&self, sketch: &MinHash32) -> Result<Vec<u64>, StoreError> {
-        if sketch.seed() != self.seed {
-            return Err(StoreError::IncompatibleSeed {
-                expected: self.seed,
-                actual: sketch.seed(),
-            });
-        }
-        if sketch.num_perm() != self.num_perm {
-            return Err(StoreError::IncompatiblePermutationCount {
-                expected: self.num_perm,
-                actual: sketch.num_perm(),
-            });
-        }
-        let used = self
-            .params
-            .used_permutations()
-            .ok_or(StoreError::LengthOverflow)?;
-        Ok(sketch.signature()[..used]
-            .chunks_exact(self.params.rows)
-            .map(hash_band)
-            .collect())
     }
 
     fn insert_overlay(&mut self, key: u64, hashes: Vec<u64>) {
@@ -656,7 +567,7 @@ impl PersistentIndex32 {
     }
 
     fn refresh_after_commit(&mut self, parent_error: Option<StoreError>) -> Result<(), StoreError> {
-        match Self::open(&self.path) {
+        match Self::open(&self.path, self.scheme) {
             Ok(mut refreshed) => {
                 if parent_error.is_some() {
                     refreshed.dirty = true;
@@ -678,7 +589,7 @@ impl PersistentIndex32 {
     fn encode_snapshot(&self) -> Result<Vec<u8>, StoreError> {
         let metadata = IndexMetadata::new(
             Algorithm::MinHashLsh,
-            SignatureScheme::PariAffine32V1,
+            self.scheme,
             CodecId::U64,
             u32::try_from(self.num_perm).map_err(|_| StoreError::LengthOverflow)?,
             self.seed,
@@ -697,6 +608,227 @@ impl PersistentIndex32 {
         Ok(IndexFile::new(metadata, sections)?.encode()?)
     }
 }
+
+/// A persistent `MinHash32` LSH index with lazy committed-bucket reads.
+#[derive(Debug)]
+pub struct PersistentIndex32 {
+    inner: PersistentIndexCore,
+}
+
+/// A persistent `MinHash64` LSH index with lazy committed-bucket reads.
+///
+/// Files opened by this type must explicitly declare `pari-affine64-v1` and
+/// cannot be opened through [`PersistentIndex32`].
+#[derive(Debug)]
+pub struct PersistentIndex64 {
+    inner: PersistentIndexCore,
+}
+
+macro_rules! impl_persistent_index {
+    ($index:ident, $sketch:ty, $lsh:ty, $scheme:expr, $hash_band:ident) => {
+        impl $index {
+            /// Create a new empty index and immediately commit its initial snapshot.
+            pub fn create(
+                path: impl AsRef<Path>,
+                threshold: f64,
+                num_perm: usize,
+                seed: u64,
+            ) -> Result<Self, StoreError> {
+                let reference = <$lsh>::new(threshold, num_perm, seed)?;
+                Self::create_with_params(path, threshold, num_perm, seed, reference.params())
+            }
+
+            /// Create a new empty index with explicit LSH banding parameters.
+            pub fn create_with_params(
+                path: impl AsRef<Path>,
+                threshold: f64,
+                num_perm: usize,
+                seed: u64,
+                params: LshParams,
+            ) -> Result<Self, StoreError> {
+                Ok(Self {
+                    inner: PersistentIndexCore::create_with_params(
+                        path.as_ref(),
+                        threshold,
+                        num_perm,
+                        seed,
+                        params,
+                        $scheme,
+                    )?,
+                })
+            }
+
+            /// Open and validate the last committed snapshot at `path`.
+            ///
+            /// Current snapshots load key metadata plus bucket locations only. Legacy
+            /// phase-1 snapshots are accepted by rebuilding their buckets into the
+            /// mutation overlay and are marked dirty so the next sync upgrades them.
+            pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+                Ok(Self {
+                    inner: PersistentIndexCore::open(path.as_ref(), $scheme)?,
+                })
+            }
+
+            /// Insert one external key and signature.
+            pub fn insert(&mut self, key: u64, sketch: &$sketch) -> Result<(), StoreError> {
+                self.insert_many(std::iter::once((key, sketch)))
+            }
+
+            /// Insert a batch after validating the complete batch before mutation.
+            pub fn insert_many<'a>(
+                &mut self,
+                items: impl IntoIterator<Item = (u64, &'a $sketch)>,
+            ) -> Result<(), StoreError> {
+                let prepared = items
+                    .into_iter()
+                    .map(|(key, sketch)| Ok((key, self.band_hashes(sketch)?)))
+                    .collect::<Result<Vec<_>, StoreError>>()?;
+                self.inner.insert_hashes_many(prepared)
+            }
+
+            /// Remove a key if present, returning whether the index changed.
+            pub fn remove(&mut self, key: u64) -> bool {
+                self.inner.remove(key)
+            }
+
+            /// Query approximate candidates for one compatible signature.
+            pub fn query(&self, sketch: &$sketch) -> Result<Vec<u64>, StoreError> {
+                let started = self.inner.query_metrics.as_ref().map(|_| Instant::now());
+                let hashes = self.band_hashes(sketch)?;
+                self.inner.query_hashes(&hashes, started)
+            }
+
+            /// Query many signatures while reusing candidate scratch storage.
+            pub fn query_many<'a>(
+                &self,
+                sketches: impl IntoIterator<Item = &'a $sketch>,
+            ) -> Result<Vec<Vec<u64>>, StoreError> {
+                let started = self.inner.query_metrics.as_ref().map(|_| Instant::now());
+                let hashes = sketches
+                    .into_iter()
+                    .map(|sketch| self.band_hashes(sketch))
+                    .collect::<Result<Vec<_>, StoreError>>()?;
+                self.inner.query_hashes_many(hashes, started)
+            }
+
+            /// Return whether a live key exists.
+            #[must_use]
+            pub fn contains(&self, key: u64) -> bool {
+                self.inner.key_hashes.contains_key(&key)
+            }
+
+            /// Return the number of live keys.
+            #[must_use]
+            pub fn len(&self) -> usize {
+                self.inner.len()
+            }
+
+            /// Return whether no live keys are indexed.
+            #[must_use]
+            pub fn is_empty(&self) -> bool {
+                self.inner.key_hashes.is_empty()
+            }
+
+            /// Return the configured similarity threshold.
+            #[must_use]
+            pub const fn threshold(&self) -> f64 {
+                self.inner.threshold
+            }
+
+            /// Return the configured signature length.
+            #[must_use]
+            pub const fn num_perm(&self) -> usize {
+                self.inner.num_perm
+            }
+
+            /// Return the required `MinHash` seed.
+            #[must_use]
+            pub const fn seed(&self) -> u64 {
+                self.inner.seed
+            }
+
+            /// Return the configured LSH banding parameters.
+            #[must_use]
+            pub const fn params(&self) -> LshParams {
+                self.inner.params
+            }
+
+            /// Explain this index's persisted configuration without scanning buckets.
+            pub fn explain(&self) -> Result<LshPlan, LshPlanError> {
+                self.inner.explain()
+            }
+
+            /// Enable or disable process-local query observation.
+            pub fn set_observability(&mut self, enabled: bool) {
+                self.inner.set_observability(enabled);
+            }
+
+            /// Commit dirty state to an atomic snapshot.
+            ///
+            /// The snapshot file itself is synced before rename. Use [`Self::sync`] for
+            /// the strongest post-rename durability step the current platform supports.
+            pub fn flush(&mut self) -> Result<(), StoreError> {
+                self.inner.flush()
+            }
+
+            /// Commit dirty state and apply the platform-supported post-rename
+            /// durability step. Unix-like platforms sync the containing directory;
+            /// Windows has no portable directory `fsync` equivalent in `std`.
+            pub fn sync(&mut self) -> Result<(), StoreError> {
+                self.inner.sync()
+            }
+
+            /// Sync pending state and consume the index handle.
+            pub fn close(self) -> Result<(), StoreError> {
+                self.inner.close()
+            }
+
+            /// Return current in-memory and committed-file statistics.
+            pub fn stats(&self) -> Result<StoreStats, StoreError> {
+                self.inner.stats()
+            }
+
+            fn band_hashes(&self, sketch: &$sketch) -> Result<Vec<u64>, StoreError> {
+                if sketch.seed() != self.inner.seed {
+                    return Err(StoreError::IncompatibleSeed {
+                        expected: self.inner.seed,
+                        actual: sketch.seed(),
+                    });
+                }
+                if sketch.num_perm() != self.inner.num_perm {
+                    return Err(StoreError::IncompatiblePermutationCount {
+                        expected: self.inner.num_perm,
+                        actual: sketch.num_perm(),
+                    });
+                }
+                let used = self
+                    .inner
+                    .params
+                    .used_permutations()
+                    .ok_or(StoreError::LengthOverflow)?;
+                Ok(sketch.signature()[..used]
+                    .chunks_exact(self.inner.params.rows)
+                    .map($hash_band)
+                    .collect())
+            }
+        }
+    };
+}
+
+impl_persistent_index!(
+    PersistentIndex32,
+    MinHash32,
+    LshIndex32,
+    SignatureScheme::PariAffine32V1,
+    hash_band32
+);
+impl_persistent_index!(
+    PersistentIndex64,
+    MinHash64,
+    LshIndex64,
+    SignatureScheme::PariAffine64V1,
+    hash_band64
+);
 
 fn create_parent_if_needed(path: &Path) -> Result<(), StoreError> {
     if let Some(parent) = path
@@ -720,15 +852,18 @@ fn write_synced_file(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn validate_store_metadata(metadata: &IndexMetadata) -> Result<(), StoreError> {
+fn validate_store_metadata(
+    metadata: &IndexMetadata,
+    expected_scheme: SignatureScheme,
+) -> Result<(), StoreError> {
     if metadata.algorithm() != Algorithm::MinHashLsh {
         return Err(StoreError::InvalidSnapshot {
             reason: "snapshot algorithm is not MinHash LSH",
         });
     }
-    if metadata.signature_scheme() != SignatureScheme::PariAffine32V1 {
+    if metadata.signature_scheme() != expected_scheme {
         return Err(StoreError::InvalidSnapshot {
-            reason: "snapshot signature scheme is not pari-affine32-v1",
+            reason: "snapshot signature scheme does not match the persistent index type",
         });
     }
     if metadata.key_codec() != CodecId::U64 {
@@ -740,6 +875,24 @@ fn validate_store_metadata(metadata: &IndexMetadata) -> Result<(), StoreError> {
         return Err(StoreError::InvalidSnapshot {
             reason: "local store does not support feature flags",
         });
+    }
+    Ok(())
+}
+
+fn validate_lsh_configuration(
+    scheme: SignatureScheme,
+    threshold: f64,
+    num_perm: usize,
+    seed: u64,
+    params: LshParams,
+) -> Result<(), StoreError> {
+    match scheme {
+        SignatureScheme::PariAffine32V1 => {
+            LshIndex32::with_params(threshold, num_perm, seed, params)?;
+        }
+        SignatureScheme::PariAffine64V1 => {
+            LshIndex64::with_params(threshold, num_perm, seed, params)?;
+        }
     }
     Ok(())
 }
@@ -1092,10 +1245,20 @@ fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
     }
 }
 
-fn hash_band(values: &[u32]) -> u64 {
+fn hash_band32(values: &[u32]) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
     for value in values {
         hash ^= u64::from(*value);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash ^= u64::try_from(values.len()).unwrap_or(u64::MAX);
+    avalanche64(hash)
+}
+
+fn hash_band64(values: &[u64]) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for value in values {
+        hash ^= *value;
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash ^= u64::try_from(values.len()).unwrap_or(u64::MAX);
@@ -1120,17 +1283,28 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use pari_core::MinHash32;
+    use pari_core::{MinHash32, MinHash64};
     use pari_format::{
         Algorithm, BucketError, CodecId, FileLayout, IndexFile, IndexMetadata, Section,
         SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
     };
-    use pari_index::{LshIndex32, LshParams};
+    use pari_index::{LshIndex32, LshIndex64, LshParams};
 
-    use super::{encode_band_hashes, encode_keys, temporary_path, PersistentIndex32, StoreError};
+    use super::{
+        encode_band_hashes, encode_keys, temporary_path, PersistentIndex32, PersistentIndex64,
+        StoreError,
+    };
 
     fn sketch(values: impl IntoIterator<Item = u64>) -> MinHash32 {
         let mut sketch = MinHash32::new(128, 7).expect("valid test sketch");
+        for value in values {
+            sketch.update(&value.to_le_bytes());
+        }
+        sketch
+    }
+
+    fn sketch64(values: impl IntoIterator<Item = u64>) -> MinHash64 {
+        let mut sketch = MinHash64::new(128, 7).expect("valid 64-bit test sketch");
         for value in values {
             sketch.update(&value.to_le_bytes());
         }
@@ -1157,7 +1331,16 @@ mod tests {
     fn phase1_snapshot(path: &PathBuf, rows: &[(u64, MinHash32)]) {
         let reference = LshIndex32::new(0.8, 128, 7).expect("reference");
         let params = reference.params();
-        let helper = PersistentIndex32::empty(path.clone(), 0.8, 128, 7, params);
+        let helper = PersistentIndex32 {
+            inner: super::PersistentIndexCore::empty(
+                path.clone(),
+                0.8,
+                128,
+                7,
+                params,
+                SignatureScheme::PariAffine32V1,
+            ),
+        };
         let mut hashes = BTreeMap::new();
         for (key, sketch) in rows {
             hashes.insert(*key, helper.band_hashes(sketch).expect("band hashes"));
@@ -1221,8 +1404,8 @@ mod tests {
         store.close().expect("close store");
 
         let mut reopened = PersistentIndex32::open(&path).expect("reopen snapshot");
-        assert!(reopened.base.is_some());
-        assert!(reopened.overlay_buckets.iter().all(HashMap::is_empty));
+        assert!(reopened.inner.base.is_some());
+        assert!(reopened.inner.overlay_buckets.iter().all(HashMap::is_empty));
         let stats = reopened.stats().expect("stats");
         assert!(stats.committed_buckets > 0);
         assert!(stats.committed_distribution.memberships > 0);
@@ -1319,14 +1502,14 @@ mod tests {
         phase1_snapshot(&path, &[(10, first.clone()), (20, second.clone())]);
 
         let mut legacy = PersistentIndex32::open(&path).expect("open phase1");
-        assert!(legacy.base.is_none());
+        assert!(legacy.inner.base.is_none());
         assert!(legacy.stats().expect("legacy stats").dirty);
         assert!(legacy.query(&first).expect("legacy query").contains(&10));
         legacy.sync().expect("upgrade sync");
         drop(legacy);
 
         let upgraded = PersistentIndex32::open(&path).expect("open upgraded");
-        assert!(upgraded.base.is_some());
+        assert!(upgraded.inner.base.is_some());
         assert!(!upgraded.stats().expect("upgraded stats").dirty);
         let mut reference = LshIndex32::new(0.8, 128, 7).expect("reference");
         reference.insert(10, &first).expect("reference first");
@@ -1417,6 +1600,7 @@ mod tests {
         store.insert(10, &query).expect("insert");
         store.sync().expect("sync");
         let location = store
+            .inner
             .base
             .as_ref()
             .expect("lazy base")
@@ -1501,7 +1685,7 @@ mod tests {
         let stats = store.stats().expect("stats");
         assert_eq!(stats.items, 0);
         assert_eq!(stats.committed_buckets, 0);
-        assert!(store.base.is_some());
+        assert!(store.inner.base.is_some());
         cleanup(&path);
     }
 
@@ -1510,5 +1694,125 @@ mod tests {
         assert_eq!(BUCKET_SEGMENT_HEADER_BYTES, 40);
         let params = LshParams::new(32, 4);
         assert_eq!(params.used_permutations(), Some(128));
+    }
+
+    #[test]
+    fn affine64_batches_queries_removals_and_reopen_match_memory() {
+        let path = test_path("affine64-parity");
+        cleanup(&path);
+        let sketches = [
+            sketch64(0..40),
+            sketch64(0..35),
+            sketch64(100..140),
+            sketch64(0..30),
+        ];
+        let mut persistent =
+            PersistentIndex64::create(&path, 0.8, 128, 7).expect("create affine64 store");
+        let mut memory = LshIndex64::new(0.8, 128, 7).expect("create affine64 memory index");
+        persistent
+            .insert_many(
+                sketches
+                    .iter()
+                    .enumerate()
+                    .map(|(key, value)| (u64::try_from(key).expect("small key"), value)),
+            )
+            .expect("insert affine64 batch");
+        memory
+            .insert_many(
+                sketches
+                    .iter()
+                    .enumerate()
+                    .map(|(key, value)| (u64::try_from(key).expect("small key"), value)),
+            )
+            .expect("insert affine64 memory batch");
+
+        let expected = memory
+            .query_many(sketches.iter())
+            .expect("memory affine64 queries");
+        assert_eq!(
+            persistent
+                .query_many(sketches.iter())
+                .expect("persistent affine64 queries"),
+            expected
+        );
+        assert_eq!(
+            persistent
+                .explain()
+                .expect("explain")
+                .sizes
+                .signature_bytes_per_item,
+            1_024
+        );
+        persistent.flush().expect("flush affine64 snapshot");
+        assert!(persistent.remove(1));
+        assert!(memory.remove(1));
+        persistent.sync().expect("sync affine64 removal");
+        drop(persistent);
+
+        let reopened = PersistentIndex64::open(&path).expect("reopen affine64 snapshot");
+        assert_eq!(reopened.len(), 3);
+        assert!(!reopened.contains(1));
+        for query in &sketches {
+            assert_eq!(
+                reopened.query(query).expect("reopened affine64 query"),
+                memory.query(query).expect("memory affine64 query")
+            );
+        }
+        reopened.close().expect("close affine64 snapshot");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn affine64_batch_failures_are_atomic() {
+        let path = test_path("affine64-atomic");
+        cleanup(&path);
+        let valid = sketch64(0..40);
+        let duplicate = sketch64(100..140);
+        let mut wrong_seed = MinHash64::new(128, 99).expect("wrong-seed sketch");
+        wrong_seed.update(b"wrong seed");
+        let mut store =
+            PersistentIndex64::create(&path, 0.8, 128, 7).expect("create affine64 store");
+
+        assert!(matches!(
+            store.insert_many([(10, &valid), (10, &duplicate)]),
+            Err(StoreError::DuplicateKey { key: 10 })
+        ));
+        assert!(store.is_empty());
+        assert!(matches!(
+            store.insert_many([(10, &valid), (20, &wrong_seed)]),
+            Err(StoreError::IncompatibleSeed {
+                expected: 7,
+                actual: 99
+            })
+        ));
+        assert!(store.is_empty());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn persistent_types_reject_cross_width_snapshots() {
+        let path32 = test_path("cross-width-32");
+        let path64 = test_path("cross-width-64");
+        cleanup(&path32);
+        cleanup(&path64);
+        PersistentIndex32::create(&path32, 0.8, 128, 7)
+            .expect("create affine32")
+            .close()
+            .expect("close affine32");
+        PersistentIndex64::create(&path64, 0.8, 128, 7)
+            .expect("create affine64")
+            .close()
+            .expect("close affine64");
+
+        assert!(matches!(
+            PersistentIndex64::open(&path32),
+            Err(StoreError::InvalidSnapshot { .. })
+        ));
+        assert!(matches!(
+            PersistentIndex32::open(&path64),
+            Err(StoreError::InvalidSnapshot { .. })
+        ));
+        cleanup(&path32);
+        cleanup(&path64);
     }
 }

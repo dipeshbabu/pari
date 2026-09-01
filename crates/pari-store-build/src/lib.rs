@@ -200,9 +200,10 @@ impl Drop for TemporaryFiles {
 
 /// Build a canonical lazy paged index with bounded construction memory.
 ///
-/// The source must be a committed phase-1 snapshot containing unique required
-/// `Keys` and `BandHashes` sections. The destination is created atomically and
-/// is never replaced if it already exists.
+/// The source must be a committed affine32 or affine64 snapshot containing
+/// unique required `Keys` and `BandHashes` sections. The signature scheme and
+/// width are preserved exactly. The destination is created atomically and is
+/// never replaced if it already exists.
 pub fn build_external(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -309,10 +310,8 @@ fn validate_source_metadata(metadata: &IndexMetadata) -> Result<(), BuildError> 
             reason: "algorithm is not MinHash LSH",
         });
     }
-    if metadata.signature_scheme() != SignatureScheme::PariAffine32V1 {
-        return Err(BuildError::InvalidSource {
-            reason: "signature scheme is not pari-affine32-v1",
-        });
+    match metadata.signature_scheme() {
+        SignatureScheme::PariAffine32V1 | SignatureScheme::PariAffine64V1 => {}
     }
     if metadata.key_codec() != CodecId::U64 {
         return Err(BuildError::InvalidSource {
@@ -1127,9 +1126,9 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use pari_core::MinHash32;
-    use pari_store::PersistentIndex32;
-    use pari_store_lazy::{build_from_snapshot, LazyIndex32};
+    use pari_core::{MinHash32, MinHash64};
+    use pari_store::{PersistentIndex32, PersistentIndex64};
+    use pari_store_lazy::{build_from_snapshot, LazyIndex32, LazyIndex64};
 
     use super::{
         build_external, build_external_with_hook, publish_no_replace_with, sync_parent, BuildError,
@@ -1200,6 +1199,32 @@ mod tests {
             )
             .expect("insert source");
         store.sync().expect("sync source");
+        (source, sketches)
+    }
+
+    fn source_fixture64(name: &str) -> (PathBuf, Vec<MinHash64>) {
+        let source = test_path(&format!("{name}-source64"));
+        cleanup(&source);
+        let sketches = (0_u64..32)
+            .map(|item| {
+                let mut sketch = MinHash64::new(128, 7).expect("valid affine64 sketch");
+                for value in item.saturating_mul(1_000)..item.saturating_mul(1_000) + 40 {
+                    sketch.update(&value.to_le_bytes());
+                }
+                sketch
+            })
+            .collect::<Vec<_>>();
+        let mut store =
+            PersistentIndex64::create(&source, 0.8, 128, 7).expect("create affine64 source");
+        store
+            .insert_many(
+                sketches
+                    .iter()
+                    .enumerate()
+                    .map(|(key, sketch)| (u64::try_from(key).expect("small key"), sketch)),
+            )
+            .expect("insert affine64 source");
+        store.sync().expect("sync affine64 source");
         (source, sketches)
     }
 
@@ -1419,5 +1444,55 @@ mod tests {
             "owned destination was not rolled back"
         );
         assert!(!temporary.exists(), "temporary file was not removed");
+    }
+
+    #[test]
+    fn affine64_spill_sizes_match_reference_bytes_and_queries() {
+        let (source, sketches) = source_fixture64("affine64");
+        let reference = test_path("affine64-reference");
+        let external_small = test_path("affine64-external-small");
+        let external_large = test_path("affine64-external-large");
+        for path in [&reference, &external_small, &external_large] {
+            cleanup(path);
+        }
+        build_from_snapshot(&source, &reference).expect("build affine64 reference");
+        build_external(
+            &source,
+            &external_small,
+            BuildOptions {
+                max_buffer_records: 7,
+            },
+        )
+        .expect("build small affine64 spills");
+        build_external(
+            &source,
+            &external_large,
+            BuildOptions {
+                max_buffer_records: 23,
+            },
+        )
+        .expect("build large affine64 spills");
+        let reference_bytes = fs::read(&reference).expect("reference bytes");
+        assert_eq!(
+            fs::read(&external_small).expect("small-spill bytes"),
+            reference_bytes
+        );
+        assert_eq!(
+            fs::read(&external_large).expect("large-spill bytes"),
+            reference_bytes
+        );
+
+        let phase1 = PersistentIndex64::open(&source).expect("open affine64 source");
+        let mut lazy = LazyIndex64::open(&external_small).expect("open affine64 external");
+        for query in sketches.iter().take(8) {
+            assert_eq!(
+                lazy.query(query).expect("external affine64 query"),
+                phase1.query(query).expect("source affine64 query")
+            );
+        }
+        cleanup(&source);
+        cleanup(&reference);
+        cleanup(&external_small);
+        cleanup(&external_large);
     }
 }

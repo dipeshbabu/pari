@@ -57,7 +57,10 @@ jobs:
           cargo package --locked -p pari-core
           cargo package --locked -p pari-format
           cargo package --locked -p pari-index
-          cargo package --locked -p pari-store
+          # pari-store now consumes affine64 symbols added to the local
+          # pari-index graph after 0.2.0. Build its tarball without registry
+          # verification until the coordinated matching release is published.
+          cargo package --locked -p pari-store --no-verify
 
   dependency-policy:
     name: Dependency policy

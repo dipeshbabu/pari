@@ -24,7 +24,7 @@ pub use grouping::{
     group_pairs, group_pairs_with_representative, CandidatePairs, DuplicateGroup, GroupError,
 };
 pub use planner::{
-    explain_lsh, plan_lsh, LshPlan, LshPlanError, LshPlanOptions, LshSizeEstimates,
+    explain_lsh, explain_lsh64, plan_lsh, LshPlan, LshPlanError, LshPlanOptions, LshSizeEstimates,
     ParameterSource, RecommendationReason, StorageMode, LSH_PLANNER_MODEL,
 };
 
@@ -485,7 +485,6 @@ pub struct LshIndex32 {
 /// full `u64` width and are never narrowed to the affine32 domain. Query
 /// results are approximate LSH candidates, sorted by external key for
 /// deterministic output; they are not exact Jaccard verification results.
-/// Persistence is intentionally deferred to a later slice of issue #124.
 #[derive(Debug)]
 pub struct LshIndex64 {
     threshold: f64,

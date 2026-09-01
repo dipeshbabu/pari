@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Read-only paged bucket storage for Pari similarity indexes.
+//! Read-only affine32 and affine64 paged bucket storage for Pari similarity indexes.
 //!
 //! Lazy indexes use the canonical bucket-segment codec from `pari-format`.
 //! Reopening reads validated metadata and compact bucket locations only;
@@ -20,7 +20,7 @@ use std::{
     time::Instant,
 };
 
-use pari_core::MinHash32;
+use pari_core::{MinHash32, MinHash64};
 use pari_format::{
     bucket_record_size, decode_bucket_segment, encode_bucket_segment, read_bucket_members,
     validate_global_bucket_order, Algorithm, BucketError, BucketKey, BucketLocation, BucketRecord,
@@ -29,8 +29,8 @@ use pari_format::{
     BUCKET_SEGMENT_TARGET_BYTES,
 };
 use pari_index::{
-    explain_lsh, BucketDistribution, LshError, LshIndex32, LshParams, LshPlan, LshPlanError,
-    LshPlanOptions, QueryMetrics, StorageMode,
+    explain_lsh, explain_lsh64, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams,
+    LshPlan, LshPlanError, LshPlanOptions, QueryMetrics, StorageMode,
 };
 use same_file::Handle;
 
@@ -166,9 +166,8 @@ pub struct LazyStats {
     pub queries: Option<QueryMetrics>,
 }
 
-/// Read-only lazy LSH index backed by checksummed bucket segments.
 #[derive(Debug)]
-pub struct LazyIndex32 {
+struct LazyIndexCore {
     file: File,
     layout: FileLayout,
     bucket_sections: Vec<SectionDescriptor>,
@@ -180,12 +179,14 @@ pub struct LazyIndex32 {
     query_metrics: Option<QueryMetrics>,
 }
 
-impl LazyIndex32 {
-    /// Open a lazy index without materializing bucket memberships.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, LazyStoreError> {
+impl LazyIndexCore {
+    fn open(
+        path: impl AsRef<Path>,
+        expected_scheme: SignatureScheme,
+    ) -> Result<Self, LazyStoreError> {
         let mut file = File::open(path)?;
         let layout = FileLayout::read_from(&mut file)?;
-        validate_metadata(layout.metadata())?;
+        validate_metadata(layout.metadata(), Some(expected_scheme))?;
         let keys_section = required_unique_section(&layout, SectionKind::Keys)?;
         let bucket_sections = collect_bucket_sections(&layout)?;
         if bucket_sections.is_empty() {
@@ -204,7 +205,7 @@ impl LazyIndex32 {
         let seed = layout.metadata().seed();
         let threshold = layout.metadata().threshold();
         let params = LshParams::new(bands, rows);
-        LshIndex32::with_params(threshold, num_perm, seed, params)?;
+        validate_lsh_configuration(expected_scheme, threshold, num_perm, seed, params)?;
 
         let mut directory = Vec::new();
         for descriptor in &bucket_sections {
@@ -230,12 +231,13 @@ impl LazyIndex32 {
         })
     }
 
-    /// Query approximate candidates while paging only matching member ranges.
-    pub fn query(&mut self, sketch: &MinHash32) -> Result<Vec<u64>, LazyStoreError> {
-        let started = self.query_metrics.as_ref().map(|_| Instant::now());
-        let hashes = self.band_hashes(sketch)?;
+    fn query_hashes(
+        &mut self,
+        hashes: &[u64],
+        started: Option<Instant>,
+    ) -> Result<Vec<u64>, LazyStoreError> {
         let mut candidates = HashSet::new();
-        self.collect_candidates(&hashes, &mut candidates)?;
+        self.collect_candidates(hashes, &mut candidates)?;
         let mut output: Vec<_> = candidates.into_iter().collect();
         output.sort_unstable();
         if let (Some(metrics), Some(started)) = (&mut self.query_metrics, started) {
@@ -244,18 +246,16 @@ impl LazyIndex32 {
         Ok(output)
     }
 
-    /// Query a batch while reusing candidate scratch storage.
-    pub fn query_many<'a>(
+    fn query_hashes_many(
         &mut self,
-        sketches: impl IntoIterator<Item = &'a MinHash32>,
+        hashes_by_query: impl IntoIterator<Item = Vec<u64>>,
+        started: Option<Instant>,
     ) -> Result<Vec<Vec<u64>>, LazyStoreError> {
-        let started = self.query_metrics.as_ref().map(|_| Instant::now());
         let mut results = Vec::new();
         let mut candidates = HashSet::new();
         let mut candidate_count = 0_usize;
-        for sketch in sketches {
+        for hashes in hashes_by_query {
             candidates.clear();
-            let hashes = self.band_hashes(sketch)?;
             self.collect_candidates(&hashes, &mut candidates)?;
             let mut output: Vec<_> = candidates.iter().copied().collect();
             output.sort_unstable();
@@ -273,27 +273,24 @@ impl LazyIndex32 {
         Ok(results)
     }
 
-    /// Enable or disable process-local query observation.
-    pub fn set_observability(&mut self, enabled: bool) {
+    fn set_observability(&mut self, enabled: bool) {
         self.query_metrics = enabled.then(QueryMetrics::default);
     }
 
-    /// Explain this index's persisted configuration without scanning buckets.
-    pub fn explain(&self) -> Result<LshPlan, LshPlanError> {
-        explain_lsh(
-            LshPlanOptions::new(
-                u64::try_from(self.item_count).unwrap_or(u64::MAX),
-                self.layout.metadata().threshold(),
-                self.num_perm,
-            )
-            .storage_mode(StorageMode::Lazy),
-            self.params,
+    fn explain(&self) -> Result<LshPlan, LshPlanError> {
+        let options = LshPlanOptions::new(
+            u64::try_from(self.item_count).unwrap_or(u64::MAX),
+            self.layout.metadata().threshold(),
+            self.num_perm,
         )
+        .storage_mode(StorageMode::Lazy);
+        match self.layout.metadata().signature_scheme() {
+            SignatureScheme::PariAffine32V1 => explain_lsh(options, self.params),
+            SignatureScheme::PariAffine64V1 => explain_lsh64(options, self.params),
+        }
     }
 
-    /// Return compact in-memory directory and file statistics.
-    #[must_use]
-    pub fn stats(&self) -> LazyStats {
+    fn stats(&self) -> LazyStats {
         LazyStats {
             items: self.item_count,
             buckets: self.directory.len(),
@@ -309,11 +306,7 @@ impl LazyIndex32 {
         }
     }
 
-    /// Verify the outer checksums of every bucket section.
-    ///
-    /// Directory structure is validated during open and each member range is
-    /// independently verified when queried.
-    pub fn verify(&mut self) -> Result<(), LazyStoreError> {
+    fn verify(&mut self) -> Result<(), LazyStoreError> {
         for descriptor in &self.bucket_sections {
             self.layout.read_section(&mut self.file, *descriptor)?;
         }
@@ -343,36 +336,123 @@ impl LazyIndex32 {
         }
         Ok(())
     }
-
-    fn band_hashes(&self, sketch: &MinHash32) -> Result<Vec<u64>, LazyStoreError> {
-        if sketch.seed() != self.seed {
-            return Err(LazyStoreError::IncompatibleSeed {
-                expected: self.seed,
-                actual: sketch.seed(),
-            });
-        }
-        if sketch.num_perm() != self.num_perm {
-            return Err(LazyStoreError::IncompatiblePermutationCount {
-                expected: self.num_perm,
-                actual: sketch.num_perm(),
-            });
-        }
-        let used = self
-            .params
-            .used_permutations()
-            .ok_or(LazyStoreError::LengthOverflow)?;
-        Ok(sketch.signature()[..used]
-            .chunks_exact(self.params.rows)
-            .map(hash_band)
-            .collect())
-    }
 }
 
-/// Convert one committed phase-1 snapshot into the canonical lazy format.
+/// Read-only lazy affine32 LSH index backed by checksummed bucket segments.
+#[derive(Debug)]
+pub struct LazyIndex32 {
+    inner: LazyIndexCore,
+}
+
+/// Read-only lazy affine64 LSH index backed by checksummed bucket segments.
+///
+/// This type rejects affine32 files instead of reinterpreting their persisted
+/// band hashes under 64-bit signature semantics.
+#[derive(Debug)]
+pub struct LazyIndex64 {
+    inner: LazyIndexCore,
+}
+
+macro_rules! impl_lazy_index {
+    ($index:ident, $sketch:ty, $scheme:expr, $hash_band:ident) => {
+        impl $index {
+            /// Open a lazy index without materializing bucket memberships.
+            pub fn open(path: impl AsRef<Path>) -> Result<Self, LazyStoreError> {
+                Ok(Self {
+                    inner: LazyIndexCore::open(path, $scheme)?,
+                })
+            }
+
+            /// Query approximate candidates while paging only matching member ranges.
+            pub fn query(&mut self, sketch: &$sketch) -> Result<Vec<u64>, LazyStoreError> {
+                let started = self.inner.query_metrics.as_ref().map(|_| Instant::now());
+                let hashes = self.band_hashes(sketch)?;
+                self.inner.query_hashes(&hashes, started)
+            }
+
+            /// Query a batch while reusing candidate scratch storage.
+            pub fn query_many<'a>(
+                &mut self,
+                sketches: impl IntoIterator<Item = &'a $sketch>,
+            ) -> Result<Vec<Vec<u64>>, LazyStoreError> {
+                let started = self.inner.query_metrics.as_ref().map(|_| Instant::now());
+                let hashes = sketches
+                    .into_iter()
+                    .map(|sketch| self.band_hashes(sketch))
+                    .collect::<Result<Vec<_>, LazyStoreError>>()?;
+                self.inner.query_hashes_many(hashes, started)
+            }
+
+            /// Enable or disable process-local query observation.
+            pub fn set_observability(&mut self, enabled: bool) {
+                self.inner.set_observability(enabled);
+            }
+
+            /// Explain this index's persisted configuration without scanning buckets.
+            pub fn explain(&self) -> Result<LshPlan, LshPlanError> {
+                self.inner.explain()
+            }
+
+            /// Return compact in-memory directory and file statistics.
+            #[must_use]
+            pub fn stats(&self) -> LazyStats {
+                self.inner.stats()
+            }
+
+            /// Verify the outer checksums of every bucket section.
+            ///
+            /// Directory structure is validated during open and each member range is
+            /// independently verified when queried.
+            pub fn verify(&mut self) -> Result<(), LazyStoreError> {
+                self.inner.verify()
+            }
+
+            fn band_hashes(&self, sketch: &$sketch) -> Result<Vec<u64>, LazyStoreError> {
+                if sketch.seed() != self.inner.seed {
+                    return Err(LazyStoreError::IncompatibleSeed {
+                        expected: self.inner.seed,
+                        actual: sketch.seed(),
+                    });
+                }
+                if sketch.num_perm() != self.inner.num_perm {
+                    return Err(LazyStoreError::IncompatiblePermutationCount {
+                        expected: self.inner.num_perm,
+                        actual: sketch.num_perm(),
+                    });
+                }
+                let used = self
+                    .inner
+                    .params
+                    .used_permutations()
+                    .ok_or(LazyStoreError::LengthOverflow)?;
+                Ok(sketch.signature()[..used]
+                    .chunks_exact(self.inner.params.rows)
+                    .map($hash_band)
+                    .collect())
+            }
+        }
+    };
+}
+
+impl_lazy_index!(
+    LazyIndex32,
+    MinHash32,
+    SignatureScheme::PariAffine32V1,
+    hash_band32
+);
+impl_lazy_index!(
+    LazyIndex64,
+    MinHash64,
+    SignatureScheme::PariAffine64V1,
+    hash_band64
+);
+
+/// Convert one committed affine32 or affine64 snapshot into the canonical lazy format.
 ///
 /// This reference builder materializes the bucket map in memory. Large builds
 /// should use `pari-store-build`, which produces byte-compatible segments using
-/// bounded spill buffers and external merge.
+/// bounded spill buffers and external merge. The source signature scheme and
+/// width are preserved exactly.
 pub fn build_from_snapshot(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -384,7 +464,7 @@ pub fn build_from_snapshot(
 
     let mut source_file = File::open(source)?;
     let source_layout = FileLayout::read_from(&mut source_file)?;
-    validate_metadata(source_layout.metadata())?;
+    validate_metadata(source_layout.metadata(), None)?;
     let keys_descriptor = required_unique_section(&source_layout, SectionKind::Keys)?;
     let hashes_descriptor = required_unique_section(&source_layout, SectionKind::BandHashes)?;
     let keys_payload = source_layout.read_section(&mut source_file, keys_descriptor)?;
@@ -477,15 +557,21 @@ fn push_bucket_section(
     Ok(())
 }
 
-fn validate_metadata(metadata: &IndexMetadata) -> Result<(), LazyStoreError> {
+fn validate_metadata(
+    metadata: &IndexMetadata,
+    expected_scheme: Option<SignatureScheme>,
+) -> Result<(), LazyStoreError> {
     if metadata.algorithm() != Algorithm::MinHashLsh {
         return Err(LazyStoreError::InvalidSnapshot {
             reason: "algorithm is not MinHash LSH",
         });
     }
-    if metadata.signature_scheme() != SignatureScheme::PariAffine32V1 {
+    match metadata.signature_scheme() {
+        SignatureScheme::PariAffine32V1 | SignatureScheme::PariAffine64V1 => {}
+    }
+    if expected_scheme.is_some_and(|scheme| metadata.signature_scheme() != scheme) {
         return Err(LazyStoreError::InvalidSnapshot {
-            reason: "signature scheme is not pari-affine32-v1",
+            reason: "signature scheme does not match the lazy index type",
         });
     }
     if metadata.key_codec() != CodecId::U64 {
@@ -497,6 +583,24 @@ fn validate_metadata(metadata: &IndexMetadata) -> Result<(), LazyStoreError> {
         return Err(LazyStoreError::InvalidSnapshot {
             reason: "lazy v1 store does not support feature flags",
         });
+    }
+    Ok(())
+}
+
+fn validate_lsh_configuration(
+    scheme: SignatureScheme,
+    threshold: f64,
+    num_perm: usize,
+    seed: u64,
+    params: LshParams,
+) -> Result<(), LazyStoreError> {
+    match scheme {
+        SignatureScheme::PariAffine32V1 => {
+            LshIndex32::with_params(threshold, num_perm, seed, params)?;
+        }
+        SignatureScheme::PariAffine64V1 => {
+            LshIndex64::with_params(threshold, num_perm, seed, params)?;
+        }
     }
     Ok(())
 }
@@ -786,10 +890,20 @@ fn sync_parent(path: &Path) -> Result<(), LazyStoreError> {
     }
 }
 
-fn hash_band(values: &[u32]) -> u64 {
+fn hash_band32(values: &[u32]) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
     for value in values {
         hash ^= u64::from(*value);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash ^= u64::try_from(values.len()).expect("band length is bounded by num_perm");
+    avalanche64(hash)
+}
+
+fn hash_band64(values: &[u64]) -> u64 {
+    let mut hash = FNV_OFFSET_BASIS;
+    for value in values {
+        hash ^= *value;
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash ^= u64::try_from(values.len()).expect("band length is bounded by num_perm");
@@ -823,15 +937,15 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
-    use pari_core::MinHash32;
-    use pari_format::{FileLayout, SectionKind};
-    use pari_index::LshIndex32;
-    use pari_store::PersistentIndex32;
+    use pari_core::{MinHash32, MinHash64};
+    use pari_format::{FileLayout, SectionKind, SignatureScheme};
+    use pari_index::{LshIndex32, LshIndex64};
+    use pari_store::{PersistentIndex32, PersistentIndex64};
     use same_file::Handle;
 
     use super::{
         atomic_create, build_from_snapshot, create_temporary, rollback_published, LazyIndex32,
-        LazyStoreError,
+        LazyIndex64, LazyStoreError,
     };
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
@@ -956,6 +1070,14 @@ mod tests {
         sketch
     }
 
+    fn sketch64(base: u64) -> MinHash64 {
+        let mut sketch = MinHash64::new(128, 7).expect("valid affine64 sketch");
+        for value in base..base + 40 {
+            sketch.update(&value.to_le_bytes());
+        }
+        sketch
+    }
+
     fn build_fixture(name: &str) -> (PathBuf, PathBuf, Vec<MinHash32>) {
         let source = test_path(&format!("{name}-source"));
         let lazy = test_path(&format!("{name}-lazy"));
@@ -973,6 +1095,27 @@ mod tests {
             .expect("insert source");
         store.sync().expect("sync source");
         build_from_snapshot(&source, &lazy).expect("build lazy");
+        (source, lazy, sketches)
+    }
+
+    fn build_fixture64(name: &str) -> (PathBuf, PathBuf, Vec<MinHash64>) {
+        let source = test_path(&format!("{name}-source64"));
+        let lazy = test_path(&format!("{name}-lazy64"));
+        cleanup(&source);
+        cleanup(&lazy);
+        let sketches = vec![sketch64(0), sketch64(5), sketch64(1_000), sketch64(2_000)];
+        let mut store =
+            PersistentIndex64::create(&source, 0.8, 128, 7).expect("create affine64 source");
+        store
+            .insert_many(
+                sketches
+                    .iter()
+                    .enumerate()
+                    .map(|(key, value)| (u64::try_from(key).expect("small key"), value)),
+            )
+            .expect("insert affine64 source");
+        store.sync().expect("sync affine64 source");
+        build_from_snapshot(&source, &lazy).expect("build affine64 lazy");
         (source, lazy, sketches)
     }
 
@@ -1057,6 +1200,86 @@ mod tests {
         drop(file);
 
         let mut lazy = LazyIndex32::open(&lazy_path).expect("directory still opens");
+        assert!(lazy.verify().is_err());
+        cleanup(&source);
+        cleanup(&lazy_path);
+    }
+
+    #[test]
+    fn affine64_conversion_queries_and_verification_match_references() {
+        let (source, lazy_path, sketches) = build_fixture64("parity");
+        let phase1 = PersistentIndex64::open(&source).expect("open affine64 source");
+        let mut memory = LshIndex64::new(0.8, 128, 7).expect("affine64 memory index");
+        memory
+            .insert_many(
+                sketches
+                    .iter()
+                    .enumerate()
+                    .map(|(key, value)| (u64::try_from(key).expect("small key"), value)),
+            )
+            .expect("insert affine64 memory");
+        let mut lazy = LazyIndex64::open(&lazy_path).expect("open affine64 lazy");
+        assert_eq!(lazy.stats().items, sketches.len());
+        assert_eq!(
+            lazy.explain()
+                .expect("explain")
+                .sizes
+                .signature_bytes_per_item,
+            1_024
+        );
+        assert_eq!(
+            lazy.query_many(sketches.iter()).expect("lazy batch query"),
+            memory
+                .query_many(sketches.iter())
+                .expect("memory batch query")
+        );
+        for query in &sketches {
+            assert_eq!(
+                lazy.query(query).expect("lazy affine64 query"),
+                phase1.query(query).expect("persistent affine64 query")
+            );
+        }
+        lazy.verify().expect("verify affine64 lazy snapshot");
+
+        let mut file = fs::File::open(&lazy_path).expect("open lazy metadata");
+        let layout = FileLayout::read_from(&mut file).expect("read lazy metadata");
+        assert_eq!(
+            layout.metadata().signature_scheme(),
+            SignatureScheme::PariAffine64V1
+        );
+        assert!(matches!(
+            LazyIndex32::open(&lazy_path),
+            Err(LazyStoreError::InvalidSnapshot { .. })
+        ));
+        cleanup(&source);
+        cleanup(&lazy_path);
+    }
+
+    #[test]
+    fn affine64_corrupt_bucket_payload_fails_verification() {
+        let (source, lazy_path, _) = build_fixture64("corrupt");
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lazy_path)
+            .expect("open affine64 lazy file");
+        let layout = FileLayout::read_from(&mut file).expect("layout");
+        let bucket = layout
+            .sections()
+            .iter()
+            .copied()
+            .find(|section| section.kind() == SectionKind::Buckets)
+            .expect("bucket section");
+        let position = bucket
+            .payload_offset()
+            .checked_add(bucket.payload_length().saturating_sub(1))
+            .expect("position");
+        file.seek(SeekFrom::Start(position)).expect("seek");
+        file.write_all(&[0x5A]).expect("corrupt");
+        file.sync_all().expect("sync");
+        drop(file);
+
+        let mut lazy = LazyIndex64::open(&lazy_path).expect("directory remains readable");
         assert!(lazy.verify().is_err());
         cleanup(&source);
         cleanup(&lazy_path);
