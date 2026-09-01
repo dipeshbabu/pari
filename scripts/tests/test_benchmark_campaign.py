@@ -5,8 +5,10 @@ import json
 import sys
 import tempfile
 import unittest
+from argparse import Namespace
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "benchmark_campaign.py"
 ROOT = SCRIPT.parent.parent
@@ -72,6 +74,8 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profiles["scale-100k"].items, 100_000)
         self.assertEqual(profiles["scale-1m"].items, 1_000_000)
         self.assertEqual(profiles["scale-10m"].items, 10_000_000)
+        self.assertTrue(profiles["scale-10m"].preserve_failure_evidence)
+        self.assertFalse(profiles["smoke"].preserve_failure_evidence)
         self.assertTrue(profiles["scale-100m-methodology"].methodology_only)
 
     def test_plan_uses_one_configuration_for_memory_and_storage(self) -> None:
@@ -233,6 +237,222 @@ class ValidationTests(unittest.TestCase):
             (root / "storage.json").write_text("{}", encoding="utf-8")
             with self.assertRaisesRegex(campaign.CampaignError, "checksum mismatch"):
                 campaign.validate_bundle(bundle_path)
+
+
+class CampaignExecutionTests(unittest.TestCase):
+    def arguments(
+        self,
+        root: Path,
+        *,
+        profile: str,
+        preserve_failure_evidence: bool = False,
+    ) -> Namespace:
+        return Namespace(
+            repo_root=ROOT,
+            manifest=campaign.DEFAULT_MANIFEST,
+            profile=profile,
+            output=root / profile,
+            include_datasketch=False,
+            include_redis=False,
+            include_text=False,
+            allow_dirty=False,
+            preserve_failure_evidence=preserve_failure_evidence,
+        )
+
+    @staticmethod
+    def failed_command(
+        _command: list[str],
+        *,
+        root: Path,
+        environment: dict[str, str],
+        stdout_path: Path,
+        stderr_path: Path,
+    ) -> int:
+        del root, environment
+        stdout_path.write_text("partial telemetry\n", encoding="utf-8")
+        stderr_path.write_text("killed: out of memory\n", encoding="utf-8")
+        return 137
+
+    @staticmethod
+    def host() -> dict[str, object]:
+        return {
+            "architecture": "test",
+            "cpu": "test",
+            "logical_cpus": 4,
+            "operating_system": "test-os",
+            "physical_memory_bytes": 128 * 1024**3,
+            "python": "test",
+            "rustc": "rustc test",
+        }
+
+    def test_scale_10m_preserves_failed_stage_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.arguments(root, profile="scale-10m")
+            with (
+                patch.object(campaign, "git_state", return_value=(GIT_SHA, False)),
+                patch.object(campaign, "run_logged", side_effect=self.failed_command),
+                patch.object(campaign, "host_environment", return_value=self.host()),
+                self.assertRaisesRegex(campaign.CampaignError, "exited 137"),
+            ):
+                campaign.run_campaign(args)
+
+            self.assertFalse(args.output.exists())
+            failures = list(root.glob("scale-10m.failed-*"))
+            self.assertEqual(len(failures), 1)
+            failure_path = failures[0] / "failure.json"
+            failure = campaign.read_json(failure_path)
+            self.assertEqual(failure["status"], "failed")
+            self.assertEqual(
+                failure["artifact_kind"], "pari-benchmark-campaign-failure"
+            )
+            self.assertEqual(failure["failure"]["stage"], "synthetic")
+            self.assertEqual(failure["failure"]["phase"], "execution")
+            self.assertEqual(failure["failure"]["return_code"], 137)
+            command = failure["failure"]["command"]
+            self.assertEqual(command[command.index("--") + 1], "run")
+            self.assertEqual(command[command.index("--items") + 1], "10000000")
+            self.assertEqual(failure["environment"], self.host())
+            self.assertEqual(failure["completed_reports"], [])
+            files = {entry["path"]: entry for entry in failure["files"]}
+            self.assertEqual(
+                set(files), {"synthetic.stderr.log", "synthetic.stdout.log"}
+            )
+            for name, entry in files.items():
+                self.assertEqual(
+                    entry["sha256"], campaign.sha256_file(failures[0] / name)
+                )
+            with self.assertRaisesRegex(
+                campaign.CampaignError, "diagnostic evidence"
+            ):
+                campaign.validate_bundle(failure_path)
+            with self.assertRaisesRegex(
+                campaign.CampaignError, "diagnostic evidence"
+            ):
+                campaign.render_report(
+                    [failure_path], root / "should-not-render.md", require_clean=True
+                )
+            self.assertFalse((root / "should-not-render.md").exists())
+
+    def test_ordinary_failure_is_cleaned_unless_retention_is_requested(self) -> None:
+        for preserve in (False, True):
+            with self.subTest(preserve=preserve), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                args = self.arguments(
+                    root,
+                    profile="smoke",
+                    preserve_failure_evidence=preserve,
+                )
+                with (
+                    patch.object(campaign, "git_state", return_value=(GIT_SHA, False)),
+                    patch.object(campaign, "run_logged", side_effect=self.failed_command),
+                    patch.object(
+                        campaign, "host_environment", return_value=self.host()
+                    ),
+                    self.assertRaises(campaign.CampaignError),
+                ):
+                    campaign.run_campaign(args)
+
+                failures = list(root.glob("smoke.failed-*"))
+                self.assertEqual(len(failures), 1 if preserve else 0)
+                self.assertEqual(list(root.glob(".smoke.partial-*")), [])
+
+    def test_validation_failure_preserves_completed_and_partial_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.arguments(root, profile="scale-10m")
+            _manifest, profiles = campaign.load_campaign(campaign.DEFAULT_MANIFEST)
+            profile = asdict(profiles["scale-10m"])
+
+            def write_reports(
+                command: list[str],
+                *,
+                root: Path,
+                environment: dict[str, str],
+                stdout_path: Path,
+                stderr_path: Path,
+            ) -> int:
+                del root, environment
+                stdout_path.write_text("stage output\n", encoding="utf-8")
+                stderr_path.write_text("", encoding="utf-8")
+                stage = command[command.index("--") + 1]
+                report_path = Path(command[command.index("--output") + 1])
+                if stage == "run":
+                    report_path.write_text(
+                        json.dumps(report_for("synthetic", profile)), encoding="utf-8"
+                    )
+                else:
+                    report_path.write_text("{}\n", encoding="utf-8")
+                return 0
+
+            with (
+                patch.object(campaign, "git_state", return_value=(GIT_SHA, False)),
+                patch.object(campaign, "run_logged", side_effect=write_reports),
+                patch.object(campaign, "host_environment", return_value=self.host()),
+                self.assertRaisesRegex(campaign.CampaignError, "validation failed"),
+            ):
+                campaign.run_campaign(args)
+
+            failure_root = next(root.glob("scale-10m.failed-*"))
+            failure = campaign.read_json(failure_root / "failure.json")
+            self.assertEqual(failure["failure"]["stage"], "storage")
+            self.assertEqual(failure["failure"]["phase"], "validation")
+            self.assertEqual(failure["failure"]["return_code"], 0)
+            self.assertEqual(
+                [entry["stage"] for entry in failure["completed_reports"]],
+                ["synthetic"],
+            )
+            files = {entry["path"] for entry in failure["files"]}
+            self.assertEqual(
+                files,
+                {
+                    "storage.json",
+                    "storage.stderr.log",
+                    "storage.stdout.log",
+                    "synthetic.json",
+                    "synthetic.stderr.log",
+                    "synthetic.stdout.log",
+                },
+            )
+
+    def test_success_still_publishes_only_a_validated_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.arguments(root, profile="smoke")
+            _manifest, profiles = campaign.load_campaign(campaign.DEFAULT_MANIFEST)
+            profile = asdict(profiles["smoke"])
+
+            def write_reports(
+                command: list[str],
+                *,
+                root: Path,
+                environment: dict[str, str],
+                stdout_path: Path,
+                stderr_path: Path,
+            ) -> int:
+                del root, environment
+                stdout_path.write_text("stage output\n", encoding="utf-8")
+                stderr_path.write_text("", encoding="utf-8")
+                command_stage = command[command.index("--") + 1]
+                report_stage = "synthetic" if command_stage == "run" else "storage"
+                report_path = Path(command[command.index("--output") + 1])
+                report_path.write_text(
+                    json.dumps(report_for(report_stage, profile)), encoding="utf-8"
+                )
+                return 0
+
+            with (
+                patch.object(campaign, "git_state", return_value=(GIT_SHA, False)),
+                patch.object(campaign, "run_logged", side_effect=write_reports),
+                patch.object(campaign, "host_environment", return_value=self.host()),
+            ):
+                bundle_path = campaign.run_campaign(args)
+
+            self.assertEqual(bundle_path, args.output.resolve() / "bundle.json")
+            self.assertTrue(bundle_path.exists())
+            campaign.validate_bundle(bundle_path)
+            self.assertEqual(list(root.glob("smoke.failed-*")), [])
+            self.assertEqual(list(root.glob(".smoke.partial-*")), [])
 
 
 if __name__ == "__main__":

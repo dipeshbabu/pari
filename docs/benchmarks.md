@@ -197,6 +197,10 @@ python scripts/benchmark_campaign.py validate \
 
 The output directory must not already exist. A normal run refuses a dirty worktree because an artifact cannot honestly attribute uncommitted benchmark code to a Git SHA. `--allow-dirty` exists only for local smoke development; bundles produced that way are rejected as publishable evidence by default.
 
+The `scale-10m` profile preserves failures because reaching a host limit is evidence for its architecture decision. If a stage fails, the requested output directory remains absent and the harness retains a sibling directory named `<output>.failed-<unique>/`. Its `failure.json` records the failed stage, exact command, return code when a process started, failure phase and message, Git/worktree/profile provenance, host and filesystem telemetry, completed reports, and SHA-256 checksums for every available top-level report and log. Process temporary files are removed before retention so spill data is not mistaken for evidence or allowed to consume the host indefinitely.
+
+Failure artifacts are diagnostic evidence, not successful or publishable benchmark bundles. The `validate` and `render` commands reject `failure.json`; only a transactionally published `bundle.json` has passed the campaign correctness gates. Other profiles continue to clean failed staging directories by default. Pass `--preserve-failure-evidence` to opt into the same diagnostic retention while investigating another profile.
+
 The profiles hold algorithm and workload semantics fixed while increasing scale:
 
 | Profile | Synthetic items | Queries | Reference text items | Intended environment |
