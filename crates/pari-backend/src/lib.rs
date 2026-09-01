@@ -34,6 +34,7 @@ const DESCRIPTOR_MAGIC: [u8; 8] = *b"PARIBK01";
 const DESCRIPTOR_BYTES: usize = 56;
 #[cfg(feature = "redis")]
 const NO_RETENTION: u64 = u64::MAX;
+const MAX_RETENTION_SECONDS: u64 = (1_u64 << 53) - 1;
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 
@@ -141,7 +142,11 @@ impl IndexDescriptor {
         params: LshParams,
         retention: Option<Duration>,
     ) -> Result<Self, BackendError> {
-        if retention.is_some_and(|value| value.is_zero()) {
+        if retention.is_some_and(|value| {
+            value.as_secs() == 0
+                || value.subsec_nanos() != 0
+                || value.as_secs() > MAX_RETENTION_SECONDS
+        }) {
             return Err(BackendError::InvalidRetention);
         }
         LshIndex32::with_params(threshold, num_perm, seed, params).map_err(|error| {
@@ -245,7 +250,7 @@ pub enum BackendError {
     DuplicateKey { key: u64 },
     /// The backend cannot provide the requested capability.
     UnsupportedCapability { capability: BackendCapability },
-    /// Retention must be at least one second when configured.
+    /// Retention must be an exactly representable supported whole-second value.
     InvalidRetention,
     /// A persisted index descriptor failed semantic validation.
     InvalidDescriptor { reason: String },
@@ -277,7 +282,10 @@ impl fmt::Display for BackendError {
             Self::UnsupportedCapability { capability } => {
                 write!(formatter, "backend does not support {capability:?}")
             }
-            Self::InvalidRetention => formatter.write_str("retention must be at least one second"),
+            Self::InvalidRetention => write!(
+                formatter,
+                "retention must be a whole number of seconds in 1..={MAX_RETENTION_SECONDS}"
+            ),
             Self::InvalidDescriptor { reason } => write!(formatter, "invalid descriptor: {reason}"),
             Self::InvalidNamespace { reason } => write!(formatter, "invalid namespace: {reason}"),
             Self::CorruptData { reason } => write!(formatter, "invalid backend data: {reason}"),
@@ -953,4 +961,44 @@ fn usize_to_u64(value: usize) -> Result<u64, BackendError> {
 #[cfg(feature = "redis")]
 fn u64_to_usize(value: u64) -> Result<usize, BackendError> {
     usize::try_from(value).map_err(|_| BackendError::LengthOverflow)
+}
+
+#[cfg(all(test, feature = "redis"))]
+mod tests {
+    use std::time::Duration;
+
+    use pari_index::LshParams;
+
+    use super::{decode_descriptor, encode_descriptor, BackendError, IndexDescriptor};
+
+    fn descriptor(retention: Duration) -> Result<IndexDescriptor, BackendError> {
+        IndexDescriptor::new(0.8, 128, 7, LshParams::new(32, 4), Some(retention))
+    }
+
+    #[test]
+    fn retention_requires_supported_whole_seconds() {
+        for invalid in [
+            Duration::ZERO,
+            Duration::from_nanos(1),
+            Duration::from_millis(999),
+            Duration::new(1, 1),
+            Duration::from_secs(super::MAX_RETENTION_SECONDS + 1),
+            Duration::from_secs(u64::MAX),
+        ] {
+            assert!(matches!(
+                descriptor(invalid),
+                Err(BackendError::InvalidRetention)
+            ));
+        }
+    }
+
+    #[test]
+    fn accepted_retention_round_trips_exactly() {
+        for seconds in [1, 300, super::MAX_RETENTION_SECONDS] {
+            let original = descriptor(Duration::from_secs(seconds)).expect("valid retention");
+            let encoded = encode_descriptor(&original).expect("encode descriptor");
+            let decoded = decode_descriptor(&encoded).expect("decode descriptor");
+            assert_eq!(decoded, original);
+        }
+    }
 }

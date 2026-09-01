@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Backend retention rejects values that cannot round-trip through whole-second
+  Redis metadata instead of silently truncating or disabling TTL.
 - Lazy index publication preserves destinations created concurrently after conversion begins.
 - Bounded external index publication now atomically rejects existing destinations and rolls back transaction-owned outputs after cleanup or durability failures.
 - `pari index` publishes its destination only after successful ingestion and no longer leaves a valid-looking partial index after input failure.
