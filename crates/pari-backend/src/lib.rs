@@ -14,17 +14,25 @@ use std::{
 };
 
 use pari_core::MinHash32;
-use pari_format::{BucketKey, CodecError, KeyCodec, U64Codec};
+use pari_format::{BucketKey, CodecError};
+#[cfg(feature = "redis")]
+use pari_format::{KeyCodec, U64Codec};
 use pari_index::{BucketDistribution, LshError, LshIndex32, LshParams, QueryMetrics};
 
 #[cfg(feature = "redis")]
 mod redis_backend;
 
+#[cfg(feature = "conformance")]
+pub mod conformance;
+
 #[cfg(feature = "redis")]
 pub use redis_backend::RedisBackend;
 
+#[cfg(feature = "redis")]
 const DESCRIPTOR_MAGIC: [u8; 8] = *b"PARIBK01";
+#[cfg(feature = "redis")]
 const DESCRIPTOR_BYTES: usize = 56;
+#[cfg(feature = "redis")]
 const NO_RETENTION: u64 = u64::MAX;
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
@@ -67,6 +75,7 @@ impl BackendCapabilities {
         mask: Self::BATCH_READ | Self::BATCH_WRITE | Self::DELETE | Self::FLUSH | Self::HEALTH,
     };
 
+    #[cfg(feature = "redis")]
     pub(crate) const REDIS: Self = Self {
         mask: Self::BATCH_READ
             | Self::BATCH_WRITE
@@ -860,6 +869,7 @@ fn avalanche64(mut value: u64) -> u64 {
     value ^ (value >> 33)
 }
 
+#[cfg(feature = "redis")]
 pub(crate) fn encode_descriptor(descriptor: &IndexDescriptor) -> Result<Vec<u8>, BackendError> {
     let mut bytes = Vec::with_capacity(DESCRIPTOR_BYTES);
     bytes.extend_from_slice(&DESCRIPTOR_MAGIC);
@@ -876,6 +886,7 @@ pub(crate) fn encode_descriptor(descriptor: &IndexDescriptor) -> Result<Vec<u8>,
     Ok(bytes)
 }
 
+#[cfg(feature = "redis")]
 pub(crate) fn decode_descriptor(bytes: &[u8]) -> Result<IndexDescriptor, BackendError> {
     if bytes.len() != DESCRIPTOR_BYTES {
         return Err(BackendError::CorruptData {
@@ -909,14 +920,17 @@ pub(crate) fn decode_descriptor(bytes: &[u8]) -> Result<IndexDescriptor, Backend
     )
 }
 
+#[cfg(feature = "redis")]
 pub(crate) fn encode_user_key(key: u64) -> Result<Vec<u8>, BackendError> {
     Ok(U64Codec.encode(&key)?)
 }
 
+#[cfg(feature = "redis")]
 pub(crate) fn decode_user_key(bytes: &[u8]) -> Result<u64, BackendError> {
     Ok(U64Codec.decode(bytes)?)
 }
 
+#[cfg(feature = "redis")]
 fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, BackendError> {
     let end = offset.checked_add(8).ok_or(BackendError::LengthOverflow)?;
     let raw: [u8; 8] = bytes
@@ -931,10 +945,12 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, BackendError> {
     Ok(u64::from_le_bytes(raw))
 }
 
+#[cfg(feature = "redis")]
 fn usize_to_u64(value: usize) -> Result<u64, BackendError> {
     u64::try_from(value).map_err(|_| BackendError::LengthOverflow)
 }
 
+#[cfg(feature = "redis")]
 fn u64_to_usize(value: u64) -> Result<usize, BackendError> {
     usize::try_from(value).map_err(|_| BackendError::LengthOverflow)
 }

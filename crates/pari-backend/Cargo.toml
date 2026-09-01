@@ -10,7 +10,8 @@ publish = false
 
 [features]
 default = []
-redis = ["dep:redis"]
+conformance = []
+redis = ["dep:redis", "conformance"]
 
 [dependencies]
 pari-core = { path = "../pari-core" }
@@ -24,6 +25,10 @@ pari-bench = { path = "../pari-bench" }
 [[example]]
 name = "redis_bench"
 required-features = ["redis"]
+
+[[test]]
+name = "backend_contract"
+required-features = ["conformance"]
 
 [lints]
 workspace = true
