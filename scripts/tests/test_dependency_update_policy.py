@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -25,13 +24,9 @@ class DependencyUpdatePolicyTests(unittest.TestCase):
         self.assertIn('name = "redis"\nversion = "0.32.7"', lockfile)
 
     def test_dependabot_ignores_only_incompatible_update_classes(self) -> None:
-        dependabot = (ROOT / ".github" / "dependabot.yml").read_text(
-            encoding="utf-8"
-        )
+        dependabot = (ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8")
         self.assertIn("- dependency-name: redis", dependabot)
-        self.assertIn(
-            'update-types: ["version-update:semver-major"]', dependabot
-        )
+        self.assertIn('update-types: ["version-update:semver-major"]', dependabot)
         self.assertIn("- dependency-name: sha1", dependabot)
         self.assertIn('"version-update:semver-minor"', dependabot)
         self.assertIn('"version-update:semver-major"', dependabot)
