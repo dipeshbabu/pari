@@ -42,10 +42,14 @@ Pari is performance-sensitive infrastructure. Keep changes small enough to revie
 
    Dependency changes must also pass `cargo deny check advisories licenses bans sources`. Release metadata and packaging changes must pass `python scripts/release.py validate`. The platform, integration, Redis, and release workflows remain authoritative for checks that need their managed environment.
 
+   CI may restore the reviewed cargo-deny binary from a cache written only by a successful `main` run. A cache miss is expected after a workflow, toolchain, version, operating-system, or architecture change and must fall back to the exact locked install. Do not make pull-request jobs cache publishers or remove the policy check on a cache hit.
+
 5. Add benchmark evidence when a PR claims a performance improvement or changes a hot path.
 6. Update documentation for public APIs and persisted formats.
 7. Open a pull request that links the issue and explains correctness, compatibility, and performance impact.
 8. Do not merge while required CI is failing or incomplete.
+
+Superseded runs for an updated pull request are canceled to avoid spending runner time on an obsolete head. The newest mergeable head must still complete every required check; `main`, tag, scheduled, and manual runs are not canceled by this policy.
 
 ## Compatibility and performance evidence
 
@@ -61,6 +65,8 @@ python scripts/benchmark_campaign.py validate \
 ```
 
 Larger or publishable runs must follow the environment and artifact rules in the [benchmark guide](docs/benchmarks.md). CI timing on shared runners is not benchmark evidence.
+
+For a CI-runtime change, record job and relevant step timings from multiple recent successful pull requests before implementation. After merge and any required cache warm-up, compare multiple successful runs, report hits and misses separately, and include medians and ranges without presenting shared-runner timing as application-performance evidence.
 
 ## Issues and triage
 
