@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 crc32fast = "1.5"
 pari-format = { path = "../pari-format" }
+same-file = "1.0.6"
 
 [dev-dependencies]
 pari-core = { path = "../pari-core" }
