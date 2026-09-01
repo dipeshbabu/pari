@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Persistent commits now use uniquely owned temporary files instead of
+  following or truncating a predictable sibling path.
 - Benchmark campaign stages now enforce each profile's declared timeout and
   preserve the exact limit and partial logs in timeout failure evidence.
 - Backend retention rejects values that cannot round-trip through whole-second

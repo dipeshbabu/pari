@@ -20,7 +20,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
     time::Instant,
 };
 
@@ -41,6 +44,8 @@ const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 const COUNT_BYTES: usize = 8;
 const U64_BYTES: usize = 8;
+const TEMPORARY_ALLOCATION_ATTEMPTS: u64 = 1_024;
+static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// Errors returned by the persistent local index.
 #[derive(Debug)]
@@ -546,16 +551,18 @@ impl PersistentIndexCore {
         }
 
         let snapshot = self.encode_snapshot()?;
-        let temporary = temporary_path(&self.path)?;
         create_parent_if_needed(&self.path)?;
-        write_synced_file(&temporary, &snapshot)?;
+        let mut temporary = OwnedTemporaryFile::allocate(&self.path)?;
+        if let Err(error) = temporary.write_synced(&snapshot) {
+            return Err(temporary.cleanup_after(error));
+        }
 
         // Close the committed base before replacing the file. This is required
         // on Windows and avoids retaining a handle to the old generation.
         self.base = None;
-        if let Err(error) = fs::rename(&temporary, &self.path) {
+        if let Err(error) = temporary.publish_replace(&self.path) {
             self.rebuild_overlay_all()?;
-            return Err(StoreError::Io(error));
+            return Err(error);
         }
 
         let parent_error = if sync_parent {
@@ -840,16 +847,98 @@ fn create_parent_if_needed(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn write_synced_file(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.flush()?;
-    file.sync_all()?;
-    Ok(())
+#[derive(Debug)]
+struct OwnedTemporaryFile {
+    path: PathBuf,
+    file: Option<File>,
+    owns_path: bool,
+}
+
+impl OwnedTemporaryFile {
+    fn allocate(target: &Path) -> Result<Self, StoreError> {
+        target.file_name().ok_or(StoreError::InvalidPath)?;
+        let parent = target
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let process_id = std::process::id();
+
+        for _ in 0..TEMPORARY_ALLOCATION_ATTEMPTS {
+            let sequence = NEXT_TEMPORARY_FILE.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(".pari-tmp-{process_id}-{sequence:016x}"));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file: Some(file),
+                        owns_path: true,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(StoreError::Io(error)),
+            }
+        }
+
+        Err(StoreError::Io(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "could not allocate a unique temporary file beside {}",
+                target.display()
+            ),
+        )))
+    }
+
+    fn write_synced(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("persistent-index temporary file is already closed"))?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()
+    }
+
+    fn publish_replace(mut self, target: &Path) -> Result<(), StoreError> {
+        self.file.take();
+        match fs::rename(&self.path, target) {
+            Ok(()) => {
+                self.owns_path = false;
+                Ok(())
+            }
+            Err(error) => Err(self.cleanup_after(error)),
+        }
+    }
+
+    fn cleanup_after(mut self, operation_error: io::Error) -> StoreError {
+        self.file.take();
+        match fs::remove_file(&self.path) {
+            Ok(()) => {
+                self.owns_path = false;
+                StoreError::Io(operation_error)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.owns_path = false;
+                StoreError::Io(operation_error)
+            }
+            Err(cleanup_error) => StoreError::Io(io::Error::new(
+                operation_error.kind(),
+                format!(
+                    "{operation_error}; additionally failed to remove transaction-owned {}: \
+                     {cleanup_error}",
+                    self.path.display()
+                ),
+            )),
+        }
+    }
+}
+
+impl Drop for OwnedTemporaryFile {
+    fn drop(&mut self) {
+        self.file.take();
+        if self.owns_path {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 fn validate_store_metadata(
@@ -1220,13 +1309,6 @@ fn read_u64(bytes: &[u8]) -> Result<u64, StoreError> {
     Ok(u64::from_le_bytes(raw))
 }
 
-fn temporary_path(path: &Path) -> Result<PathBuf, StoreError> {
-    let file_name = path.file_name().ok_or(StoreError::InvalidPath)?;
-    let mut temporary_name = file_name.to_os_string();
-    temporary_name.push(".tmp");
-    Ok(path.with_file_name(temporary_name))
-}
-
 #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
     #[cfg(windows)]
@@ -1279,7 +1361,7 @@ mod tests {
         collections::{BTreeMap, HashMap},
         fs::{self, OpenOptions},
         io::{Seek, SeekFrom, Write},
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
 
@@ -1291,7 +1373,7 @@ mod tests {
     use pari_index::{LshIndex32, LshIndex64, LshParams};
 
     use super::{
-        encode_band_hashes, encode_keys, temporary_path, PersistentIndex32, PersistentIndex64,
+        encode_band_hashes, encode_keys, OwnedTemporaryFile, PersistentIndex32, PersistentIndex64,
         StoreError,
     };
 
@@ -1323,9 +1405,33 @@ mod tests {
 
     fn cleanup(path: &PathBuf) {
         let _ = fs::remove_file(path);
-        if let Ok(temporary) = temporary_path(path) {
-            let _ = fs::remove_file(temporary);
-        }
+        let _ = fs::remove_file(legacy_temporary_path(path));
+    }
+
+    fn test_directory(name: &str) -> PathBuf {
+        let path = test_path(name);
+        fs::create_dir(&path).expect("create isolated test directory");
+        path
+    }
+
+    fn transaction_artifacts(directory: &Path) -> Vec<PathBuf> {
+        fs::read_dir(directory)
+            .expect("read test directory")
+            .map(|entry| entry.expect("read directory entry"))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".pari-tmp-")
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    fn legacy_temporary_path(path: &Path) -> PathBuf {
+        let mut temporary = path.as_os_str().to_os_string();
+        temporary.push(".tmp");
+        PathBuf::from(temporary)
     }
 
     fn phase1_snapshot(path: &PathBuf, rows: &[(u64, MinHash32)]) {
@@ -1531,12 +1637,127 @@ mod tests {
         store.sync().expect("sync committed snapshot");
         drop(store);
 
-        let temporary = temporary_path(&path).expect("temporary path");
+        let temporary = legacy_temporary_path(&path);
         fs::write(&temporary, b"partial and uncommitted").expect("write stale temp");
 
         let reopened = PersistentIndex32::open(&path).expect("committed target stays valid");
         assert!(reopened.contains(10));
         cleanup(&path);
+    }
+
+    #[test]
+    fn temporary_allocations_are_unique_and_owned() {
+        let directory = test_directory("unique-temporaries");
+        let target = directory.join("index.pari");
+        let first = OwnedTemporaryFile::allocate(&target).expect("allocate first temporary");
+        let second = OwnedTemporaryFile::allocate(&target).expect("allocate second temporary");
+        let first_path = first.path.clone();
+        let second_path = second.path.clone();
+
+        assert_ne!(first_path, second_path);
+        assert!(first_path.exists());
+        assert!(second_path.exists());
+        drop(first);
+        drop(second);
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn failed_publication_removes_owned_temporary() {
+        let directory = test_directory("failed-temporary-publication");
+        let target = directory.join("target-directory");
+        fs::create_dir(&target).expect("create invalid file target");
+        let mut temporary =
+            OwnedTemporaryFile::allocate(&target).expect("allocate transaction file");
+        let temporary_path = temporary.path.clone();
+        temporary
+            .write_synced(b"complete candidate")
+            .expect("write candidate");
+
+        temporary
+            .publish_replace(&target)
+            .expect_err("cannot replace a directory with a file");
+
+        assert!(!temporary_path.exists());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn commits_never_modify_the_legacy_temporary_path() {
+        let directory = test_directory("legacy-temporary-sentinel");
+        let target = directory.join("index.pari");
+        let legacy_temporary = legacy_temporary_path(&target);
+        let sentinel = b"unrelated sentinel data";
+        fs::write(&legacy_temporary, sentinel).expect("write sentinel");
+
+        let mut store =
+            PersistentIndex32::create(&target, 0.8, 128, 7).expect("create persistent index");
+        store.insert(10, &sketch(0..40)).expect("insert item");
+        store.sync().expect("commit generation");
+        drop(store);
+
+        assert_eq!(
+            fs::read(&legacy_temporary).expect("read sentinel"),
+            sentinel
+        );
+        assert!(transaction_artifacts(&directory).is_empty());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commits_never_follow_the_legacy_temporary_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = test_directory("legacy-temporary-symlink");
+        let target = directory.join("index.pari");
+        let sentinel = directory.join("sentinel");
+        let legacy_temporary = legacy_temporary_path(&target);
+        fs::write(&sentinel, b"must remain intact").expect("write sentinel");
+        symlink(&sentinel, &legacy_temporary).expect("create legacy temporary symlink");
+
+        let mut store =
+            PersistentIndex32::create(&target, 0.8, 128, 7).expect("create persistent index");
+        store.insert(10, &sketch(0..40)).expect("insert item");
+        store.sync().expect("commit generation");
+        drop(store);
+
+        assert_eq!(
+            fs::read(&sentinel).expect("read sentinel"),
+            b"must remain intact"
+        );
+        assert!(fs::symlink_metadata(&legacy_temporary)
+            .expect("inspect legacy temporary")
+            .file_type()
+            .is_symlink());
+        assert!(transaction_artifacts(&directory).is_empty());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn successful_affine_commits_leave_no_transaction_artifacts() {
+        let directory = test_directory("successful-temporary-cleanup");
+        let path32 = directory.join("affine32.pari");
+        let path64 = directory.join("affine64.pari");
+
+        let mut store32 =
+            PersistentIndex32::create(&path32, 0.8, 128, 7).expect("create affine32 index");
+        store32.insert(10, &sketch(0..40)).expect("insert affine32");
+        store32.sync().expect("commit affine32");
+        drop(store32);
+
+        let mut store64 =
+            PersistentIndex64::create(&path64, 0.8, 128, 7).expect("create affine64 index");
+        store64
+            .insert(20, &sketch64(10_000..10_040))
+            .expect("insert affine64");
+        store64.sync().expect("commit affine64");
+        drop(store64);
+
+        assert!(transaction_artifacts(&directory).is_empty());
+        fs::remove_dir_all(directory).expect("remove test directory");
     }
 
     #[test]
