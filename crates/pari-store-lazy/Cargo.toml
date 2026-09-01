@@ -11,6 +11,7 @@ publish = false
 pari-core = { path = "../pari-core" }
 pari-format = { path = "../pari-format" }
 pari-index = { path = "../pari-index" }
+same-file = "1.0.6"
 
 [dev-dependencies]
 pari-store = { path = "../pari-store" }

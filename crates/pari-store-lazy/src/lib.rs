@@ -10,10 +10,13 @@
 use std::{
     collections::{BTreeMap, HashSet},
     error::Error,
+    ffi::OsString,
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
+    process,
+    sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
@@ -29,10 +32,14 @@ use pari_index::{
     explain_lsh, BucketDistribution, LshError, LshIndex32, LshParams, LshPlan, LshPlanError,
     LshPlanOptions, QueryMetrics, StorageMode,
 };
+use same_file::Handle;
 
 const U64_BYTES: usize = 8;
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
+const TEMPORARY_CREATE_ATTEMPTS: usize = 128;
+
+static NEXT_TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Errors returned by the lazy local store.
 #[derive(Debug)]
@@ -53,6 +60,11 @@ pub enum LazyStoreError {
     LengthOverflow,
     /// The destination already exists and is not overwritten implicitly.
     AlreadyExists(PathBuf),
+    /// Cleanup failed while handling an earlier publication error.
+    Cleanup {
+        original: Box<LazyStoreError>,
+        cleanup: Box<LazyStoreError>,
+    },
     /// A supplied sketch uses a different `MinHash` seed.
     IncompatibleSeed { expected: u64, actual: u64 },
     /// A supplied sketch uses a different signature length.
@@ -76,6 +88,9 @@ impl fmt::Display for LazyStoreError {
                 "lazy store destination already exists: {}",
                 path.display()
             ),
+            Self::Cleanup { original, cleanup } => {
+                write!(formatter, "{original}; cleanup also failed: {cleanup}")
+            }
             Self::IncompatibleSeed { expected, actual } => write!(
                 formatter,
                 "incompatible MinHash seed: expected {expected}, got {actual}"
@@ -96,6 +111,7 @@ impl Error for LazyStoreError {
             Self::Format(error) => Some(error),
             Self::Bucket(error) => Some(error),
             Self::Index(error) => Some(error),
+            Self::Cleanup { original, .. } => Some(original.as_ref()),
             _ => None,
         }
     }
@@ -643,34 +659,113 @@ fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), LazyStoreError> {
     {
         fs::create_dir_all(parent)?;
     }
-    let temporary = temporary_path(path)?;
+    let (temporary, mut file) = create_temporary(path)?;
     let result = (|| -> Result<(), LazyStoreError> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
         file.write_all(bytes)?;
         file.flush()?;
         file.sync_all()?;
-        drop(file);
-        fs::rename(&temporary, path)?;
-        sync_parent(path)?;
-        Ok(())
+        let identity = Handle::from_file(file)?;
+        publish_temporary(&temporary, path, &identity)
     })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    match result {
+        Ok(()) => Ok(()),
+        Err(original) => Err(cleanup_owned_path(&temporary, original)),
     }
-    result
 }
 
-fn temporary_path(path: &Path) -> Result<PathBuf, LazyStoreError> {
-    let name = path
-        .file_name()
-        .ok_or(LazyStoreError::InvalidSnapshot {
-            reason: "destination path must identify a file",
-        })?
-        .to_string_lossy();
-    Ok(path.with_file_name(format!(".{name}.pari-lazy-tmp")))
+fn publish_temporary(
+    temporary: &Path,
+    destination: &Path,
+    identity: &Handle,
+) -> Result<(), LazyStoreError> {
+    match fs::hard_link(temporary, destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(LazyStoreError::AlreadyExists(destination.to_path_buf()));
+        }
+        Err(error) => return Err(error.into()),
+    }
+    if let Err(error) = fs::remove_file(temporary) {
+        return Err(rollback_published(
+            destination,
+            identity,
+            LazyStoreError::Io(error),
+        ));
+    }
+    if let Err(error) = sync_parent(destination) {
+        return Err(rollback_published(destination, identity, error));
+    }
+    Ok(())
+}
+
+fn rollback_published(
+    destination: &Path,
+    identity: &Handle,
+    original: LazyStoreError,
+) -> LazyStoreError {
+    let current = match Handle::from_path(destination) {
+        Ok(current) => current,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return original,
+        Err(cleanup) => return cleanup_error(original, LazyStoreError::Io(cleanup)),
+    };
+    if !current.eq(identity) {
+        return original;
+    }
+    if let Err(cleanup) = fs::remove_file(destination) {
+        return cleanup_error(original, LazyStoreError::Io(cleanup));
+    }
+    if let Err(cleanup) = sync_parent(destination) {
+        return cleanup_error(original, cleanup);
+    }
+    original
+}
+
+fn cleanup_owned_path(path: &Path, original: LazyStoreError) -> LazyStoreError {
+    match fs::remove_file(path) {
+        Ok(()) => match sync_parent(path) {
+            Ok(()) => original,
+            Err(cleanup) => cleanup_error(original, cleanup),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => original,
+        Err(cleanup) => cleanup_error(original, LazyStoreError::Io(cleanup)),
+    }
+}
+
+fn cleanup_error(original: LazyStoreError, cleanup: LazyStoreError) -> LazyStoreError {
+    LazyStoreError::Cleanup {
+        original: Box::new(original),
+        cleanup: Box::new(cleanup),
+    }
+}
+
+fn create_temporary(path: &Path) -> Result<(PathBuf, File), LazyStoreError> {
+    for _ in 0..TEMPORARY_CREATE_ATTEMPTS {
+        let id = NEXT_TEMPORARY_ID.fetch_add(1, Ordering::Relaxed);
+        let temporary = temporary_path(path, id)?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(LazyStoreError::Io(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique lazy-store temporary file",
+    )))
+}
+
+fn temporary_path(path: &Path, id: u64) -> Result<PathBuf, LazyStoreError> {
+    let file_name = path.file_name().ok_or(LazyStoreError::InvalidSnapshot {
+        reason: "destination path must identify a file",
+    })?;
+    let mut temporary_name = OsString::from(".");
+    temporary_name.push(file_name);
+    temporary_name.push(format!(".pari-lazy-{}-{id}.tmp", process::id()));
+    Ok(path.with_file_name(temporary_name))
 }
 
 #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
@@ -724,7 +819,7 @@ mod tests {
         fs,
         fs::OpenOptions,
         io::{Seek, SeekFrom, Write},
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
     };
 
@@ -732,8 +827,12 @@ mod tests {
     use pari_format::{FileLayout, SectionKind};
     use pari_index::LshIndex32;
     use pari_store::PersistentIndex32;
+    use same_file::Handle;
 
-    use super::{build_from_snapshot, LazyIndex32};
+    use super::{
+        atomic_create, build_from_snapshot, create_temporary, rollback_published, LazyIndex32,
+        LazyStoreError,
+    };
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -747,6 +846,106 @@ mod tests {
 
     fn cleanup(path: &PathBuf) {
         let _ = fs::remove_file(path);
+    }
+
+    fn temporary_paths(destination: &Path) -> Vec<PathBuf> {
+        let parent = destination.parent().expect("destination parent");
+        let file_name = destination
+            .file_name()
+            .expect("destination file name")
+            .to_string_lossy();
+        let prefix = format!(".{file_name}.pari-lazy-");
+        fs::read_dir(parent)
+            .expect("read destination parent")
+            .map(|entry| entry.expect("directory entry").path())
+            .filter(|path| {
+                path.file_name().is_some_and(|name| {
+                    let name = name.to_string_lossy();
+                    name.starts_with(&prefix) && name.ends_with(".tmp")
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn atomic_create_preserves_publication_time_destination() {
+        let destination = test_path("atomic-existing");
+        cleanup(&destination);
+        fs::write(&destination, b"concurrent owner").expect("competing destination");
+
+        let error = atomic_create(&destination, b"pari output").expect_err("collision");
+        assert!(matches!(
+            error,
+            LazyStoreError::AlreadyExists(ref path) if path == &destination
+        ));
+        assert_eq!(
+            fs::read(&destination).expect("read competing destination"),
+            b"concurrent owner"
+        );
+        assert!(
+            temporary_paths(&destination).is_empty(),
+            "transaction retained its temporary file"
+        );
+        cleanup(&destination);
+    }
+
+    #[test]
+    fn temporary_files_are_uniquely_owned() {
+        let destination = test_path("unique-temporary");
+        cleanup(&destination);
+        let (first_path, first_file) = create_temporary(&destination).expect("first temporary");
+        let (second_path, second_file) = create_temporary(&destination).expect("second temporary");
+        assert_ne!(first_path, second_path);
+        drop(first_file);
+        drop(second_file);
+        cleanup(&first_path);
+        cleanup(&second_path);
+    }
+
+    #[test]
+    fn rollback_removes_only_the_transaction_owned_destination() {
+        let staged = test_path("rollback-stage");
+        let destination = test_path("rollback-destination");
+        cleanup(&staged);
+        cleanup(&destination);
+        fs::write(&staged, b"pari output").expect("staged file");
+        let identity = Handle::from_path(&staged).expect("staged identity");
+        fs::hard_link(&staged, &destination).expect("publish staged file");
+
+        let original = LazyStoreError::InvalidSnapshot {
+            reason: "publication failed",
+        };
+        let returned = rollback_published(&destination, &identity, original);
+        assert!(matches!(
+            returned,
+            LazyStoreError::InvalidSnapshot {
+                reason: "publication failed"
+            }
+        ));
+        assert!(
+            !destination.exists(),
+            "owned destination was not rolled back"
+        );
+
+        fs::hard_link(&staged, &destination).expect("republish staged file");
+        fs::remove_file(&destination).expect("remove owned destination");
+        fs::write(&destination, b"replacement owner").expect("replacement destination");
+        let original = LazyStoreError::InvalidSnapshot {
+            reason: "publication failed again",
+        };
+        let returned = rollback_published(&destination, &identity, original);
+        assert!(matches!(
+            returned,
+            LazyStoreError::InvalidSnapshot {
+                reason: "publication failed again"
+            }
+        ));
+        assert_eq!(
+            fs::read(&destination).expect("read replacement destination"),
+            b"replacement owner"
+        );
+        cleanup(&staged);
+        cleanup(&destination);
     }
 
     fn sketch(base: u64) -> MinHash32 {
