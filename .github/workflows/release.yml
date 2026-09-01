@@ -109,10 +109,10 @@ jobs:
           cargo package --locked -p pari-core --list --no-verify | grep -Fx LICENSE
           cargo package --locked -p pari-core --list --no-verify | grep -Fx NOTICE
           cargo package --locked -p pari-format --list --no-verify | grep -Fx LICENSE
-      - name: Inspect dependent package manifests during the coordinated transition
+      - name: Package dependent crates from the published dependency set
         run: |
-          cargo package --locked --no-verify -p pari-index --list >/dev/null
-          cargo package --locked --no-verify -p pari-store --list >/dev/null
+          cargo package --locked -p pari-index
+          cargo package --locked -p pari-store
       - name: Verify packaged dependent licenses and attribution
         run: |
           cargo package --locked -p pari-index --list --no-verify | grep -Fx LICENSE
@@ -291,7 +291,7 @@ jobs:
           version="${{ needs.metadata.outputs.version }}"
           test -n "$(find release-dist -maxdepth 1 -name '*.whl' -print -quit)"
           test -f "release-dist/pari_similarity-$version.tar.gz"
-          for crate in pari-core pari-format; do
+          for crate in pari-core pari-format pari-index pari-store; do
             test -f "release-dist/$crate-$version.crate"
           done
           test -f "release-dist/pari-$version-linux.tar.gz"
