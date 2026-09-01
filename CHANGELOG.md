@@ -25,6 +25,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Repository policy
 
+- The coordinated affine64 crate transition temporarily builds the `pari-store` tarball without standalone registry verification while the complete local Rust 1.81 graph remains enforced; full verification resumes after the matching `pari-index` release is published.
 - Full registry-backed package verification is restored for all four public crates after the coordinated 0.2.0 publication.
 
 ## [0.2.0] - 2026-08-31
