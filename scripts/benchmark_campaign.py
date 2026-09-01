@@ -186,6 +186,36 @@ class StageFailure(CampaignError):
         self.environment_overrides = environment_overrides or {}
 
 
+@dataclass
+class ActiveStage:
+    """Mutable stage context retained when an interruption bypasses normal errors."""
+
+    stage: str | None = None
+    command: list[str] | None = None
+    phase: str = "campaign"
+    return_code: int | None = None
+    environment_overrides: dict[str, str] | None = None
+
+    def begin(
+        self,
+        stage: str,
+        command: Sequence[str],
+        environment_overrides: dict[str, str] | None,
+    ) -> None:
+        self.stage = stage
+        self.command = list(command)
+        self.phase = "execution"
+        self.return_code = None
+        self.environment_overrides = environment_overrides or {}
+
+    def clear(self) -> None:
+        self.stage = None
+        self.command = None
+        self.phase = "campaign"
+        self.return_code = None
+        self.environment_overrides = None
+
+
 def read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -369,6 +399,16 @@ def run_logged(
     return completed.returncode
 
 
+def read_log_tail(
+    path: Path, *, max_bytes: int = 16 * 1024, max_chars: int = 4000
+) -> str:
+    with path.open("rb") as source:
+        source.seek(0, os.SEEK_END)
+        source.seek(max(0, source.tell() - max_bytes))
+        tail = source.read(max_bytes)
+    return tail.decode("utf-8", errors="replace")[-max_chars:]
+
+
 def metric_value(report: dict[str, Any], name: str, *, allow_null: bool = False) -> float | None:
     metrics = report.get("metrics")
     if not isinstance(metrics, dict) or name not in metrics:
@@ -532,10 +572,12 @@ def run_stage(
     staging: Path,
     git_sha: str,
     profile: dict[str, Any],
+    active_stage: ActiveStage,
     environment_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     stdout_path = staging / f"{stage}.stdout.log"
     stderr_path = staging / f"{stage}.stderr.log"
+    active_stage.begin(stage, command, environment_overrides)
     try:
         return_code = run_logged(
             command,
@@ -553,8 +595,9 @@ def run_stage(
             return_code=None,
             environment_overrides=environment_overrides,
         ) from error
+    active_stage.return_code = return_code
     if return_code != 0:
-        detail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+        detail = read_log_tail(stderr_path)
         raise StageFailure(
             f"stage command exited {return_code}: {shell_join(command)}\n{detail}",
             stage=stage,
@@ -563,6 +606,7 @@ def run_stage(
             return_code=return_code,
             environment_overrides=environment_overrides,
         )
+    active_stage.phase = "validation"
     try:
         validate_report(
             report_path,
@@ -579,7 +623,8 @@ def run_stage(
             return_code=return_code,
             environment_overrides=environment_overrides,
         ) from error
-    return {
+    active_stage.phase = "artifact"
+    artifact = {
         "command": list(command),
         "environment_overrides": environment_overrides or {},
         "report": report_path.name,
@@ -588,6 +633,8 @@ def run_stage(
         "stderr": stderr_path.name,
         "stdout": stdout_path.name,
     }
+    active_stage.clear()
+    return artifact
 
 
 def run_text_stages(
@@ -599,6 +646,7 @@ def run_text_stages(
     profile: Profile,
     artifacts: list[dict[str, Any]],
     inputs: dict[str, Any],
+    active_stage: ActiveStage,
 ) -> None:
     profile_data = asdict(profile)
     with tempfile.TemporaryDirectory(prefix="pari-text-campaign-") as temporary:
@@ -646,6 +694,7 @@ def run_text_stages(
                 staging=staging,
                 git_sha=git_sha,
                 profile=profile_data,
+                active_stage=active_stage,
             )
         )
 
@@ -678,6 +727,7 @@ def run_text_stages(
                 staging=staging,
                 git_sha=git_sha,
                 profile=profile_data,
+                active_stage=active_stage,
             )
         )
 
@@ -711,8 +761,12 @@ def host_environment(root: Path) -> dict[str, Any]:
 def checksummed_failure_files(staging: Path) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
     for path in sorted(staging.iterdir()):
-        if path.name == "failure.json" or not path.is_file():
-            continue
+        if path.name == "failure.json":
+            raise CampaignError("staging unexpectedly contains failure.json")
+        if path.is_symlink() or not path.is_file():
+            raise CampaignError(
+                f"cannot finalize failure evidence with unrecorded entry {path.name!r}"
+            )
         files.append(
             {
                 "bytes": path.stat().st_size,
@@ -721,6 +775,32 @@ def checksummed_failure_files(staging: Path) -> list[dict[str, Any]]:
             }
         )
     return files
+
+
+def quarantine_staged_bundle(staging: Path) -> None:
+    bundle_path = staging / "bundle.json"
+    if not bundle_path.exists():
+        return
+    bundle = read_json(bundle_path)
+    bundle["artifact_kind"] = "pari-benchmark-campaign-failure-snapshot"
+    bundle["status"] = "failed"
+    write_json(bundle_path, bundle)
+    bundle_path.replace(staging / "failed-bundle.json")
+
+
+def remove_process_temp(process_temp: Path) -> None:
+    if not process_temp.exists() and not process_temp.is_symlink():
+        return
+    try:
+        shutil.rmtree(process_temp)
+    except OSError as error:
+        raise CampaignError(
+            f"could not remove process temporary directory {process_temp}: {error}"
+        ) from error
+    if process_temp.exists() or process_temp.is_symlink():
+        raise CampaignError(
+            f"process temporary directory still exists after cleanup: {process_temp}"
+        )
 
 
 def failure_directory(output: Path, staging: Path) -> Path:
@@ -744,8 +824,10 @@ def preserve_failure(
     started: int,
     artifacts: list[dict[str, Any]],
     inputs: dict[str, Any],
+    active_stage: ActiveStage,
 ) -> Path:
-    shutil.rmtree(process_temp, ignore_errors=True)
+    quarantine_staged_bundle(staging)
+    remove_process_temp(process_temp)
     try:
         environment: dict[str, Any] = host_environment(root)
     except Exception as environment_error:
@@ -780,6 +862,16 @@ def preserve_failure(
                 "phase": error.phase,
                 "return_code": error.return_code,
                 "stage": error.stage,
+            }
+        )
+    elif active_stage.stage is not None:
+        failure.update(
+            {
+                "command": active_stage.command,
+                "environment_overrides": active_stage.environment_overrides or {},
+                "phase": active_stage.phase,
+                "return_code": active_stage.return_code,
+                "stage": active_stage.stage,
             }
         )
 
@@ -829,20 +921,26 @@ def run_campaign(args: argparse.Namespace) -> Path:
     output = args.output.resolve()
     if output.exists():
         raise CampaignError(f"output directory already exists: {output}")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.partial-", dir=output.parent))
     started = int(time.time())
     environment = os.environ.copy()
     environment["PARI_GIT_SHA"] = git_sha
-    process_temp = staging / "tmp"
-    process_temp.mkdir()
-    environment["TEMP"] = str(process_temp)
-    environment["TMP"] = str(process_temp)
-    environment["TMPDIR"] = str(process_temp)
     profile_data = asdict(profile)
     artifacts: list[dict[str, Any]] = []
     inputs: dict[str, Any] = {}
+    active_stage = ActiveStage()
+    staging: Path | None = None
+    process_temp: Path | None = None
     try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{output.name}.partial-", dir=output.parent)
+        )
+        process_temp = staging / "tmp"
+        process_temp.mkdir()
+        environment["TEMP"] = str(process_temp)
+        environment["TMP"] = str(process_temp)
+        environment["TMPDIR"] = str(process_temp)
+
         synthetic_report = staging / "synthetic.json"
         artifacts.append(
             run_stage(
@@ -854,6 +952,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
                 staging=staging,
                 git_sha=git_sha,
                 profile=profile_data,
+                active_stage=active_stage,
             )
         )
         if profile.storage:
@@ -868,6 +967,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
                     staging=staging,
                     git_sha=git_sha,
                     profile=profile_data,
+                    active_stage=active_stage,
                 )
             )
         if args.include_datasketch:
@@ -882,6 +982,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
                     staging=staging,
                     git_sha=git_sha,
                     profile=profile_data,
+                    active_stage=active_stage,
                 )
             )
         if args.include_redis:
@@ -911,6 +1012,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
                     staging=staging,
                     git_sha=git_sha,
                     profile=profile_data,
+                    active_stage=active_stage,
                     environment_overrides=redis_overrides,
                 )
             )
@@ -923,6 +1025,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
                 profile=profile,
                 artifacts=artifacts,
                 inputs=inputs,
+                active_stage=active_stage,
             )
 
         try:
@@ -956,6 +1059,10 @@ def run_campaign(args: argparse.Namespace) -> Path:
         print(f"wrote validated benchmark bundle {output}")
         return output / "bundle.json"
     except BaseException as error:
+        if staging is None:
+            raise
+        if process_temp is None:
+            process_temp = staging / "tmp"
         should_preserve = profile.preserve_failure_evidence or getattr(
             args, "preserve_failure_evidence", False
         )
@@ -975,6 +1082,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
                     started=started,
                     artifacts=artifacts,
                     inputs=inputs,
+                    active_stage=active_stage,
                 )
             except Exception as preservation_error:
                 print(
