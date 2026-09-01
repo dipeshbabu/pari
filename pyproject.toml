@@ -56,6 +56,7 @@ include = [
   { path = "docs/entity-matching.md", format = "sdist" },
   { path = "docs/observability.md", format = "sdist" },
   { path = "docs/planning.md", format = "sdist" },
+  { path = "docs/python.md", format = "sdist" },
   { path = "docs/similarity-family-evaluation.md", format = "sdist" },
   { path = "docs/parallelism.md", format = "sdist" },
   { path = "docs/platforms.md", format = "sdist" },

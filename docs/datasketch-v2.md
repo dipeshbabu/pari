@@ -26,7 +26,7 @@ For a future published release containing this adapter, the equivalent command i
 | Custom input hash function | User-defined | SHA-1 width-specific default | State may match accidentally but future updates are incompatible; adapter rejects |
 | Datasketch `legacy` scheme | 61-bit-prime legacy permutations | Not implemented | Unsupported; rebuild from source values |
 | Datasketch default affine32 signature state | Valid Datasketch state | Different permutation family | Not convertible without original values |
-| Python affine64 indexing | Datasketch supports signatures | Pari Python `Index` currently accepts affine32 | Signature arithmetic is proven; Python index ingestion is not supported |
+| Python affine64 indexing | Datasketch supports signatures | Pari has explicit `MinHash64` / `Index64` types | Native Python indexing is supported; adapter conversion remains deferred |
 | LSH tables and serialized indexes | Datasketch-specific storage/banding | Versioned `.pari` format | Not interchangeable; rebuild the Pari index |
 | Pickles / LeanMinHash bytes | Datasketch formats | Explicit Pari signatures and `.pari` files | No direct deserialization or executable-object migration |
 
@@ -95,9 +95,9 @@ Do not copy `hashvalues` into Pari and relabel them manually. Updating such a sk
 
 ## affine64 scope
 
-The checked-in cross-implementation fixture proves that Datasketch `affine64` and Rust `pari_core::MinHash64` produce identical values when SHA-1 input hashing and Pari multiplier/offset arrays are used. Pari's current Python `MinHash` and `Index` surface is affine32, so the optional Python adapter rejects affine64 ingestion instead of narrowing values or mislabeling the scheme.
+The checked-in cross-implementation fixture proves that Datasketch `affine64` and Rust `pari_core::MinHash64` produce identical values when SHA-1 input hashing and Pari multiplier/offset arrays are used. Pari exposes that native scheme through the separate Python `MinHash64` and `Index64` types. The optional Python adapter still rejects affine64 ingestion in this slice; adapter import/export requires its own explicit validation and migration contract and must never narrow or relabel values.
 
-Rust applications can use `MinHash64::permutations()` to configure an equivalent external implementation and compare against `pari-affine64-v1`. A future 64-bit Python/index surface must carry an explicit 64-bit scheme identifier through storage before adapter support can be added safely.
+Rust applications can use `MinHash64::permutations()` to configure an equivalent external implementation and compare against `pari-affine64-v1`. Python applications can construct or reconstruct native `MinHash64` sketches directly when provenance is already established, but Datasketch conversion remains unsupported until the separate adapter slice lands.
 
 ## Executable compatibility evidence
 
