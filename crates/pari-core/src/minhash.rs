@@ -346,8 +346,8 @@ fn batch_pool(threads: usize) -> Result<Arc<rayon::ThreadPool>, MinHashError> {
 pub struct MinHash64 {
     seed: u64,
     hashvalues: Vec<u64>,
-    multipliers: Vec<u64>,
-    offsets: Vec<u64>,
+    multipliers: Arc<[u64]>,
+    offsets: Arc<[u64]>,
 }
 
 impl MinHash64 {
@@ -369,9 +369,65 @@ impl MinHash64 {
         Ok(Self {
             seed,
             hashvalues: vec![u64::MAX; num_perm],
-            multipliers,
-            offsets,
+            multipliers: multipliers.into(),
+            offsets: offsets.into(),
         })
+    }
+
+    /// Construct an ordered batch of sketches from byte-like feature rows.
+    ///
+    /// Permutation arrays are built once and shared by every returned sketch.
+    /// `threads` is capped by [`std::thread::available_parallelism`], and batches
+    /// smaller than [`PARALLEL_BATCH_MIN_ROWS`] stay sequential.
+    pub fn from_batch<R, T>(
+        rows: &[R],
+        num_perm: usize,
+        seed: u64,
+        threads: BatchThreads,
+    ) -> Result<Vec<Self>, MinHashError>
+    where
+        R: AsRef<[T]> + Sync,
+        T: AsRef<[u8]> + Sync,
+    {
+        Self::from_batch_with(rows, num_perm, seed, threads, |sketch, row| {
+            sketch.update_many(row.as_ref());
+        })
+    }
+
+    /// Construct an ordered batch using a caller-supplied row update function.
+    ///
+    /// This avoids temporary feature conversion for structured Rust workloads
+    /// while retaining the same bounded thread policy as [`Self::from_batch`].
+    pub fn from_batch_with<R, F>(
+        rows: &[R],
+        num_perm: usize,
+        seed: u64,
+        threads: BatchThreads,
+        update: F,
+    ) -> Result<Vec<Self>, MinHashError>
+    where
+        R: Sync,
+        F: Fn(&mut Self, &R) + Sync,
+    {
+        let template = Self::new(num_perm, seed)?;
+        let build = |row: &R| {
+            let mut sketch = template.clone();
+            update(&mut sketch, row);
+            sketch
+        };
+        let effective_threads = threads.effective_threads(rows.len());
+        if effective_threads == 1 {
+            return Ok(rows.iter().map(build).collect());
+        }
+
+        let chunk_size = rows.len().div_ceil(effective_threads);
+        let pool = batch_pool(effective_threads)?;
+        let chunks = pool.install(|| {
+            rows.par_chunks(chunk_size)
+                .map(|chunk| chunk.iter().map(&build).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        });
+        Ok(chunks.into_iter().flatten().collect())
     }
 
     /// Reconstruct a sketch from an already computed Pari affine64 signature.
@@ -440,7 +496,7 @@ impl MinHash64 {
     /// Borrow the stable affine multiplier and offset arrays for interoperability.
     #[must_use]
     pub fn permutations(&self) -> (&[u64], &[u64]) {
-        (&self.multipliers, &self.offsets)
+        (self.multipliers.as_ref(), self.offsets.as_ref())
     }
 
     /// Return the deterministic permutation seed.
@@ -466,8 +522,8 @@ impl MinHash64 {
         for ((current, multiplier), offset) in self
             .hashvalues
             .iter_mut()
-            .zip(&self.multipliers)
-            .zip(&self.offsets)
+            .zip(self.multipliers.iter())
+            .zip(self.offsets.iter())
         {
             let permuted = multiplier.wrapping_mul(mixed).wrapping_add(*offset);
             if permuted < *current {
@@ -661,6 +717,39 @@ mod tests {
     }
 
     #[test]
+    fn ordered_affine64_batch_is_deterministic_across_thread_limits() {
+        let rows = (0_u64..512)
+            .map(|row| {
+                (0_u64..32)
+                    .map(|value| {
+                        row.wrapping_mul(1_000_003)
+                            .wrapping_add(value)
+                            .to_le_bytes()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let sequential =
+            MinHash64::from_batch(&rows, 128, 7, BatchThreads::Sequential).expect("batch");
+        for threads in [2, 4, 8] {
+            let parallel = MinHash64::from_batch(
+                &rows,
+                128,
+                7,
+                BatchThreads::max(NonZeroUsize::new(threads).expect("positive threads")),
+            )
+            .expect("parallel batch");
+            assert_eq!(parallel, sequential);
+        }
+        assert!(sequential
+            .windows(2)
+            .all(|window| Arc::ptr_eq(&window[0].multipliers, &window[1].multipliers)));
+        assert!(sequential
+            .windows(2)
+            .all(|window| Arc::ptr_eq(&window[0].offsets, &window[1].offsets)));
+    }
+
+    #[test]
     fn batch_thread_policy_keeps_small_workloads_scalar_and_caps_large_ones() {
         assert_eq!(
             BatchThreads::Auto.effective_threads(PARALLEL_BATCH_MIN_ROWS - 1),
@@ -723,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn precomputed_affine64_signature_round_trips_and_remains_updatable() {
+    fn precomputed_affine64_signature_round_trips_upper_bits_and_remains_updatable() {
         let mut original = MinHash64::new(32, 42).expect("valid sketch");
         original.update_many([&b"alpha"[..], &b"beta"[..]]);
         let signature = original.signature().to_vec();

@@ -16,7 +16,9 @@ Python:
 
 - the `pari` import package
 - `MinHash`
+- `MinHash64`
 - `Index`
+- `Index64`
 - `IndexStats`
 - `DedupeIndex`
 - `DuplicateGroup`
@@ -120,7 +122,7 @@ The identifiers `pari-affine32-v1` and `pari-affine64-v1` describe stable signat
 
 An implementation change must use a new scheme identifier if it changes the signature values produced for the same input, seed, and permutation count. Existing identifiers must never be reused for new semantics.
 
-Sketch comparison, merge, indexing, and persisted-index operations must continue to reject incompatible seeds, permutation counts, widths, or schemes rather than returning misleading similarity results.
+Sketch comparison, merge, indexing, and persisted-index operations must continue to reject incompatible seeds, permutation counts, widths, or schemes rather than returning misleading similarity results. Python keeps the families explicit: `MinHash` and `Index` are affine32, while `MinHash64` and `Index64` are affine64. There is no mode flag that changes an existing type's width.
 
 ## `.pari` file compatibility
 

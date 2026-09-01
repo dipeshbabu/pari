@@ -7,12 +7,12 @@ use std::{
     sync::{Arc, Mutex, TryLockError},
 };
 
-use pari_core::{BatchThreads, MinHash32, MinHashError};
+use pari_core::{BatchThreads, MinHash32, MinHash64, MinHashError};
 use pari_index::{
     plan_lsh, DuplicateGroup, LshError, LshIndex32, LshPlan, LshPlanError, LshPlanOptions,
     StorageMode,
 };
-use pari_store::{PersistentIndex32, StoreError, StoreStats};
+use pari_store::{PersistentIndex32, PersistentIndex64, StoreError, StoreStats};
 use pyo3::{
     create_exception,
     exceptions::PyException,
@@ -63,7 +63,10 @@ impl BindingError {
             )
             | Self::Store(
                 StoreError::IncompatibleSeed { .. }
-                | StoreError::IncompatiblePermutationCount { .. },
+                | StoreError::IncompatiblePermutationCount { .. }
+                | StoreError::InvalidSnapshot {
+                    reason: "snapshot signature scheme does not match the persistent index type",
+                },
             ) => BindingErrorKind::Compatibility,
             Self::Index(LshError::DuplicateKey { .. })
             | Self::Store(StoreError::DuplicateKey { .. }) => BindingErrorKind::DuplicateKey,
@@ -176,6 +179,27 @@ fn collect_feature_rows(py: Python<'_>, rows: &Bound<'_, PyAny>) -> PyResult<Vec
         .collect()
 }
 
+fn indexed_signature_error(py: Python<'_>, error: &PyErr, index: usize) -> PyErr {
+    let message = error.value(py).str().map_or_else(
+        |_| error.to_string(),
+        |message| message.to_string_lossy().into_owned(),
+    );
+    PyErr::from_type(error.get_type(py), format!("signature[{index}]: {message}"))
+}
+
+fn collect_signature64(py: Python<'_>, signature: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
+    signature
+        .try_iter()?
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .map_err(|error| indexed_signature_error(py, &error, index))?
+                .extract::<u64>()
+                .map_err(|error| indexed_signature_error(py, &error, index))
+        })
+        .collect()
+}
+
 fn build_sketches(
     rows: &[Vec<Vec<u8>>],
     num_perm: usize,
@@ -183,6 +207,15 @@ fn build_sketches(
     threads: BatchThreads,
 ) -> Result<Vec<MinHash32>, BindingError> {
     MinHash32::from_batch(rows, num_perm, seed, threads).map_err(BindingError::from)
+}
+
+fn build_sketches64(
+    rows: &[Vec<Vec<u8>>],
+    num_perm: usize,
+    seed: u64,
+    threads: BatchThreads,
+) -> Result<Vec<MinHash64>, BindingError> {
+    MinHash64::from_batch(rows, num_perm, seed, threads).map_err(BindingError::from)
 }
 
 fn batch_threads(threads: Option<usize>) -> PyResult<BatchThreads> {
@@ -293,15 +326,17 @@ impl PyMinHash {
         Ok(())
     }
 
-    fn jaccard(&self, other: &Self) -> PyResult<f64> {
+    fn jaccard(&self, other: &Bound<'_, PyAny>) -> PyResult<f64> {
+        let other = clone_minhash32(other)?;
         self.inner
-            .jaccard(&other.inner)
+            .jaccard(&other)
             .map_err(|error| binding_error(error.into()))
     }
 
-    fn merge(&mut self, other: &Self) -> PyResult<()> {
+    fn merge(&mut self, other: &Bound<'_, PyAny>) -> PyResult<()> {
+        let other = clone_minhash32(other)?;
         self.inner
-            .merge(&other.inner)
+            .merge(&other)
             .map_err(|error| binding_error(error.into()))
     }
 
@@ -352,6 +387,189 @@ impl PyMinHash {
             self.inner.scheme()
         )
     }
+}
+
+/// Pari's full-width 64-bit affine `MinHash` sketch.
+#[pyclass(module = "pari._native", name = "MinHash64", skip_from_py_object)]
+#[derive(Debug, Clone)]
+struct PyMinHash64 {
+    inner: MinHash64,
+}
+
+#[pymethods]
+impl PyMinHash64 {
+    #[new]
+    #[pyo3(signature = (num_perm = 128, seed = 1))]
+    fn new(num_perm: usize, seed: u64) -> PyResult<Self> {
+        MinHash64::new(num_perm, seed)
+            .map(|inner| Self { inner })
+            .map_err(|error| binding_error(error.into()))
+    }
+
+    /// Construct a sketch from an iterable of byte-like values.
+    #[staticmethod]
+    #[pyo3(signature = (values, *, num_perm = 128, seed = 1))]
+    fn from_values(
+        py: Python<'_>,
+        values: &Bound<'_, PyAny>,
+        num_perm: usize,
+        seed: u64,
+    ) -> PyResult<Self> {
+        let values = collect_byte_values(py, values)?;
+        let result = py.detach(move || {
+            let mut sketch = MinHash64::new(num_perm, seed).map_err(BindingError::from)?;
+            sketch.update_many(values);
+            Ok::<_, BindingError>(sketch)
+        });
+        result.map(|inner| Self { inner }).map_err(binding_error)
+    }
+
+    /// Construct a bounded ordered batch after copying Python feature buffers.
+    #[staticmethod]
+    #[pyo3(signature = (rows, *, num_perm = 128, seed = 1, threads = None))]
+    fn from_batch(
+        py: Python<'_>,
+        rows: &Bound<'_, PyAny>,
+        num_perm: usize,
+        seed: u64,
+        threads: Option<usize>,
+    ) -> PyResult<Vec<Py<Self>>> {
+        let rows = collect_feature_rows(py, rows)?;
+        let threads = batch_threads(threads)?;
+        let sketches = py
+            .detach(move || build_sketches64(&rows, num_perm, seed, threads))
+            .map_err(binding_error)?;
+        sketches
+            .into_iter()
+            .map(|inner| Py::new(py, Self { inner }))
+            .collect()
+    }
+
+    /// Reconstruct a Pari affine64 sketch without narrowing upper signature bits.
+    #[staticmethod]
+    #[pyo3(signature = (signature, *, seed = 1))]
+    fn from_signature(py: Python<'_>, signature: &Bound<'_, PyAny>, seed: u64) -> PyResult<Self> {
+        let signature = collect_signature64(py, signature)?;
+        MinHash64::from_signature(signature, seed)
+            .map(|inner| Self { inner })
+            .map_err(|error| binding_error(error.into()))
+    }
+
+    fn update(&mut self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Ok(bytes) = value.cast::<PyBytes>() {
+            self.inner.update(bytes.as_bytes());
+            return Ok(());
+        }
+        let value = owned_bytes(py, value)?;
+        let mut sketch = self.inner.clone();
+        self.inner = py.detach(move || {
+            sketch.update(&value);
+            sketch
+        });
+        Ok(())
+    }
+
+    fn update_many(&mut self, py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<()> {
+        let values = collect_byte_values(py, values)?;
+        let mut sketch = self.inner.clone();
+        self.inner = py.detach(move || {
+            sketch.update_many(values);
+            sketch
+        });
+        Ok(())
+    }
+
+    fn jaccard(&self, other: &Bound<'_, PyAny>) -> PyResult<f64> {
+        let other = clone_minhash64(other)?;
+        self.inner
+            .jaccard(&other)
+            .map_err(|error| binding_error(error.into()))
+    }
+
+    fn merge(&mut self, other: &Bound<'_, PyAny>) -> PyResult<()> {
+        let other = clone_minhash64(other)?;
+        self.inner
+            .merge(&other)
+            .map_err(|error| binding_error(error.into()))
+    }
+
+    fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    #[getter]
+    fn seed(&self) -> u64 {
+        self.inner.seed()
+    }
+
+    #[getter]
+    fn num_perm(&self) -> usize {
+        self.inner.num_perm()
+    }
+
+    #[getter]
+    fn scheme(&self) -> &'static str {
+        self.inner.scheme()
+    }
+
+    #[getter]
+    fn signature(&self) -> Vec<u64> {
+        self.inner.signature().to_vec()
+    }
+
+    #[getter]
+    fn permutations(&self) -> (Vec<u64>, Vec<u64>) {
+        let (multipliers, offsets) = self.inner.permutations();
+        (multipliers.to_vec(), offsets.to_vec())
+    }
+
+    #[getter]
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.num_perm()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MinHash64(num_perm={}, seed={}, scheme='{}')",
+            self.inner.num_perm(),
+            self.inner.seed(),
+            self.inner.scheme()
+        )
+    }
+}
+
+fn cross_width_error(expected: &str, actual: &str) -> PyErr {
+    CompatibilityError::new_err(format!(
+        "incompatible MinHash width: {expected} requires {expected} sketches, got {actual}"
+    ))
+}
+
+fn clone_minhash32(value: &Bound<'_, PyAny>) -> PyResult<MinHash32> {
+    if let Ok(sketch) = value.extract::<PyRef<'_, PyMinHash>>() {
+        return Ok(sketch.inner.clone());
+    }
+    if value.extract::<PyRef<'_, PyMinHash64>>().is_ok() {
+        return Err(cross_width_error("affine32", "affine64"));
+    }
+    Ok(value
+        .extract::<PyRef<'_, PyMinHash>>()
+        .map(|sketch| sketch.inner.clone())?)
+}
+
+fn clone_minhash64(value: &Bound<'_, PyAny>) -> PyResult<MinHash64> {
+    if let Ok(sketch) = value.extract::<PyRef<'_, PyMinHash64>>() {
+        return Ok(sketch.inner.clone());
+    }
+    if value.extract::<PyRef<'_, PyMinHash>>().is_ok() {
+        return Err(cross_width_error("affine64", "affine32"));
+    }
+    Ok(value
+        .extract::<PyRef<'_, PyMinHash64>>()
+        .map(|sketch| sketch.inner.clone())?)
 }
 
 /// Stable snapshot of local-index statistics.
@@ -730,19 +948,19 @@ impl PyIndex {
     }
 
     /// Insert one key and compatible `MinHash` sketch.
-    fn add(&self, py: Python<'_>, key: u64, sketch: &PyMinHash) -> PyResult<()> {
-        let sketch = sketch.inner.clone();
+    fn add(&self, py: Python<'_>, key: u64, sketch: &Bound<'_, PyAny>) -> PyResult<()> {
+        let sketch = clone_minhash32(sketch)?;
         self.run_write(py, move |store| {
             store.insert(key, &sketch).map_err(BindingError::from)
         })
     }
 
     /// Insert a batch atomically after Rust-side validation.
-    fn add_many(&self, py: Python<'_>, items: Vec<(u64, Py<PyMinHash>)>) -> PyResult<()> {
+    fn add_many(&self, py: Python<'_>, items: Vec<(u64, Py<PyAny>)>) -> PyResult<()> {
         let items = items
             .into_iter()
-            .map(|(key, sketch)| (key, sketch.borrow(py).inner.clone()))
-            .collect::<Vec<_>>();
+            .map(|(key, sketch)| clone_minhash32(sketch.bind(py)).map(|sketch| (key, sketch)))
+            .collect::<PyResult<Vec<_>>>()?;
         self.run_write(py, move |store| {
             store
                 .insert_many(items.iter().map(|(key, sketch)| (*key, sketch)))
@@ -751,19 +969,19 @@ impl PyIndex {
     }
 
     /// Return sorted approximate candidate keys for one sketch.
-    fn search(&self, py: Python<'_>, sketch: &PyMinHash) -> PyResult<Vec<u64>> {
-        let sketch = sketch.inner.clone();
+    fn search(&self, py: Python<'_>, sketch: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
+        let sketch = clone_minhash32(sketch)?;
         self.run_read(py, move |store| {
             store.query(&sketch).map_err(BindingError::from)
         })
     }
 
     /// Batch query while releasing the GIL for all Rust storage and LSH work.
-    fn search_many(&self, py: Python<'_>, sketches: Vec<Py<PyMinHash>>) -> PyResult<Vec<Vec<u64>>> {
+    fn search_many(&self, py: Python<'_>, sketches: Vec<Py<PyAny>>) -> PyResult<Vec<Vec<u64>>> {
         let sketches = sketches
             .into_iter()
-            .map(|sketch| sketch.borrow(py).inner.clone())
-            .collect::<Vec<_>>();
+            .map(|sketch| clone_minhash32(sketch.bind(py)))
+            .collect::<PyResult<Vec<_>>>()?;
         self.run_read(py, move |store| {
             store
                 .query_many(sketches.iter())
@@ -862,6 +1080,212 @@ impl PyIndex {
     fn __repr__(&self) -> PyResult<String> {
         let closed = self.closed()?;
         Ok(format!("Index(closed={closed})"))
+    }
+}
+
+type SharedIndex64 = Arc<Mutex<Option<PersistentIndex64>>>;
+
+/// High-level persistent affine64 `MinHash64` LSH index.
+#[pyclass(module = "pari._native", name = "Index64", skip_from_py_object)]
+#[derive(Debug, Clone)]
+struct PyIndex64 {
+    inner: SharedIndex64,
+}
+
+impl PyIndex64 {
+    fn from_store(mut store: PersistentIndex64, observability: bool) -> Self {
+        store.set_observability(observability);
+        Self {
+            inner: Arc::new(Mutex::new(Some(store))),
+        }
+    }
+
+    fn run_read<T, F>(&self, py: Python<'_>, operation: F) -> PyResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&PersistentIndex64) -> Result<T, BindingError> + Send + 'static,
+    {
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let guard = inner.lock().map_err(|_| BindingError::Poisoned)?;
+            let store = guard.as_ref().ok_or(BindingError::Closed)?;
+            operation(store)
+        })
+        .map_err(binding_error)
+    }
+
+    fn run_write<T, F>(&self, py: Python<'_>, operation: F) -> PyResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut PersistentIndex64) -> Result<T, BindingError> + Send + 'static,
+    {
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let mut guard = inner.lock().map_err(|_| BindingError::Poisoned)?;
+            let store = guard.as_mut().ok_or(BindingError::Closed)?;
+            operation(store)
+        })
+        .map_err(binding_error)
+    }
+}
+
+#[pymethods]
+impl PyIndex64 {
+    #[staticmethod]
+    #[pyo3(signature = (path, *, threshold = 0.8, num_perm = 128, seed = 1, observability = false))]
+    fn create(
+        py: Python<'_>,
+        path: PathBuf,
+        threshold: f64,
+        num_perm: usize,
+        seed: u64,
+        observability: bool,
+    ) -> PyResult<Self> {
+        py.detach(move || {
+            PersistentIndex64::create(path, threshold, num_perm, seed).map_err(BindingError::from)
+        })
+        .map(|store| Self::from_store(store, observability))
+        .map_err(binding_error)
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (path, *, observability = false))]
+    fn open(py: Python<'_>, path: PathBuf, observability: bool) -> PyResult<Self> {
+        py.detach(move || PersistentIndex64::open(path).map_err(BindingError::from))
+            .map(|store| Self::from_store(store, observability))
+            .map_err(binding_error)
+    }
+
+    /// Insert one key and compatible `MinHash64` sketch.
+    fn add(&self, py: Python<'_>, key: u64, sketch: &Bound<'_, PyAny>) -> PyResult<()> {
+        let sketch = clone_minhash64(sketch)?;
+        self.run_write(py, move |store| {
+            store.insert(key, &sketch).map_err(BindingError::from)
+        })
+    }
+
+    /// Insert a batch atomically after Rust-side validation.
+    fn add_many(&self, py: Python<'_>, items: Vec<(u64, Py<PyAny>)>) -> PyResult<()> {
+        let items = items
+            .into_iter()
+            .map(|(key, sketch)| clone_minhash64(sketch.bind(py)).map(|sketch| (key, sketch)))
+            .collect::<PyResult<Vec<_>>>()?;
+        self.run_write(py, move |store| {
+            store
+                .insert_many(items.iter().map(|(key, sketch)| (*key, sketch)))
+                .map_err(BindingError::from)
+        })
+    }
+
+    /// Return sorted approximate candidate keys for one affine64 sketch.
+    fn search(&self, py: Python<'_>, sketch: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
+        let sketch = clone_minhash64(sketch)?;
+        self.run_read(py, move |store| {
+            store.query(&sketch).map_err(BindingError::from)
+        })
+    }
+
+    /// Batch query while releasing the GIL for all Rust storage and LSH work.
+    fn search_many(&self, py: Python<'_>, sketches: Vec<Py<PyAny>>) -> PyResult<Vec<Vec<u64>>> {
+        let sketches = sketches
+            .into_iter()
+            .map(|sketch| clone_minhash64(sketch.bind(py)))
+            .collect::<PyResult<Vec<_>>>()?;
+        self.run_read(py, move |store| {
+            store
+                .query_many(sketches.iter())
+                .map_err(BindingError::from)
+        })
+    }
+
+    fn remove(&self, py: Python<'_>, key: u64) -> PyResult<bool> {
+        self.run_write(py, move |store| Ok(store.remove(key)))
+    }
+
+    fn contains(&self, py: Python<'_>, key: u64) -> PyResult<bool> {
+        self.run_read(py, move |store| Ok(store.contains(key)))
+    }
+
+    fn stats(&self, py: Python<'_>) -> PyResult<PyIndexStats> {
+        self.run_read(py, |store| {
+            store
+                .stats()
+                .map(PyIndexStats::from)
+                .map_err(BindingError::from)
+        })
+    }
+
+    fn explain(&self, py: Python<'_>) -> PyResult<PyLshPlan> {
+        self.run_read(py, |store| {
+            store
+                .explain()
+                .map(PyLshPlan::from)
+                .map_err(BindingError::from)
+        })
+    }
+
+    #[pyo3(signature = (enabled = true))]
+    fn set_observability(&self, py: Python<'_>, enabled: bool) -> PyResult<()> {
+        self.run_write(py, move |store| {
+            store.set_observability(enabled);
+            Ok(())
+        })
+    }
+
+    fn flush(&self, py: Python<'_>) -> PyResult<()> {
+        self.run_write(py, |store| store.flush().map_err(BindingError::from))
+    }
+
+    fn sync(&self, py: Python<'_>) -> PyResult<()> {
+        self.run_write(py, |store| store.sync().map_err(BindingError::from))
+    }
+
+    fn close(&self, py: Python<'_>) -> PyResult<()> {
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let mut guard = inner.lock().map_err(|_| BindingError::Poisoned)?;
+            let Some(mut store) = guard.take() else {
+                return Ok(());
+            };
+            store.sync().map_err(BindingError::from)
+        })
+        .map_err(binding_error)
+    }
+
+    #[getter]
+    fn closed(&self) -> PyResult<bool> {
+        self.inner
+            .lock()
+            .map(|guard| guard.is_none())
+            .map_err(|_| binding_error(BindingError::Poisoned))
+    }
+
+    fn __len__(&self, py: Python<'_>) -> PyResult<usize> {
+        self.run_read(py, |store| Ok(store.len()))
+    }
+
+    fn __contains__(&self, py: Python<'_>, key: u64) -> PyResult<bool> {
+        self.contains(py, key)
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        self.close(py)?;
+        Ok(false)
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let closed = self.closed()?;
+        Ok(format!("Index64(closed={closed})"))
     }
 }
 
@@ -1112,7 +1536,9 @@ fn py_plan_lsh(
 #[pymodule]
 fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMinHash>()?;
+    module.add_class::<PyMinHash64>()?;
     module.add_class::<PyIndex>()?;
+    module.add_class::<PyIndex64>()?;
     module.add_class::<PyIndexStats>()?;
     module.add_class::<PyLshPlan>()?;
     module.add_class::<PyDedupeEngine>()?;

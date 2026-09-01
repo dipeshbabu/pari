@@ -17,6 +17,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   `MinHash64::from_signature` reconstruction, and metadata-derived search,
   inspection, explanation, and verification; affine32 remains the default and
   revision-1 machine-readable fields are unchanged.
+- Explicit Python `MinHash64` and `Index64` types with full-width signature
+  reconstruction, bounded batch construction, and affine64 local persistence;
+  existing `MinHash` and `Index` remain affine32.
 - Release Validation builds a manylinux2014 aarch64 Python wheel, executes it on native Linux arm64, and packages a natively smoke-tested Linux arm64 CLI archive for subsequent releases.
 - An opt-in backend conformance kit lets third-party `StorageBackend` implementations reuse Pari's atomicity, query-parity, lifecycle, capability, and statistics contract tests without enabling Redis.
 
