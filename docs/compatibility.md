@@ -45,8 +45,8 @@ Rust:
 - `pari_index::LshIndex64` affine64 candidate semantics
 - bounded ordered batch signature construction and `pari_core::BatchThreads`
 - `pari_index` candidate-pair and duplicate-group APIs
-- `LshIndex32`, `LshIndex64`, and `PersistentIndex32` query observation and exact bucket statistics
-- `pari_store::PersistentIndex32` local persistence behavior
+- `LshIndex32`, `LshIndex64`, `PersistentIndex32`, and `PersistentIndex64` query observation and exact bucket statistics
+- `pari_store::PersistentIndex32` and `pari_store::PersistentIndex64` local persistence behavior
 - the version-1 `.pari` container reader and writer
 
 CLI:
@@ -115,7 +115,7 @@ Type hints describe the supported calling contract. A change that makes a previo
 
 ## Signature compatibility
 
-The identifiers `pari-affine32-v1` and `pari-affine64-v1` describe stable signature semantics, including seed interpretation and value width.
+The identifiers `pari-affine32-v1` and `pari-affine64-v1` describe stable signature semantics, including seed interpretation and value width. `PersistentIndex32` and `LazyIndex32` accept only affine32 snapshots; `PersistentIndex64` and `LazyIndex64` accept only affine64 snapshots. Builders preserve the source identifier and width rather than relabeling persisted band hashes.
 
 An implementation change must use a new scheme identifier if it changes the signature values produced for the same input, seed, and permutation count. Existing identifiers must never be reused for new semantics.
 

@@ -76,7 +76,7 @@ assert_eq!(plan.params.rows, 13);
 # Ok::<(), pari_index::LshPlanError>(())
 ```
 
-`LshParams::tune` is the one canonical optimizer used by `LshIndex32::new` and `plan_lsh`. `explain_lsh` validates and explains explicit or persisted parameters without retuning them. `LshIndex32`, `PersistentIndex32`, and `LazyIndex32` provide convenience `explain` methods.
+`LshParams::tune` is the one canonical optimizer used by `LshIndex32::new`, `LshIndex64::new`, and `plan_lsh`. `explain_lsh` and `explain_lsh64` validate and explain explicit or persisted parameters without retuning them. The in-memory, persistent, and lazy index types for both widths provide convenience `explain` methods.
 
 ## What the size fields mean
 

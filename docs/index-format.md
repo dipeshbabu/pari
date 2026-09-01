@@ -65,7 +65,7 @@ Published package releases that read format v1 must not silently change these se
 
 ## Golden fixture
 
-`crates/pari-format/testdata/index_v1.bin` is a checked-in golden fixture containing:
+`crates/pari-format/testdata/index_v1.bin` is a checked-in affine32 golden fixture containing:
 
 - MinHash LSH
 - `pari-affine32-v1`
@@ -76,3 +76,15 @@ Published package releases that read format v1 must not silently change these se
 - one required key section containing key `7`
 
 CI verifies both that the encoder produces the exact fixture bytes and that the decoder reads it back. This pins cross-language behavior for future Python, CLI, or alternate implementations.
+
+The local-store compatibility suite additionally pins empty canonical snapshots
+for both named signature families:
+
+```text
+crates/pari-store/tests/fixtures/v1-empty.hex
+crates/pari-store/tests/fixtures/v1-empty-affine64.hex
+```
+
+The files differ only where the signature scheme, explicit width, and resulting
+header checksum require it. CI reproduces and opens both byte sequences and
+verifies that the affine32 and affine64 reader types reject the other width.
