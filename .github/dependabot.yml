@@ -13,6 +13,15 @@ updates:
         update-types:
           - "version-update:semver-minor"
           - "version-update:semver-major"
+      # Clap 4.5.58+ selects an Edition 2024 lexer that Cargo 1.81 cannot parse.
+      - dependency-name: clap
+        versions: [">= 4.5.58"]
+      # Clap Complete 4.5 remains compatible; 4.6 follows the newer toolchain line.
+      - dependency-name: clap_complete
+        versions: [">= 4.6.0"]
+      # URL 2.5.4+ selects the newer ICU graph whose manifests use Edition 2024.
+      - dependency-name: url
+        versions: [">= 2.5.4"]
     groups:
       rust-dependencies:
         patterns: ["*"]

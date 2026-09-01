@@ -3,7 +3,7 @@ name = "pari-py"
 description = "Python bindings for the Pari similarity engine"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.83"
 license.workspace = true
 repository.workspace = true
 publish = false
@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 pari-core = { path = "../pari-core" }
 pari-index = { path = "../pari-index" }
 pari-store = { path = "../pari-store" }
+# PyO3 0.29 fixes RUSTSEC-2026-0176 and RUSTSEC-2026-0177 and requires Rust 1.83.
 pyo3 = { version = "0.29.2", features = ["abi3-py310"] }
 
 [lints]

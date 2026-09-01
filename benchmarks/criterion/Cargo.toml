@@ -2,6 +2,7 @@
 name = "pari-criterion"
 version = "0.0.0"
 edition = "2021"
+rust-version = "1.81"
 publish = false
 
 [workspace]
@@ -10,11 +11,15 @@ publish = false
 memmap2 = "0.9.11"
 pari-core = { path = "../../crates/pari-core" }
 pari-index = { path = "../../crates/pari-index" }
-redb = "4.2.0"
+# redb 3+ requires newer Rust; 2.4 is the maintained Rust-1.81-compatible line.
+redb = "=2.4.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
+# Criterion's broad transitive constraint otherwise resolves Clap 4.6, whose
+# Edition 2024 lexer cannot be parsed by Cargo 1.81.
+clap = "=4.5.57"
 criterion = "0.5.1"
 
 [lints.rust]
