@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Benchmark campaign stages now enforce each profile's declared timeout and
+  preserve the exact limit and partial logs in timeout failure evidence.
 - Backend retention rejects values that cannot round-trip through whole-second
   Redis metadata instead of silently truncating or disabling TTL.
 - Lazy index publication preserves destinations created concurrently after conversion begins.
