@@ -43,7 +43,7 @@ Atomic replacement behavior while unrelated processes hold the target open is ul
 `flush()` commits dirty state in this order:
 
 1. encode the next complete snapshot;
-2. write it to the sibling `.tmp` path;
+2. atomically claim a uniquely named sibling temporary file and write into it;
 3. flush and `sync_all` the temporary file;
 4. close Pari's handle to the previous committed generation;
 5. atomically rename the temporary path over the target;
@@ -71,11 +71,11 @@ Dropping a dirty `PersistentIndex32` or `PersistentIndex64` without calling `flu
 
 ## Crash and interrupted-write behavior
 
-The target path is the only committed generation. The sibling `.tmp` file is never treated as committed state.
+The target path is the only committed generation. Transaction-owned sibling temporary files are never treated as committed state.
 
 If a process stops while writing the temporary file, reopening the target uses the previous committed generation. The same rule applies even when the temporary file contains a complete, valid, fsynced newer snapshot but the atomic rename never happened.
 
-A stale `.tmp` file can therefore be ignored by readers and is overwritten by a later commit attempt.
+Temporary files are claimed with exclusive creation, so a commit never follows or truncates a pre-existing file or symlink. Pari removes the temporary name after success and ordinary failures. A stale file left by a process crash is ignored by readers and cannot be reused by a later commit attempt.
 
 After the atomic rename succeeds, the new target is the logical committed generation. For power-loss durability of that directory entry, use `sync()` rather than `flush()`.
 
