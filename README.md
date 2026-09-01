@@ -174,6 +174,18 @@ See [docs/architecture.md](docs/architecture.md), [docs/compatibility.md](docs/c
 
 ## Development
 
+Install the pinned fast commit checks:
+
+```bash
+python -m pip install "pre-commit==4.6.2"
+pre-commit install
+pre-commit run --all-files
+```
+
+The hook covers inexpensive Rust and Python formatting, syntax, lint,
+conflict-marker, private-key, and workflow-pin checks. It does not replace the
+full validation below; CI remains authoritative.
+
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
