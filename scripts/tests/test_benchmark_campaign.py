@@ -274,8 +274,9 @@ class CampaignExecutionTests(unittest.TestCase):
         environment: dict[str, str],
         stdout_path: Path,
         stderr_path: Path,
+        timeout_seconds: int,
     ) -> int:
-        del root, environment
+        del root, environment, timeout_seconds
         stdout_path.write_text("partial telemetry\n", encoding="utf-8")
         stderr_path.write_text("killed: out of memory\n", encoding="utf-8")
         return 137
@@ -301,8 +302,9 @@ class CampaignExecutionTests(unittest.TestCase):
             environment: dict[str, str],
             stdout_path: Path,
             stderr_path: Path,
+            timeout_seconds: int,
         ) -> int:
-            del root, environment
+            del root, environment, timeout_seconds
             stdout_path.write_text("stage output\n", encoding="utf-8")
             stderr_path.write_text("", encoding="utf-8")
             command_stage = command[command.index("--") + 1]
@@ -314,6 +316,27 @@ class CampaignExecutionTests(unittest.TestCase):
             return 0
 
         return write_reports
+
+    def test_run_logged_enforces_requested_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            completed = campaign.subprocess.CompletedProcess(["benchmark"], 0)
+            with patch.object(
+                campaign.subprocess, "run", return_value=completed
+            ) as run:
+                return_code = campaign.run_logged(
+                    ["benchmark"],
+                    root=root,
+                    environment={"PARI_TEST": "1"},
+                    stdout_path=root / "stdout.log",
+                    stderr_path=root / "stderr.log",
+                    timeout_seconds=600,
+                )
+
+            self.assertEqual(return_code, 0)
+            self.assertEqual(run.call_args.kwargs["timeout"], 600)
+            self.assertEqual(run.call_args.kwargs["cwd"], root)
+            self.assertEqual(run.call_args.kwargs["env"], {"PARI_TEST": "1"})
 
     def test_scale_10m_preserves_failed_stage_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -339,6 +362,7 @@ class CampaignExecutionTests(unittest.TestCase):
             self.assertEqual(failure["failure"]["stage"], "synthetic")
             self.assertEqual(failure["failure"]["phase"], "execution")
             self.assertEqual(failure["failure"]["return_code"], 137)
+            self.assertEqual(failure["failure"]["timeout_seconds"], 720 * 60)
             command = failure["failure"]["command"]
             self.assertEqual(command[command.index("--") + 1], "run")
             self.assertEqual(command[command.index("--items") + 1], "10000000")
@@ -359,6 +383,50 @@ class CampaignExecutionTests(unittest.TestCase):
                     [failure_path], root / "should-not-render.md", require_clean=True
                 )
             self.assertFalse((root / "should-not-render.md").exists())
+
+    def test_timeout_preserves_stage_logs_and_exact_profile_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.arguments(root, profile="scale-10m")
+            _manifest, profiles = campaign.load_campaign(campaign.DEFAULT_MANIFEST)
+            expected_timeout = profiles["scale-10m"].timeout_minutes * 60
+
+            def time_out(
+                command: list[str],
+                *,
+                root: Path,
+                environment: dict[str, str],
+                stdout_path: Path,
+                stderr_path: Path,
+                timeout_seconds: int,
+            ) -> int:
+                del root, environment
+                stdout_path.write_text("partial telemetry\n", encoding="utf-8")
+                stderr_path.write_text("stage exceeded its limit\n", encoding="utf-8")
+                raise campaign.subprocess.TimeoutExpired(command, timeout_seconds)
+
+            with (
+                patch.object(campaign, "git_state", return_value=(GIT_SHA, False)),
+                patch.object(campaign, "run_logged", side_effect=time_out),
+                patch.object(campaign, "host_environment", return_value=self.host()),
+                self.assertRaisesRegex(
+                    campaign.CampaignError,
+                    rf"timed out after {expected_timeout} seconds",
+                ),
+            ):
+                campaign.run_campaign(args)
+
+            failure_root = next(root.glob("scale-10m.failed-*"))
+            failure = campaign.read_json(failure_root / "failure.json")
+            self.assertEqual(failure["failure"]["stage"], "synthetic")
+            self.assertEqual(failure["failure"]["phase"], "execution-timeout")
+            self.assertIsNone(failure["failure"]["return_code"])
+            self.assertEqual(failure["failure"]["timeout_seconds"], expected_timeout)
+            self.assertIn("stage exceeded its limit", failure["failure"]["message"])
+            self.assertEqual(
+                {entry["path"] for entry in failure["files"]},
+                {"synthetic.stderr.log", "synthetic.stdout.log"},
+            )
 
     def test_ordinary_failure_is_cleaned_unless_retention_is_requested(self) -> None:
         for preserve in (False, True):
@@ -596,8 +664,9 @@ class CampaignExecutionTests(unittest.TestCase):
                 environment: dict[str, str],
                 stdout_path: Path,
                 stderr_path: Path,
+                timeout_seconds: int,
             ) -> int:
-                del root
+                del root, timeout_seconds
                 spill = Path(environment["TMPDIR"]) / "spill"
                 spill.mkdir()
                 (spill / "chunk").write_text("partial spill", encoding="utf-8")
@@ -642,8 +711,9 @@ class CampaignExecutionTests(unittest.TestCase):
                 environment: dict[str, str],
                 stdout_path: Path,
                 stderr_path: Path,
+                timeout_seconds: int,
             ) -> int:
-                del root, environment
+                del root, environment, timeout_seconds
                 retained = stdout_path.parent / "unexpected-directory"
                 retained.mkdir()
                 (retained / "content").write_text("not checksummed", encoding="utf-8")
@@ -683,8 +753,9 @@ class CampaignExecutionTests(unittest.TestCase):
                 environment: dict[str, str],
                 stdout_path: Path,
                 stderr_path: Path,
+                timeout_seconds: int,
             ) -> int:
-                del root, environment
+                del root, environment, timeout_seconds
                 stdout_path.write_text("before interrupt\n", encoding="utf-8")
                 stderr_path.write_text("interrupted\n", encoding="utf-8")
                 raise KeyboardInterrupt
@@ -731,8 +802,9 @@ class CampaignExecutionTests(unittest.TestCase):
                 environment: dict[str, str],
                 stdout_path: Path,
                 stderr_path: Path,
+                timeout_seconds: int,
             ) -> int:
-                del root, environment
+                del root, environment, timeout_seconds
                 stdout_path.write_text("stage output\n", encoding="utf-8")
                 stderr_path.write_text("", encoding="utf-8")
                 stage = command[command.index("--") + 1]
@@ -789,8 +861,9 @@ class CampaignExecutionTests(unittest.TestCase):
                 environment: dict[str, str],
                 stdout_path: Path,
                 stderr_path: Path,
+                timeout_seconds: int,
             ) -> int:
-                del root, environment
+                del root, environment, timeout_seconds
                 stdout_path.write_text("stage output\n", encoding="utf-8")
                 stderr_path.write_text("", encoding="utf-8")
                 command_stage = command[command.index("--") + 1]

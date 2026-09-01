@@ -177,6 +177,7 @@ class StageFailure(CampaignError):
         command: Sequence[str],
         phase: str,
         return_code: int | None,
+        timeout_seconds: int | None = None,
         environment_overrides: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
@@ -184,6 +185,7 @@ class StageFailure(CampaignError):
         self.command = list(command)
         self.phase = phase
         self.return_code = return_code
+        self.timeout_seconds = timeout_seconds
         self.environment_overrides = environment_overrides or {}
 
 
@@ -195,18 +197,21 @@ class ActiveStage:
     command: list[str] | None = None
     phase: str = "campaign"
     return_code: int | None = None
+    timeout_seconds: int | None = None
     environment_overrides: dict[str, str] | None = None
 
     def begin(
         self,
         stage: str,
         command: Sequence[str],
+        timeout_seconds: int,
         environment_overrides: dict[str, str] | None,
     ) -> None:
         self.stage = stage
         self.command = list(command)
         self.phase = "execution"
         self.return_code = None
+        self.timeout_seconds = timeout_seconds
         self.environment_overrides = environment_overrides or {}
 
     def clear(self) -> None:
@@ -214,6 +219,7 @@ class ActiveStage:
         self.command = None
         self.phase = "campaign"
         self.return_code = None
+        self.timeout_seconds = None
         self.environment_overrides = None
 
 
@@ -381,6 +387,7 @@ def run_logged(
     environment: dict[str, str],
     stdout_path: Path,
     stderr_path: Path,
+    timeout_seconds: int,
 ) -> int:
     print(f"running: {shell_join(command)}", flush=True)
     with (
@@ -397,6 +404,7 @@ def run_logged(
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=timeout_seconds,
         )
     return completed.returncode
 
@@ -595,7 +603,8 @@ def run_stage(
 ) -> dict[str, Any]:
     stdout_path = staging / f"{stage}.stdout.log"
     stderr_path = staging / f"{stage}.stderr.log"
-    active_stage.begin(stage, command, environment_overrides)
+    timeout_seconds = int(profile["timeout_minutes"]) * 60
+    active_stage.begin(stage, command, timeout_seconds, environment_overrides)
     try:
         return_code = run_logged(
             command,
@@ -603,7 +612,22 @@ def run_stage(
             environment=environment,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
+            timeout_seconds=timeout_seconds,
         )
+    except subprocess.TimeoutExpired as error:
+        active_stage.phase = "execution-timeout"
+        detail = read_log_tail(stderr_path) if stderr_path.exists() else ""
+        suffix = f"\n{detail}" if detail else ""
+        raise StageFailure(
+            f"stage command timed out after {timeout_seconds} seconds: "
+            f"{shell_join(command)}{suffix}",
+            stage=stage,
+            command=command,
+            phase="execution-timeout",
+            return_code=None,
+            timeout_seconds=timeout_seconds,
+            environment_overrides=environment_overrides,
+        ) from error
     except OSError as error:
         raise StageFailure(
             f"could not execute stage command: {shell_join(command)}\n{error}",
@@ -611,6 +635,7 @@ def run_stage(
             command=command,
             phase="execution",
             return_code=None,
+            timeout_seconds=timeout_seconds,
             environment_overrides=environment_overrides,
         ) from error
     active_stage.return_code = return_code
@@ -622,6 +647,7 @@ def run_stage(
             command=command,
             phase="execution",
             return_code=return_code,
+            timeout_seconds=timeout_seconds,
             environment_overrides=environment_overrides,
         )
     active_stage.phase = "validation"
@@ -639,6 +665,7 @@ def run_stage(
             command=command,
             phase="validation",
             return_code=return_code,
+            timeout_seconds=timeout_seconds,
             environment_overrides=environment_overrides,
         ) from error
     active_stage.phase = "artifact"
@@ -915,6 +942,7 @@ def preserve_failure(
         "phase": "campaign",
         "return_code": None,
         "stage": None,
+        "timeout_seconds": None,
     }
     if isinstance(error, StageFailure):
         failure.update(
@@ -924,6 +952,7 @@ def preserve_failure(
                 "phase": error.phase,
                 "return_code": error.return_code,
                 "stage": error.stage,
+                "timeout_seconds": error.timeout_seconds,
             }
         )
     elif active_stage.stage is not None:
@@ -934,6 +963,7 @@ def preserve_failure(
                 "phase": active_stage.phase,
                 "return_code": active_stage.return_code,
                 "stage": active_stage.stage,
+                "timeout_seconds": active_stage.timeout_seconds,
             }
         )
 
@@ -1055,6 +1085,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
                     command=redis_command(),
                     phase="preflight",
                     return_code=None,
+                    timeout_seconds=profile.timeout_minutes * 60,
                 )
             redis_report = staging / "redis.json"
             redis_environment = environment.copy()
