@@ -23,6 +23,7 @@ on:
       - "python/tests/**"
       - "docs/code-workloads.md"
       - "docs/datasketch-v2.md"
+      - "docs/benchmarks.md"
       - "docs/dataset-integrations.md"
       - "docs/entity-matching.md"
       - "docs/observability.md"

@@ -51,6 +51,7 @@ include = [
   { path = "benchmarks/datasketch_interop.py", format = "sdist" },
   { path = "benchmarks/similarity_family_evaluation.py", format = "sdist" },
   { path = "docs/datasketch-v2.md", format = "sdist" },
+  { path = "docs/benchmarks.md", format = "sdist" },
   { path = "docs/dataset-integrations.md", format = "sdist" },
   { path = "docs/code-workloads.md", format = "sdist" },
   { path = "docs/entity-matching.md", format = "sdist" },

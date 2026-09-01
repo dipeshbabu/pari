@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark an exact Datasketch 2.x affine32-to-Pari migration workflow."""
+"""Benchmark exact affine32 and affine64 Datasketch-to-Pari migration."""
 
 from __future__ import annotations
 
@@ -9,15 +9,23 @@ import os
 import platform
 import tempfile
 import time
+from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from datasketch import MinHash as DatasketchMinHash
-from pari import Index, MinHash, __version__
+from pari import Index, Index64, MinHash, MinHash64, __version__
 from pari import datasketch as adapter
 
 MASK64 = (1 << 64) - 1
+
+
+@dataclass(frozen=True)
+class WidthResult:
+    metrics: dict[str, dict[str, object]]
+    candidates: list[list[int]]
 
 
 def mix64(value: int) -> int:
@@ -45,25 +53,140 @@ def metric(value: float, unit: str, direction: str) -> dict[str, object]:
 
 
 def datasketch_signatures(
-    rows: list[list[bytes]], num_perm: int, seed: int
+    rows: list[list[bytes]],
+    num_perm: int,
+    seed: int,
+    scheme: str,
+    sketch_type: Any,
+    dtype: Any,
 ) -> list[DatasketchMinHash]:
-    template = MinHash(num_perm=num_perm, seed=seed)
+    template = sketch_type(num_perm=num_perm, seed=seed)
     multipliers, offsets = template.permutations
     permutations = (
-        np.asarray(multipliers, dtype=np.uint32),
-        np.asarray(offsets, dtype=np.uint32),
+        np.asarray(multipliers, dtype=dtype),
+        np.asarray(offsets, dtype=dtype),
     )
     output = []
     for row in rows:
         sketch = DatasketchMinHash(
             num_perm=num_perm,
             seed=seed,
-            scheme="affine32",
+            scheme=scheme,
             permutations=permutations,
         )
         sketch.update_batch(row)
         output.append(sketch)
     return output
+
+
+def require_signature_parity(
+    native: list[Any], external: list[DatasketchMinHash], scheme: str
+) -> None:
+    parity = len(native) == len(external) and all(
+        sketch.signature == [int(value) for value in external_sketch.hashvalues]
+        for sketch, external_sketch in zip(native, external)
+    )
+    if not parity:
+        raise RuntimeError(
+            f"{scheme} signature parity failed before benchmark comparison"
+        )
+
+
+def benchmark_width(
+    *,
+    width: int,
+    rows: list[list[bytes]],
+    query_rows: list[list[bytes]],
+    num_perm: int,
+    seed: int,
+    threshold: float,
+    directory: Path,
+) -> WidthResult:
+    scheme = f"affine{width}"
+    sketch_type = MinHash if width == 32 else MinHash64
+    index_type = Index if width == 32 else Index64
+    dtype = np.uint32 if width == 32 else np.uint64
+
+    started = time.perf_counter()
+    external = datasketch_signatures(
+        rows, num_perm, seed, scheme, sketch_type, dtype
+    )
+    datasketch_elapsed = time.perf_counter() - started
+
+    started = time.perf_counter()
+    native = sketch_type.from_batch(rows, num_perm=num_perm, seed=seed)
+    pari_elapsed = time.perf_counter() - started
+    require_signature_parity(native, external, scheme)
+
+    started = time.perf_counter()
+    imported = [adapter.from_datasketch(sketch) for sketch in external]
+    import_elapsed = time.perf_counter() - started
+    require_signature_parity(imported, external, f"imported-{scheme}")
+
+    external_queries = datasketch_signatures(
+        query_rows, num_perm, seed, scheme, sketch_type, dtype
+    )
+    native_queries = sketch_type.from_batch(
+        query_rows, num_perm=num_perm, seed=seed
+    )
+    require_signature_parity(native_queries, external_queries, f"query-{scheme}")
+    imported_queries = [
+        adapter.from_datasketch(sketch) for sketch in external_queries
+    ]
+
+    path = directory / f"migration-{scheme}.pari"
+    with index_type.create(
+        path,
+        threshold=threshold,
+        num_perm=num_perm,
+        seed=seed,
+    ) as index:
+        started = time.perf_counter()
+        index.add_many(list(enumerate(imported)))
+        index.sync()
+        build_elapsed = time.perf_counter() - started
+
+        started = time.perf_counter()
+        candidates = index.search_many(imported_queries)
+        query_elapsed = time.perf_counter() - started
+        index_bytes = index.stats().file_bytes
+
+    self_matches = sum(
+        int(query_index in result)
+        for query_index, result in enumerate(candidates)
+    )
+    self_recall = self_matches / len(query_rows)
+    if self_recall != 1.0:
+        raise RuntimeError(f"{scheme} converted self-recall failed: {self_recall}")
+
+    items = len(rows)
+    queries = len(query_rows)
+    signature_bytes = items * num_perm * (width // 8)
+    metrics = {
+        "adapter_import_items_per_second": metric(
+            items / import_elapsed, "items/second", "higher"
+        ),
+        "datasketch_signature_items_per_second": metric(
+            items / datasketch_elapsed, "items/second", "higher"
+        ),
+        "index_build_items_per_second": metric(
+            items / build_elapsed, "items/second", "higher"
+        ),
+        "index_bytes": metric(index_bytes, "bytes", "lower"),
+        "query_queries_per_second": metric(
+            queries / query_elapsed, "queries/second", "higher"
+        ),
+        "signature_bytes": metric(signature_bytes, "bytes", "lower"),
+        "signature_bytes_per_item": metric(
+            num_perm * (width // 8), "bytes/item", "lower"
+        ),
+        "signature_items_per_second": metric(
+            items / pari_elapsed, "items/second", "higher"
+        ),
+        "self_recall": metric(self_recall, "ratio", "higher"),
+        "signature_parity": metric(1.0, "boolean", "neutral"),
+    }
+    return WidthResult(metrics=metrics, candidates=candidates)
 
 
 def main() -> None:
@@ -83,64 +206,57 @@ def main() -> None:
 
     rows = corpus(args.items, args.set_size, args.seed)
     query_rows = rows[: args.queries]
-
-    started = time.perf_counter()
-    external = datasketch_signatures(rows, args.num_perm, args.seed)
-    datasketch_elapsed = time.perf_counter() - started
-
-    started = time.perf_counter()
-    native = MinHash.from_batch(rows, num_perm=args.num_perm, seed=args.seed)
-    pari_elapsed = time.perf_counter() - started
-    parity = all(
-        sketch.signature == [int(value) for value in external_sketch.hashvalues]
-        for sketch, external_sketch in zip(native, external)
-    )
-    if not parity:
-        raise RuntimeError("signature parity failed before benchmark comparison")
-
-    started = time.perf_counter()
-    imported = [adapter.from_datasketch(sketch) for sketch in external]
-    import_elapsed = time.perf_counter() - started
-    if any(left.signature != right.signature for left, right in zip(native, imported)):
-        raise RuntimeError("adapter changed signature values")
-
-    external_queries = datasketch_signatures(query_rows, args.num_perm, args.seed)
-    imported_queries = [adapter.from_datasketch(sketch) for sketch in external_queries]
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "migration.pari"
-        index = Index.create(
-            path,
-            threshold=args.threshold,
+    with tempfile.TemporaryDirectory() as raw_directory:
+        directory = Path(raw_directory)
+        affine32 = benchmark_width(
+            width=32,
+            rows=rows,
+            query_rows=query_rows,
             num_perm=args.num_perm,
             seed=args.seed,
+            threshold=args.threshold,
+            directory=directory,
         )
-        started = time.perf_counter()
-        index.add_many(list(enumerate(imported)))
-        index.sync()
-        build_elapsed = time.perf_counter() - started
+        affine64 = benchmark_width(
+            width=64,
+            rows=rows,
+            query_rows=query_rows,
+            num_perm=args.num_perm,
+            seed=args.seed,
+            threshold=args.threshold,
+            directory=directory,
+        )
 
-        started = time.perf_counter()
-        results = index.search_many(imported_queries)
-        query_elapsed = time.perf_counter() - started
-        index_bytes = index.stats().file_bytes
-        index.close()
+    candidate_parity = affine32.candidates == affine64.candidates
+    if not candidate_parity:
+        raise RuntimeError(
+            "Pari affine32/affine64 candidate parity failed for the matched workload"
+        )
 
-    self_matches = sum(
-        int(query_index in candidates) for query_index, candidates in enumerate(results)
+    metrics = {
+        f"affine32.{name}": value for name, value in affine32.metrics.items()
+    }
+    metrics.update(
+        {f"affine64.{name}": value for name, value in affine64.metrics.items()}
     )
-    self_recall = self_matches / args.queries
-    if self_recall != 1.0:
-        raise RuntimeError(f"converted signature self-recall failed: {self_recall}")
+    metrics["semantic.candidate_parity"] = metric(
+        float(candidate_parity), "boolean", "neutral"
+    )
 
     report = {
         "config": {
+            "candidate_parity_required": True,
+            "datasketch_lsh_candidate_sets_comparable": False,
             "items": args.items,
-            "lsh_candidate_sets_comparable": False,
             "num_perm": args.num_perm,
+            "pari_width_candidate_sets_comparable": True,
             "queries": args.queries,
             "seed": args.seed,
             "set_size": args.set_size,
-            "signature_semantics": "datasketch-affine32-with-pari-permutations",
+            "signature_semantics": {
+                "affine32": "datasketch-affine32-with-pari-permutations",
+                "affine64": "datasketch-affine64-with-pari-permutations",
+            },
             "threshold": args.threshold,
         },
         "engine": "pari-datasketch-interop",
@@ -153,27 +269,8 @@ def main() -> None:
             "python_version": platform.python_version(),
         },
         "generated_unix_seconds": int(time.time()),
-        "metrics": {
-            "adapter.import_items_per_second": metric(
-                args.items / import_elapsed, "items/second", "higher"
-            ),
-            "datasketch.signature_items_per_second": metric(
-                args.items / datasketch_elapsed, "items/second", "higher"
-            ),
-            "pari.index_build_items_per_second": metric(
-                args.items / build_elapsed, "items/second", "higher"
-            ),
-            "pari.index_bytes": metric(index_bytes, "bytes", "lower"),
-            "pari.query_queries_per_second": metric(
-                args.queries / query_elapsed, "queries/second", "higher"
-            ),
-            "pari.signature_items_per_second": metric(
-                args.items / pari_elapsed, "items/second", "higher"
-            ),
-            "semantic.self_recall": metric(self_recall, "ratio", "higher"),
-            "semantic.signature_parity": metric(float(parity), "boolean", "neutral"),
-        },
-        "schema_version": 1,
+        "metrics": metrics,
+        "schema_version": 2,
     }
     args.output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"

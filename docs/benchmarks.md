@@ -173,7 +173,7 @@ The [text workload guide](text-workloads.md) provides streaming JSONL commands f
 
 ## Datasketch migration benchmark
 
-`benchmarks/datasketch_interop.py` measures an exact affine32 migration only after checking value-for-value signature parity and converted self-query recall. It reports Datasketch and Pari signature throughput, adapter import throughput, Pari build/query throughput, and index size. It intentionally does not compare LSH candidate sets because banding, bucket hashing, persistence, and execution models can differ. See the [compatibility matrix and migration guide](datasketch-v2.md).
+`benchmarks/datasketch_interop.py` measures exact affine32 and affine64 migrations on identical rows and LSH settings. Before reporting timings it requires value-for-value Datasketch/Pari signature parity at each width, complete converted self-query recall, and affine32/affine64 Pari candidate parity on the controlled corpus. It reports width-labeled signature and adapter throughput, Pari build/query throughput, signature bytes, and persisted index bytes. The candidate gate is a workload correctness check, not a general cross-width identity guarantee. Datasketch and Pari LSH candidate sets remain intentionally incomparable because banding, bucket hashing, persistence, and execution models can differ. See the [compatibility matrix and migration guide](datasketch-v2.md).
 
 ## Named scale campaigns
 
