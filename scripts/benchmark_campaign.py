@@ -781,7 +781,11 @@ def quarantine_staged_bundle(staging: Path) -> None:
     bundle_path = staging / "bundle.json"
     if not bundle_path.exists():
         return
-    bundle = read_json(bundle_path)
+    try:
+        bundle = read_json(bundle_path)
+    except CampaignError:
+        bundle_path.replace(staging / "failed-bundle.partial")
+        return
     bundle["artifact_kind"] = "pari-benchmark-campaign-failure-snapshot"
     bundle["status"] = "failed"
     write_json(bundle_path, bundle)
@@ -801,6 +805,28 @@ def remove_process_temp(process_temp: Path) -> None:
         raise CampaignError(
             f"process temporary directory still exists after cleanup: {process_temp}"
         )
+
+
+def prepare_failure_staging(staging: Path, process_temp: Path) -> None:
+    quarantine_error: Exception | None = None
+    cleanup_error: Exception | None = None
+    try:
+        quarantine_staged_bundle(staging)
+    except Exception as error:
+        quarantine_error = error
+    try:
+        remove_process_temp(process_temp)
+    except Exception as error:
+        cleanup_error = error
+
+    if quarantine_error is not None or cleanup_error is not None:
+        details = []
+        if quarantine_error is not None:
+            details.append(f"bundle quarantine failed: {quarantine_error}")
+        if cleanup_error is not None:
+            details.append(f"process temporary cleanup failed: {cleanup_error}")
+        cause = cleanup_error if cleanup_error is not None else quarantine_error
+        raise CampaignError("; ".join(details)) from cause
 
 
 def failure_directory(output: Path, staging: Path) -> Path:
@@ -826,8 +852,7 @@ def preserve_failure(
     inputs: dict[str, Any],
     active_stage: ActiveStage,
 ) -> Path:
-    quarantine_staged_bundle(staging)
-    remove_process_temp(process_temp)
+    prepare_failure_staging(staging, process_temp)
     try:
         environment: dict[str, Any] = host_environment(root)
     except Exception as environment_error:

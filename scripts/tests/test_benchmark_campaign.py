@@ -465,6 +465,58 @@ class CampaignExecutionTests(unittest.TestCase):
                             require_clean=True,
                         )
 
+    def test_partial_bundle_write_is_preserved_after_verified_temp_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.arguments(
+                root, profile="smoke", preserve_failure_evidence=True
+            )
+            _manifest, profiles = campaign.load_campaign(campaign.DEFAULT_MANIFEST)
+            profile = asdict(profiles["smoke"])
+            partial_bytes = b'{"schema_version": 1, "reports": '
+            original_write_json = campaign.write_json
+
+            def exhaust_storage(path: Path, value: dict[str, object]) -> None:
+                if path.name == "bundle.json":
+                    path.write_bytes(partial_bytes)
+                    raise OSError(28, "No space left on device")
+                original_write_json(path, value)
+
+            with (
+                patch.object(campaign, "git_state", return_value=(GIT_SHA, False)),
+                patch.object(
+                    campaign,
+                    "run_logged",
+                    side_effect=self.valid_command(profile),
+                ),
+                patch.object(campaign, "host_environment", return_value=self.host()),
+                patch.object(campaign, "write_json", side_effect=exhaust_storage),
+                self.assertRaisesRegex(OSError, "No space left on device"),
+            ):
+                campaign.run_campaign(args)
+
+            self.assertEqual(list(root.glob(".smoke.partial-*")), [])
+            failure_root = next(root.glob("smoke.failed-*"))
+            self.assertFalse((failure_root / "tmp").exists())
+            self.assertFalse((failure_root / "bundle.json").exists())
+            partial_bundle = failure_root / "failed-bundle.partial"
+            self.assertEqual(partial_bundle.read_bytes(), partial_bytes)
+            failure = campaign.read_json(failure_root / "failure.json")
+            self.assertIn("No space left on device", failure["failure"]["message"])
+            files = {entry["path"]: entry for entry in failure["files"]}
+            self.assertIn("failed-bundle.partial", files)
+            self.assertEqual(
+                files["failed-bundle.partial"]["sha256"],
+                campaign.sha256_file(partial_bundle),
+            )
+            with self.assertRaises(campaign.CampaignError):
+                campaign.validate_bundle(partial_bundle)
+            with self.assertRaises(campaign.CampaignError):
+                campaign.render_report(
+                    [partial_bundle], root / "partial.md", require_clean=True
+                )
+            self.assertFalse((root / "partial.md").exists())
+
     def test_cleanup_failure_leaves_unfinalized_staging_with_no_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
