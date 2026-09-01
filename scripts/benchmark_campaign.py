@@ -22,6 +22,7 @@ from typing import Any, Sequence
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "benchmarks" / "campaigns" / "scale-v1.json"
 BUNDLE_SCHEMA_VERSION = 1
+FAILURE_SCHEMA_VERSION = 1
 REPORT_SCHEMA_VERSION = 1
 
 REQUIRED_METRICS: dict[str, tuple[str, ...]] = {
@@ -139,6 +140,7 @@ class Profile:
     minimum_memory_gib: int
     timeout_minutes: int
     methodology_only: bool = False
+    preserve_failure_evidence: bool = False
 
     def benchmark_arguments(self) -> list[str]:
         return [
@@ -161,6 +163,57 @@ class Profile:
 
 class CampaignError(RuntimeError):
     """A benchmark bundle failed validation or execution."""
+
+
+class StageFailure(CampaignError):
+    """A named campaign stage failed to execute or validate."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str,
+        command: Sequence[str],
+        phase: str,
+        return_code: int | None,
+        environment_overrides: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.command = list(command)
+        self.phase = phase
+        self.return_code = return_code
+        self.environment_overrides = environment_overrides or {}
+
+
+@dataclass
+class ActiveStage:
+    """Mutable stage context retained when an interruption bypasses normal errors."""
+
+    stage: str | None = None
+    command: list[str] | None = None
+    phase: str = "campaign"
+    return_code: int | None = None
+    environment_overrides: dict[str, str] | None = None
+
+    def begin(
+        self,
+        stage: str,
+        command: Sequence[str],
+        environment_overrides: dict[str, str] | None,
+    ) -> None:
+        self.stage = stage
+        self.command = list(command)
+        self.phase = "execution"
+        self.return_code = None
+        self.environment_overrides = environment_overrides or {}
+
+    def clear(self) -> None:
+        self.stage = None
+        self.command = None
+        self.phase = "campaign"
+        self.return_code = None
+        self.environment_overrides = None
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -242,6 +295,7 @@ def parse_profile(name: str, raw: dict[str, Any]) -> Profile:
         minimum_memory_gib=integer("minimum_memory_gib"),
         timeout_minutes=integer("timeout_minutes"),
         methodology_only=boolean("methodology_only"),
+        preserve_failure_evidence=boolean("preserve_failure_evidence"),
     )
     if profile.overlap > profile.set_size:
         raise CampaignError(f"profile {name!r} overlap exceeds set_size")
@@ -326,7 +380,7 @@ def run_logged(
     environment: dict[str, str],
     stdout_path: Path,
     stderr_path: Path,
-) -> None:
+) -> int:
     print(f"running: {shell_join(command)}", flush=True)
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
         "w", encoding="utf-8"
@@ -342,11 +396,17 @@ def run_logged(
             encoding="utf-8",
             errors="replace",
         )
-    if completed.returncode != 0:
-        detail = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-        raise CampaignError(
-            f"stage command exited {completed.returncode}: {shell_join(command)}\n{detail}"
-        )
+    return completed.returncode
+
+
+def read_log_tail(
+    path: Path, *, max_bytes: int = 16 * 1024, max_chars: int = 4000
+) -> str:
+    with path.open("rb") as source:
+        source.seek(0, os.SEEK_END)
+        source.seek(max(0, source.tell() - max_bytes))
+        tail = source.read(max_bytes)
+    return tail.decode("utf-8", errors="replace")[-max_chars:]
 
 
 def metric_value(report: dict[str, Any], name: str, *, allow_null: bool = False) -> float | None:
@@ -512,24 +572,59 @@ def run_stage(
     staging: Path,
     git_sha: str,
     profile: dict[str, Any],
+    active_stage: ActiveStage,
     environment_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     stdout_path = staging / f"{stage}.stdout.log"
     stderr_path = staging / f"{stage}.stderr.log"
-    run_logged(
-        command,
-        root=root,
-        environment=environment,
-        stdout_path=stdout_path,
-        stderr_path=stderr_path,
-    )
-    validate_report(
-        report_path,
-        stage,
-        expected_git_sha=git_sha,
-        profile=profile,
-    )
-    return {
+    active_stage.begin(stage, command, environment_overrides)
+    try:
+        return_code = run_logged(
+            command,
+            root=root,
+            environment=environment,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+        )
+    except OSError as error:
+        raise StageFailure(
+            f"could not execute stage command: {shell_join(command)}\n{error}",
+            stage=stage,
+            command=command,
+            phase="execution",
+            return_code=None,
+            environment_overrides=environment_overrides,
+        ) from error
+    active_stage.return_code = return_code
+    if return_code != 0:
+        detail = read_log_tail(stderr_path)
+        raise StageFailure(
+            f"stage command exited {return_code}: {shell_join(command)}\n{detail}",
+            stage=stage,
+            command=command,
+            phase="execution",
+            return_code=return_code,
+            environment_overrides=environment_overrides,
+        )
+    active_stage.phase = "validation"
+    try:
+        validate_report(
+            report_path,
+            stage,
+            expected_git_sha=git_sha,
+            profile=profile,
+        )
+    except CampaignError as error:
+        raise StageFailure(
+            f"stage report validation failed for {stage!r}: {error}",
+            stage=stage,
+            command=command,
+            phase="validation",
+            return_code=return_code,
+            environment_overrides=environment_overrides,
+        ) from error
+    active_stage.phase = "artifact"
+    artifact = {
         "command": list(command),
         "environment_overrides": environment_overrides or {},
         "report": report_path.name,
@@ -538,6 +633,8 @@ def run_stage(
         "stderr": stderr_path.name,
         "stdout": stdout_path.name,
     }
+    active_stage.clear()
+    return artifact
 
 
 def run_text_stages(
@@ -547,7 +644,10 @@ def run_text_stages(
     environment: dict[str, str],
     git_sha: str,
     profile: Profile,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    artifacts: list[dict[str, Any]],
+    inputs: dict[str, Any],
+    active_stage: ActiveStage,
+) -> None:
     profile_data = asdict(profile)
     with tempfile.TemporaryDirectory(prefix="pari-text-campaign-") as temporary:
         work = Path(temporary)
@@ -560,6 +660,7 @@ def run_text_stages(
             query_items=profile.text_query_items,
             seed=profile.seed,
         )
+        inputs["text"] = dataset
         reference_manifest = work / "reference.json"
         reference_report = staging / "text-reference.json"
         reference_command = [
@@ -583,7 +684,7 @@ def run_text_stages(
             "--shingle-size",
             "3",
         ]
-        artifacts = [
+        artifacts.append(
             run_stage(
                 "text-reference",
                 reference_command,
@@ -593,8 +694,9 @@ def run_text_stages(
                 staging=staging,
                 git_sha=git_sha,
                 profile=profile_data,
+                active_stage=active_stage,
             )
-        ]
+        )
 
         audit_report = staging / "text-audit.json"
         audit_command = [
@@ -625,9 +727,9 @@ def run_text_stages(
                 staging=staging,
                 git_sha=git_sha,
                 profile=profile_data,
+                active_stage=active_stage,
             )
         )
-    return artifacts, dataset
 
 
 def host_environment(root: Path) -> dict[str, Any]:
@@ -656,6 +758,187 @@ def host_environment(root: Path) -> dict[str, Any]:
     }
 
 
+def checksummed_failure_files(staging: Path) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for path in sorted(staging.iterdir()):
+        if path.name == "failure.json":
+            raise CampaignError("staging unexpectedly contains failure.json")
+        if path.is_symlink() or not path.is_file():
+            raise CampaignError(
+                f"cannot finalize failure evidence with unrecorded entry {path.name!r}"
+            )
+        files.append(
+            {
+                "bytes": path.stat().st_size,
+                "path": path.name,
+                "sha256": sha256_file(path),
+            }
+        )
+    return files
+
+
+def quarantine_staged_bundle(staging: Path) -> None:
+    bundle_path = staging / "bundle.json"
+    if not bundle_path.exists():
+        return
+    try:
+        bundle = read_json(bundle_path)
+    except CampaignError:
+        bundle_path.replace(staging / "failed-bundle.partial")
+        return
+    source_path = staging / "failed-bundle.source"
+    bundle_path.replace(source_path)
+    if bundle_path.exists() or bundle_path.is_symlink():
+        raise CampaignError("bundle.json still exists after diagnostic ownership transfer")
+
+    bundle["artifact_kind"] = "pari-benchmark-campaign-failure-snapshot"
+    bundle["status"] = "failed"
+    wrapper_path = staging / "failed-bundle.json"
+    try:
+        write_json(wrapper_path, bundle)
+    except Exception:
+        if wrapper_path.exists() or wrapper_path.is_symlink():
+            wrapper_path.replace(staging / "failed-bundle-wrapper.partial")
+        raise
+    source_path.unlink()
+    if source_path.exists() or source_path.is_symlink():
+        raise CampaignError("failed bundle source still exists after wrapper publication")
+
+
+def remove_process_temp(process_temp: Path) -> None:
+    if not process_temp.exists() and not process_temp.is_symlink():
+        return
+    try:
+        shutil.rmtree(process_temp)
+    except OSError as error:
+        raise CampaignError(
+            f"could not remove process temporary directory {process_temp}: {error}"
+        ) from error
+    if process_temp.exists() or process_temp.is_symlink():
+        raise CampaignError(
+            f"process temporary directory still exists after cleanup: {process_temp}"
+        )
+
+
+def prepare_failure_staging(staging: Path, process_temp: Path) -> None:
+    quarantine_error: Exception | None = None
+    cleanup_error: Exception | None = None
+    try:
+        quarantine_staged_bundle(staging)
+    except Exception as error:
+        quarantine_error = error
+    try:
+        remove_process_temp(process_temp)
+    except Exception as error:
+        cleanup_error = error
+
+    if quarantine_error is not None or cleanup_error is not None:
+        details = []
+        if quarantine_error is not None:
+            details.append(f"bundle quarantine failed: {quarantine_error}")
+        if cleanup_error is not None:
+            details.append(f"process temporary cleanup failed: {cleanup_error}")
+        cause = cleanup_error if cleanup_error is not None else quarantine_error
+        raise CampaignError("; ".join(details)) from cause
+
+
+def failure_directory(output: Path, staging: Path) -> Path:
+    prefix = f".{output.name}.partial-"
+    suffix = staging.name.removeprefix(prefix)
+    return output.with_name(f"{output.name}.failed-{suffix}")
+
+
+def preserve_failure(
+    *,
+    error: BaseException,
+    output: Path,
+    staging: Path,
+    process_temp: Path,
+    campaign: dict[str, Any],
+    manifest_path: Path,
+    root: Path,
+    profile: Profile,
+    git_sha: str,
+    dirty: bool,
+    started: int,
+    artifacts: list[dict[str, Any]],
+    inputs: dict[str, Any],
+    active_stage: ActiveStage,
+) -> Path:
+    prepare_failure_staging(staging, process_temp)
+    try:
+        environment: dict[str, Any] = host_environment(root)
+    except Exception as environment_error:
+        environment = {"collection_error": str(environment_error)}
+    try:
+        disk = shutil.disk_usage(staging)
+        filesystem: dict[str, Any] = {
+            "free_bytes_at_failure": disk.free,
+            "total_bytes": disk.total,
+        }
+    except OSError as filesystem_error:
+        filesystem = {"collection_error": str(filesystem_error)}
+
+    try:
+        manifest_label = str(manifest_path.relative_to(root))
+    except ValueError:
+        manifest_label = str(manifest_path)
+    failure: dict[str, Any] = {
+        "command": None,
+        "environment_overrides": {},
+        "exception_type": type(error).__name__,
+        "message": str(error),
+        "phase": "campaign",
+        "return_code": None,
+        "stage": None,
+    }
+    if isinstance(error, StageFailure):
+        failure.update(
+            {
+                "command": error.command,
+                "environment_overrides": error.environment_overrides,
+                "phase": error.phase,
+                "return_code": error.return_code,
+                "stage": error.stage,
+            }
+        )
+    elif active_stage.stage is not None:
+        failure.update(
+            {
+                "command": active_stage.command,
+                "environment_overrides": active_stage.environment_overrides or {},
+                "phase": active_stage.phase,
+                "return_code": active_stage.return_code,
+                "stage": active_stage.stage,
+            }
+        )
+
+    failure_manifest = {
+        "artifact_kind": "pari-benchmark-campaign-failure",
+        "campaign_id": campaign["campaign_id"],
+        "campaign_manifest": manifest_label,
+        "campaign_manifest_sha256": sha256_file(manifest_path),
+        "completed_reports": artifacts,
+        "environment": environment,
+        "failed_unix_seconds": int(time.time()),
+        "failure": failure,
+        "files": checksummed_failure_files(staging),
+        "filesystem": filesystem,
+        "git_sha": git_sha,
+        "inputs": inputs,
+        "profile": asdict(profile),
+        "schema_version": FAILURE_SCHEMA_VERSION,
+        "started_unix_seconds": started,
+        "status": "failed",
+        "workload": campaign["workload"],
+        "worktree_clean": not dirty,
+    }
+    write_json(staging / "failure.json", failure_manifest)
+    failed_output = failure_directory(output, staging)
+    staging.replace(failed_output)
+    return failed_output
+
+
 def run_campaign(args: argparse.Namespace) -> Path:
     root = args.repo_root.resolve()
     manifest_path = args.manifest.resolve()
@@ -676,20 +959,26 @@ def run_campaign(args: argparse.Namespace) -> Path:
     output = args.output.resolve()
     if output.exists():
         raise CampaignError(f"output directory already exists: {output}")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.partial-", dir=output.parent))
     started = int(time.time())
     environment = os.environ.copy()
     environment["PARI_GIT_SHA"] = git_sha
-    process_temp = staging / "tmp"
-    process_temp.mkdir()
-    environment["TEMP"] = str(process_temp)
-    environment["TMP"] = str(process_temp)
-    environment["TMPDIR"] = str(process_temp)
     profile_data = asdict(profile)
     artifacts: list[dict[str, Any]] = []
     inputs: dict[str, Any] = {}
+    active_stage = ActiveStage()
+    staging: Path | None = None
+    process_temp: Path | None = None
     try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{output.name}.partial-", dir=output.parent)
+        )
+        process_temp = staging / "tmp"
+        process_temp.mkdir()
+        environment["TEMP"] = str(process_temp)
+        environment["TMP"] = str(process_temp)
+        environment["TMPDIR"] = str(process_temp)
+
         synthetic_report = staging / "synthetic.json"
         artifacts.append(
             run_stage(
@@ -701,6 +990,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
                 staging=staging,
                 git_sha=git_sha,
                 profile=profile_data,
+                active_stage=active_stage,
             )
         )
         if profile.storage:
@@ -715,6 +1005,7 @@ def run_campaign(args: argparse.Namespace) -> Path:
                     staging=staging,
                     git_sha=git_sha,
                     profile=profile_data,
+                    active_stage=active_stage,
                 )
             )
         if args.include_datasketch:
@@ -729,11 +1020,18 @@ def run_campaign(args: argparse.Namespace) -> Path:
                     staging=staging,
                     git_sha=git_sha,
                     profile=profile_data,
+                    active_stage=active_stage,
                 )
             )
         if args.include_redis:
             if not environment.get("PARI_REDIS_URL"):
-                raise CampaignError("--include-redis requires PARI_REDIS_URL")
+                raise StageFailure(
+                    "--include-redis requires PARI_REDIS_URL",
+                    stage="redis",
+                    command=redis_command(),
+                    phase="preflight",
+                    return_code=None,
+                )
             redis_report = staging / "redis.json"
             redis_environment = environment.copy()
             redis_overrides = {
@@ -752,19 +1050,21 @@ def run_campaign(args: argparse.Namespace) -> Path:
                     staging=staging,
                     git_sha=git_sha,
                     profile=profile_data,
+                    active_stage=active_stage,
                     environment_overrides=redis_overrides,
                 )
             )
         if args.include_text:
-            text_artifacts, text_inputs = run_text_stages(
+            run_text_stages(
                 root=root,
                 staging=staging,
                 environment=environment,
                 git_sha=git_sha,
                 profile=profile,
+                artifacts=artifacts,
+                inputs=inputs,
+                active_stage=active_stage,
             )
-            artifacts.extend(text_artifacts)
-            inputs["text"] = text_inputs
 
         try:
             manifest_label = str(manifest_path.relative_to(root))
@@ -796,13 +1096,63 @@ def run_campaign(args: argparse.Namespace) -> Path:
         staging.replace(output)
         print(f"wrote validated benchmark bundle {output}")
         return output / "bundle.json"
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+    except BaseException as error:
+        if staging is None:
+            raise
+        if process_temp is None:
+            process_temp = staging / "tmp"
+        should_preserve = profile.preserve_failure_evidence or getattr(
+            args, "preserve_failure_evidence", False
+        )
+        if should_preserve:
+            try:
+                failed_output = preserve_failure(
+                    error=error,
+                    output=output,
+                    staging=staging,
+                    process_temp=process_temp,
+                    campaign=campaign,
+                    manifest_path=manifest_path,
+                    root=root,
+                    profile=profile,
+                    git_sha=git_sha,
+                    dirty=dirty,
+                    started=started,
+                    artifacts=artifacts,
+                    inputs=inputs,
+                    active_stage=active_stage,
+                )
+            except Exception as preservation_error:
+                print(
+                    "warning: could not finalize failure evidence "
+                    f"({preservation_error}); retained staging directory {staging}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"preserved non-publishable failure evidence {failed_output}",
+                    file=sys.stderr,
+                )
+        else:
+            shutil.rmtree(staging, ignore_errors=True)
         raise
 
 
 def validate_bundle(path: Path, *, require_clean: bool = True) -> dict[str, Any]:
+    if path.name == "failure.json" or path.name.startswith("failed-bundle"):
+        raise CampaignError(
+            "failed campaign artifacts are diagnostic evidence, not validated benchmark bundles"
+        )
+    if path.name != "bundle.json":
+        raise CampaignError("validated benchmark bundles must be named bundle.json")
     bundle = read_json(path)
+    if (
+        bundle.get("status") == "failed"
+        or bundle.get("artifact_kind") == "pari-benchmark-campaign-failure"
+    ):
+        raise CampaignError(
+            "failed campaign artifacts are diagnostic evidence, not validated benchmark bundles"
+        )
     if bundle.get("schema_version") != BUNDLE_SCHEMA_VERSION:
         raise CampaignError(f"unsupported bundle schema in {path}")
     git_sha = bundle.get("git_sha")
@@ -1190,6 +1540,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--include-redis", action="store_true")
     run_parser.add_argument("--include-text", action="store_true")
     run_parser.add_argument("--allow-dirty", action="store_true")
+    run_parser.add_argument(
+        "--preserve-failure-evidence",
+        action="store_true",
+        help="retain a non-publishable failure artifact instead of cleaning failed staging files",
+    )
     run_parser.set_defaults(handler=run_command)
 
     validate_parser = subparsers.add_parser("validate", help="validate a bundle")

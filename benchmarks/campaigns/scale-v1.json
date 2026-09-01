@@ -69,6 +69,7 @@
       "text_reference_items": 1000000,
       "text_query_items": 100000,
       "manual_only": true,
+      "preserve_failure_evidence": true,
       "minimum_memory_gib": 128,
       "timeout_minutes": 720
     },
