@@ -53,7 +53,8 @@ CLI:
 
 - the `index`, `search`, `dedup`, `stats`, `verify`, and `completion` command names
 - documented command options in the 0.2.x line, including stderr-only progress
-- documented JSONL input fields in the 0.2.x line
+- documented JSONL input fields in the 0.2.x line, including explicit
+  `pari-affine64-v1` selection and optional precomputed-signature seed metadata
 - machine-readable JSON/JSONL output revision 1, pinned by compiled CLI integration tests
 
 ### Experimental
@@ -149,7 +150,7 @@ Adding an explicit schema-version field in a future release is itself backward c
 
 Human-readable output is intentionally not a parser contract.
 
-The 0.2 JSONL input records remain strict: unknown input fields are rejected so misspellings fail early. Producers targeting 0.2.x should use only the documented fields in [`cli.md`](cli.md).
+The 0.2 JSONL input records remain strict: unknown input fields are rejected so misspellings fail early. Producers targeting 0.2.x should use only the documented fields in [`cli.md`](cli.md). Existing affine32 commands remain the default. Affine64 construction is an explicit `index`/`dedup` option, while commands that open an index derive its family from validated format metadata.
 
 ## Redis compatibility
 
