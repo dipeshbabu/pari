@@ -1139,6 +1139,12 @@ def run_campaign(args: argparse.Namespace) -> Path:
 
 
 def validate_bundle(path: Path, *, require_clean: bool = True) -> dict[str, Any]:
+    if path.name == "failure.json" or path.name.startswith("failed-bundle"):
+        raise CampaignError(
+            "failed campaign artifacts are diagnostic evidence, not validated benchmark bundles"
+        )
+    if path.name != "bundle.json":
+        raise CampaignError("validated benchmark bundles must be named bundle.json")
     bundle = read_json(path)
     if (
         bundle.get("status") == "failed"

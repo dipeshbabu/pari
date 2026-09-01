@@ -18,7 +18,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Lazy index publication preserves destinations created concurrently after conversion begins.
 - Bounded external index publication now atomically rejects existing destinations and rolls back transaction-owned outputs after cleanup or durability failures.
 - `pari index` publishes its destination only after successful ingestion and no longer leaves a valid-looking partial index after input failure.
-- Failed `scale-10m` campaigns preserve checksummed logs, reports, environment telemetry, and exact failure metadata in a clearly non-publishable diagnostic artifact after verified temporary-file cleanup, including interruptions, partial bundle writes, fail-closed wrapper creation, and post-validation publication failures.
+- Failed `scale-10m` campaigns preserve checksummed logs, reports, environment telemetry, and exact failure metadata in a clearly non-publishable diagnostic artifact after verified temporary-file cleanup, including interruptions, partial bundle writes, fail-closed wrapper creation, canonical bundle validation, and post-validation publication failures.
 
 ### Repository policy
 

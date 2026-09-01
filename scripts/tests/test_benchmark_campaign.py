@@ -222,6 +222,10 @@ class ValidationTests(unittest.TestCase):
             bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
 
             campaign.validate_bundle(bundle_path)
+            renamed_bundle = root / "renamed-bundle.json"
+            renamed_bundle.write_bytes(bundle_path.read_bytes())
+            with self.assertRaisesRegex(campaign.CampaignError, "named bundle.json"):
+                campaign.validate_bundle(renamed_bundle)
             output = root / "report.md"
             campaign.render_report([bundle_path], output, require_clean=True)
             rendered = output.read_text(encoding="utf-8")
@@ -510,7 +514,15 @@ class CampaignExecutionTests(unittest.TestCase):
             self.assertFalse((staging / "failure.json").exists())
             self.assertFalse((staging / "bundle.json").exists())
             self.assertFalse((staging / "failed-bundle.json").exists())
-            self.assertTrue((staging / "failed-bundle.source").exists())
+            source_bundle = staging / "failed-bundle.source"
+            self.assertTrue(source_bundle.exists())
+            with self.assertRaisesRegex(campaign.CampaignError, "diagnostic evidence"):
+                campaign.validate_bundle(source_bundle)
+            with self.assertRaisesRegex(campaign.CampaignError, "diagnostic evidence"):
+                campaign.render_report(
+                    [source_bundle], root / "source.md", require_clean=True
+                )
+            self.assertFalse((root / "source.md").exists())
             for json_path in staging.glob("*.json"):
                 with self.subTest(json_path=json_path.name):
                     with self.assertRaises(campaign.CampaignError):
