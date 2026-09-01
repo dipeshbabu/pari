@@ -207,13 +207,20 @@ pub fn build_external(
     destination: impl AsRef<Path>,
     options: BuildOptions,
 ) -> Result<BuildStats, BuildError> {
+    build_external_with_hook(source.as_ref(), destination.as_ref(), options, || Ok(()))
+}
+
+fn build_external_with_hook(
+    source: &Path,
+    destination: &Path,
+    options: BuildOptions,
+    before_publish: impl FnOnce() -> Result<(), BuildError>,
+) -> Result<BuildStats, BuildError> {
     if options.max_buffer_records == 0 {
         return Err(BuildError::InvalidOptions {
             reason: "max_buffer_records must be positive",
         });
     }
-    let source = source.as_ref();
-    let destination = destination.as_ref();
     if destination.exists() {
         return Err(BuildError::AlreadyExists(destination.to_path_buf()));
     }
@@ -282,8 +289,8 @@ pub fn build_external(
         &segments,
         &destination_temp,
     )?;
-    fs::rename(&destination_temp, destination)?;
-    sync_parent(destination)?;
+    before_publish()?;
+    publish_no_replace(&destination_temp, destination)?;
     let output_bytes = fs::metadata(destination)?.len();
 
     Ok(BuildStats {
@@ -965,6 +972,24 @@ fn temp_path(destination: &Path, nonce: u128, suffix: &str) -> PathBuf {
     destination.with_file_name(format!(".{name}.{nonce:032x}.{suffix}.tmp"))
 }
 
+fn publish_no_replace(temporary: &Path, destination: &Path) -> Result<(), BuildError> {
+    // Both names are in the same directory, so a hard link atomically claims
+    // the destination without exposing a partially written file or replacing
+    // a destination created by another process.
+    match fs::hard_link(temporary, destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(BuildError::AlreadyExists(destination.to_path_buf()));
+        }
+        Err(error) => return Err(BuildError::Io(error)),
+    }
+
+    let cleanup_result = fs::remove_file(temporary);
+    let sync_result = sync_parent(destination);
+    cleanup_result?;
+    sync_result
+}
+
 #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn sync_parent(path: &Path) -> Result<(), BuildError> {
     #[cfg(windows)]
@@ -995,7 +1020,7 @@ mod tests {
     use pari_store::PersistentIndex32;
     use pari_store_lazy::{build_from_snapshot, LazyIndex32};
 
-    use super::{build_external, BuildError, BuildOptions};
+    use super::{build_external, build_external_with_hook, BuildError, BuildOptions};
 
     static NEXT_TEST_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -1009,6 +1034,32 @@ mod tests {
 
     fn cleanup(path: &Path) {
         let _ = fs::remove_file(path);
+    }
+
+    fn temporary_artifacts(destination: &Path) -> Vec<PathBuf> {
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let prefix = format!(
+            ".{}.",
+            destination
+                .file_name()
+                .expect("destination file name")
+                .to_string_lossy()
+        );
+        fs::read_dir(parent)
+            .expect("read destination parent")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                let name = path
+                    .file_name()
+                    .expect("temporary file name")
+                    .to_string_lossy();
+                name.starts_with(&prefix) && name.ends_with(".tmp")
+            })
+            .collect()
     }
 
     fn sketch(base: u64) -> MinHash32 {
@@ -1060,6 +1111,7 @@ mod tests {
             fs::read(&external).expect("external bytes"),
             fs::read(&reference).expect("reference bytes")
         );
+        assert!(temporary_artifacts(&external).is_empty());
         cleanup(&source);
         cleanup(&reference);
         cleanup(&external);
@@ -1107,5 +1159,68 @@ mod tests {
         ));
         assert!(!destination.exists());
         cleanup(&source);
+    }
+
+    #[test]
+    fn pre_existing_destination_is_preserved_without_temporary_files() {
+        let (source, _) = source_fixture("pre-existing");
+        let destination = test_path("pre-existing-output");
+        cleanup(&destination);
+        let existing = b"pre-existing destination";
+        fs::write(&destination, existing).expect("write existing destination");
+
+        let error = build_external(
+            &source,
+            &destination,
+            BuildOptions {
+                max_buffer_records: 7,
+            },
+        )
+        .expect_err("existing destination must be rejected");
+
+        assert!(matches!(
+            error,
+            BuildError::AlreadyExists(path) if path == destination
+        ));
+        assert_eq!(
+            fs::read(&destination).expect("existing destination bytes"),
+            existing
+        );
+        assert!(temporary_artifacts(&destination).is_empty());
+        cleanup(&source);
+        cleanup(&destination);
+    }
+
+    #[test]
+    fn concurrent_destination_wins_publication_and_cleans_temporary_files() {
+        let (source, _) = source_fixture("publication-race");
+        let destination = test_path("publication-race-output");
+        cleanup(&destination);
+        let competing = b"concurrently published destination";
+
+        let error = build_external_with_hook(
+            &source,
+            &destination,
+            BuildOptions {
+                max_buffer_records: 7,
+            },
+            || {
+                fs::write(&destination, competing)?;
+                Ok(())
+            },
+        )
+        .expect_err("concurrent destination must win publication");
+
+        assert!(matches!(
+            error,
+            BuildError::AlreadyExists(path) if path == destination
+        ));
+        assert_eq!(
+            fs::read(&destination).expect("competing destination bytes"),
+            competing
+        );
+        assert!(temporary_artifacts(&destination).is_empty());
+        cleanup(&source);
+        cleanup(&destination);
     }
 }
