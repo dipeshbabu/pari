@@ -73,6 +73,8 @@ accepted shortcut, and the protected checks cannot be bypassed by this option.
 
 - Rust uses the canonical `rustfmt` component from the pinned Rust toolchain. Run `cargo fmt --all` and the separate Criterion-workspace command before committing Rust changes. Repository settings live in `rustfmt.toml`.
 - Maintained Python and `.pyi` files use Ruff 0.16.5 with the explicit stable policy in `pyproject.toml`. Run `ruff check --fix python scripts benchmarks examples` first, then `ruff format python scripts benchmarks examples`. CI uses the corresponding `--check` commands.
+- Ruff also enforces high-signal security, exception-flow, performance, comprehension, return-flow, and Pylint/Ruff correctness rules. Exemptions must stay scoped to a file with a documented trust boundary; do not silence a rule family globally to land a change.
+- Rust denies `dbg!`, `todo!`, and `unimplemented!` in both Cargo workspaces. Clippy's entire `restriction` group is intentionally not enabled because it contains contradictory and context-dependent rules; propose additional restriction lints individually with a clean baseline.
 - `examples/code_corpus_fixture/**` is benchmark input, not maintained application source. It is deliberately excluded so a formatter upgrade cannot silently change workload evidence. Markdown is also excluded from Ruff; documentation formatting remains review-driven.
 - Do not enable Ruff preview formatting or implicit default lint selection in CI. Version and rule changes require a focused review because they can mechanically rewrite public examples, generated evidence tooling, and shipped stubs.
 

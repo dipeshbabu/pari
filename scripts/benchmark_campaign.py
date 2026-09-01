@@ -1291,17 +1291,17 @@ def render_report(
         | None
     ) = None
     for bundle_path in bundle_paths:
-        bundle_path = bundle_path.resolve()
-        bundle = validate_bundle(bundle_path, require_clean=require_clean)
+        resolved_bundle = bundle_path.resolve()
+        bundle = validate_bundle(resolved_bundle, require_clean=require_clean)
         profile = bundle["profile"]
-        synthetic = report_for_stage(bundle_path, bundle, "synthetic")
-        storage = report_for_stage(bundle_path, bundle, "storage")
-        datasketch = report_for_stage(bundle_path, bundle, "datasketch")
-        text_reference = report_for_stage(bundle_path, bundle, "text-reference")
-        text_audit = report_for_stage(bundle_path, bundle, "text-audit")
+        synthetic = report_for_stage(resolved_bundle, bundle, "synthetic")
+        storage = report_for_stage(resolved_bundle, bundle, "storage")
+        datasketch = report_for_stage(resolved_bundle, bundle, "datasketch")
+        text_reference = report_for_stage(resolved_bundle, bundle, "text-reference")
+        text_audit = report_for_stage(resolved_bundle, bundle, "text-audit")
         if largest is None or profile["items"] > largest[0]["profile"]["items"]:
             largest = (bundle, synthetic, storage)
-        relative = Path(os.path.relpath(bundle_path, output.parent)).as_posix()
+        relative = Path(os.path.relpath(resolved_bundle, output.parent)).as_posix()
         peak_rss = maximum_available(
             optional_metric(synthetic, "memory.signature_peak_rss_bytes"),
             optional_metric(synthetic, "memory.index_build_peak_rss_bytes"),

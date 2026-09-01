@@ -73,10 +73,9 @@ def iter_pyarrow_rows(
         )
 
     for batch in batches:
-        if selected is not None:
-            batch = batch.select(selected)
-        for start in range(0, batch.num_rows, batch_size):
-            yield from batch.slice(start, batch_size).to_pylist()
+        projected_batch = batch.select(selected) if selected is not None else batch
+        for start in range(0, projected_batch.num_rows, batch_size):
+            yield from projected_batch.slice(start, batch_size).to_pylist()
 
 
 def iter_polars_rows(
