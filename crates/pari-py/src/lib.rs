@@ -179,6 +179,27 @@ fn collect_feature_rows(py: Python<'_>, rows: &Bound<'_, PyAny>) -> PyResult<Vec
         .collect()
 }
 
+fn indexed_signature_error(py: Python<'_>, error: &PyErr, index: usize) -> PyErr {
+    let message = error.value(py).str().map_or_else(
+        |_| error.to_string(),
+        |message| message.to_string_lossy().into_owned(),
+    );
+    PyErr::from_type(error.get_type(py), format!("signature[{index}]: {message}"))
+}
+
+fn collect_signature64(py: Python<'_>, signature: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
+    signature
+        .try_iter()?
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .map_err(|error| indexed_signature_error(py, &error, index))?
+                .extract::<u64>()
+                .map_err(|error| indexed_signature_error(py, &error, index))
+        })
+        .collect()
+}
+
 fn build_sketches(
     rows: &[Vec<Vec<u8>>],
     num_perm: usize,
@@ -427,7 +448,8 @@ impl PyMinHash64 {
     /// Reconstruct a Pari affine64 sketch without narrowing upper signature bits.
     #[staticmethod]
     #[pyo3(signature = (signature, *, seed = 1))]
-    fn from_signature(signature: Vec<u64>, seed: u64) -> PyResult<Self> {
+    fn from_signature(py: Python<'_>, signature: &Bound<'_, PyAny>, seed: u64) -> PyResult<Self> {
+        let signature = collect_signature64(py, signature)?;
         MinHash64::from_signature(signature, seed)
             .map(|inner| Self { inner })
             .map_err(|error| binding_error(error.into()))

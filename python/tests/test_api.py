@@ -146,6 +146,21 @@ class MinHash64Tests(unittest.TestCase):
         self.assertTrue(left.is_empty)
         self.assertEqual(left.signature, [2**64 - 1] * 32)
 
+    def test_from_signature_accepts_iterables_and_preserves_indexed_errors(self) -> None:
+        values = [2**32 + 17, 2**63 + 23, 2**64 - 1]
+        reconstructed = MinHash64.from_signature(
+            (value for value in values), seed=2**64 - 1
+        )
+        self.assertEqual(reconstructed.signature, values)
+        self.assertEqual(reconstructed.seed, 2**64 - 1)
+
+        with self.assertRaisesRegex(TypeError, r"signature\[1\]"):
+            MinHash64.from_signature(value for value in [1, "not-an-integer"])
+        for invalid in (-1, 2**64):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(OverflowError, r"signature\[1\]"):
+                    MinHash64.from_signature(value for value in [1, invalid])
+
     def test_parallel_batch_is_ordered_and_cross_width_is_explicit(self) -> None:
         rows = [
             [f"row-{row}-value-{value}".encode() for value in range(8)]
