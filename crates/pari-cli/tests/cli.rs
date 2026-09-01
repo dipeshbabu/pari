@@ -1,8 +1,10 @@
 use std::{
     fs,
-    path::PathBuf,
-    process::{Command, Output},
-    time::{SystemTime, UNIX_EPOCH},
+    io::Write,
+    path::{Path, PathBuf},
+    process::{Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use pari_core::{MinHash32, AFFINE32_SCHEME};
@@ -29,6 +31,34 @@ fn assert_success(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn staged_index_paths(index: &Path) -> Vec<PathBuf> {
+    let parent = index.parent().expect("index parent");
+    let file_name = index
+        .file_name()
+        .expect("index file name")
+        .to_string_lossy();
+    let prefix = format!(".{file_name}.pari-cli-");
+    fs::read_dir(parent)
+        .expect("read index parent")
+        .map(|entry| entry.expect("directory entry").path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+        })
+        .collect()
+}
+
+fn wait_for_staged_index(index: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if !staged_index_paths(index).is_empty() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("index command did not create its staging file");
 }
 
 fn signature(values: &[&str]) -> Vec<u32> {
@@ -107,6 +137,10 @@ fn index_search_stats_verify_and_dedup_work_end_to_end() {
     assert_success(&output);
     let summary: serde_json::Value = serde_json::from_slice(&output.stdout).expect("summary JSON");
     assert_eq!(summary["items"], 3);
+    assert!(
+        staged_index_paths(&index).is_empty(),
+        "successful command retained staging files"
+    );
     let progress = output
         .stderr
         .split(|byte| *byte == b'\n')
@@ -256,6 +290,97 @@ fn invalid_json_returns_nonzero_with_line_context() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("line 1"));
     let _ = fs::remove_file(records);
+    let _ = fs::remove_file(index);
+}
+
+#[test]
+fn index_failure_after_committed_batch_leaves_no_destination() {
+    let records = temp_path("partial-records", "jsonl");
+    let index = temp_path("partial-index", "pari");
+    fs::write(&records, "{\"key\":1,\"values\":[\"valid\"]}\n{not-json}\n").expect("fixture");
+
+    let output = pari()
+        .args([
+            "index",
+            "--input",
+            records.to_str().expect("path"),
+            "--output",
+            index.to_str().expect("path"),
+            "--batch-size",
+            "1",
+        ])
+        .output()
+        .expect("command");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("line 2"));
+    assert!(!index.exists(), "failed command published a partial index");
+    assert!(
+        staged_index_paths(&index).is_empty(),
+        "failed command retained staging files"
+    );
+    let _ = fs::remove_file(records);
+}
+
+#[test]
+fn missing_index_input_leaves_no_destination() {
+    let records = temp_path("missing-records", "jsonl");
+    let index = temp_path("missing-index", "pari");
+
+    let output = pari()
+        .args([
+            "index",
+            "--input",
+            records.to_str().expect("path"),
+            "--output",
+            index.to_str().expect("path"),
+        ])
+        .output()
+        .expect("command");
+
+    assert!(!output.status.success());
+    assert!(!index.exists(), "failed command published an empty index");
+    assert!(
+        staged_index_paths(&index).is_empty(),
+        "failed command retained staging files"
+    );
+}
+
+#[test]
+fn concurrent_index_destination_is_not_replaced_or_removed() {
+    let index = temp_path("concurrent-index", "pari");
+    let mut child = pari()
+        .args([
+            "index",
+            "--input",
+            "-",
+            "--output",
+            index.to_str().expect("path"),
+            "--json",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn index command");
+
+    wait_for_staged_index(&index);
+    fs::write(&index, b"concurrent owner").expect("concurrent destination");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    writeln!(stdin, "{{\"key\":1,\"values\":[\"valid\"]}}").expect("input row");
+    drop(stdin);
+
+    let output = child.wait_with_output().expect("index command");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("without replacement"));
+    assert_eq!(
+        fs::read(&index).expect("concurrent destination remains"),
+        b"concurrent owner"
+    );
+    assert!(
+        staged_index_paths(&index).is_empty(),
+        "failed publication retained staging files"
+    );
     let _ = fs::remove_file(index);
 }
 

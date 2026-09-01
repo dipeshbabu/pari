@@ -2,11 +2,13 @@
 
 use std::{
     error::Error,
-    fs::File,
+    ffi::OsString,
+    fmt,
+    fs::{self, File},
     io::{self, BufRead, BufReader, BufWriter, Write},
-    path::PathBuf,
-    process::ExitCode,
-    time::Instant,
+    path::{Path, PathBuf},
+    process::{self, ExitCode},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -278,6 +280,133 @@ struct ProgressReporter {
     started: Instant,
 }
 
+struct IndexOutputTransaction {
+    final_path: PathBuf,
+    staged_path: PathBuf,
+    active: bool,
+}
+
+impl IndexOutputTransaction {
+    fn begin(final_path: &Path) -> Result<Self, Box<dyn Error>> {
+        match fs::symlink_metadata(final_path) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("index path {} already exists", final_path.display()),
+                )
+                .into());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        let file_name = final_path
+            .file_name()
+            .ok_or("index output must identify a file")?;
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let mut staged_name = OsString::from(".");
+        staged_name.push(file_name);
+        staged_name.push(format!(".pari-cli-{}-{nonce}.tmp", process::id()));
+        Ok(Self {
+            final_path: final_path.to_path_buf(),
+            staged_path: final_path.with_file_name(staged_name),
+            active: true,
+        })
+    }
+
+    fn staged_path(&self) -> &Path {
+        &self.staged_path
+    }
+
+    fn publish(mut self) -> Result<(), Box<dyn Error>> {
+        if let Err(error) = fs::hard_link(&self.staged_path, &self.final_path) {
+            let publication = io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to publish index {} without replacement: {error}",
+                    self.final_path.display()
+                ),
+            );
+            return Err(self.abort(publication.into()));
+        }
+        self.remove_staged_files()?;
+        Ok(())
+    }
+
+    fn abort(mut self, original: Box<dyn Error>) -> Box<dyn Error> {
+        match self.remove_staged_files() {
+            Ok(()) => original,
+            Err(cleanup) => Box::new(IndexCleanupError {
+                staged_path: self.staged_path.clone(),
+                original,
+                cleanup,
+            }),
+        }
+    }
+
+    fn remove_staged_files(&mut self) -> io::Result<()> {
+        let mut first_error = None;
+        for path in [&self.staged_path, &store_temporary_path(&self.staged_path)] {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for IndexOutputTransaction {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.remove_staged_files();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IndexCleanupError {
+    staged_path: PathBuf,
+    original: Box<dyn Error>,
+    cleanup: io::Error,
+}
+
+impl fmt::Display for IndexCleanupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}; also failed to clean staged index {}: {}",
+            self.original,
+            self.staged_path.display(),
+            self.cleanup
+        )
+    }
+}
+
+impl Error for IndexCleanupError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.original.as_ref())
+    }
+}
+
+fn store_temporary_path(path: &Path) -> PathBuf {
+    let mut temporary = path.as_os_str().to_os_string();
+    temporary.push(".tmp");
+    PathBuf::from(temporary)
+}
+
 impl ProgressReporter {
     fn new(args: &ProgressArgs) -> Result<Option<Self>, Box<dyn Error>> {
         let Some(format) = args.progress else {
@@ -513,8 +642,29 @@ fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
     if args.batch_size == 0 {
         return Err("--batch-size must be positive".into());
     }
-    let mut store =
-        PersistentIndex32::create(&args.output, args.threshold, args.num_perm, args.seed)?;
+    let transaction = IndexOutputTransaction::begin(&args.output)?;
+    let summary = match build_index(args, transaction.staged_path()) {
+        Ok(summary) => summary,
+        Err(error) => return Err(transaction.abort(error)),
+    };
+    transaction.publish()?;
+    if args.json {
+        println!("{}", serde_json::to_string(&summary)?);
+    } else {
+        println!(
+            "indexed {} items into {} ({} bytes, {} bands x {} rows)",
+            summary.items,
+            args.output.display(),
+            summary.file_bytes,
+            summary.bands,
+            summary.rows
+        );
+    }
+    Ok(())
+}
+
+fn build_index(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn Error>> {
+    let mut store = PersistentIndex32::create(output, args.threshold, args.num_perm, args.seed)?;
     let reporter = ProgressReporter::new(&args.progress)?;
     let reader = open_reader(&args.input)?;
     let mut batch = Vec::with_capacity(args.batch_size);
@@ -558,19 +708,8 @@ fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
         bands: current.bands,
         rows: current.rows,
     };
-    if args.json {
-        println!("{}", serde_json::to_string(&summary)?);
-    } else {
-        println!(
-            "indexed {} items into {} ({} bytes, {} bands x {} rows)",
-            summary.items,
-            args.output.display(),
-            summary.file_bytes,
-            summary.bands,
-            summary.rows
-        );
-    }
-    Ok(())
+    store.close()?;
+    Ok(summary)
 }
 
 fn insert_batch(
