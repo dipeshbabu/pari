@@ -36,7 +36,7 @@ huggingface = ["datasets>=3.5,<6"]
 integrations = ["pyarrow>=18,<27", "polars>=1.36,<2", "datasets>=3.5,<6"]
 
 [dependency-groups]
-dev = ["ruff==0.16.5"]
+dev = ["ruff==0.16.6"]
 
 [project.urls]
 Repository = "https://github.com/dipeshbabu/pari"

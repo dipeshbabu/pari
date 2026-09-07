@@ -195,7 +195,7 @@ cargo test --workspace --all-targets --all-features
 Python formatting and linting use the pinned Ruff toolchain:
 
 ```bash
-python -m pip install "ruff==0.16.5"
+python -m pip install "ruff==0.16.6"
 ruff format --check python scripts benchmarks examples
 ruff check python scripts benchmarks examples
 ```
