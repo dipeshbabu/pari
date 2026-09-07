@@ -1,9 +1,14 @@
+[graph]
+all-features = true
+
 [advisories]
 yanked = "deny"
 
 [licenses]
 confidence-threshold = 0.8
 allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT", "Unicode-3.0"]
+# The existing optional redis-rs client uses BSD-3-Clause; see NOTICE.
+exceptions = [{ name = "redis", version = "=0.32.7", allow = ["BSD-3-Clause"] }]
 
 [bans]
 multiple-versions = "warn"

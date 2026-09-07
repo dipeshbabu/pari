@@ -87,6 +87,23 @@ mod redis_tests {
     }
 
     #[test]
+    fn url_dependency_rejects_invalid_punycode_domains() {
+        for domain in ["xn--example-.org", "example.org.xn--"] {
+            assert!(url::Host::parse(domain).is_err(), "accepted {domain}");
+        }
+        for (domain, expected) in [
+            ("example.org", "example.org"),
+            ("bücher.example", "xn--bcher-kva.example"),
+            ("xn--bcher-kva.example", "xn--bcher-kva.example"),
+        ] {
+            assert_eq!(
+                url::Host::parse(domain).expect("valid domain").to_string(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn redis_backend_satisfies_shared_contract_and_is_shared_across_handles() {
         let Some(url) = redis_url() else {
             eprintln!("PARI_REDIS_URL is not set; skipping Redis integration test");
