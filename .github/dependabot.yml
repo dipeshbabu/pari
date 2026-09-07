@@ -19,9 +19,9 @@ updates:
       # Clap Complete 4.5 remains compatible; 4.6 follows the newer toolchain line.
       - dependency-name: clap_complete
         versions: [">= 4.6.0"]
-      # URL 2.5.4+ selects the newer ICU graph whose manifests use Edition 2024.
-      - dependency-name: url
-        versions: [">= 2.5.4"]
+      # Newer adapters require ICU 2.x, which exceeds Rust 1.81.
+      - dependency-name: idna_adapter
+        versions: [">= 1.2.1"]
     groups:
       rust-dependencies:
         patterns: ["*"]

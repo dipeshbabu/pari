@@ -3,12 +3,18 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import tomllib
+
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 CACHE_SHA = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 
 
 class CiWorkflowPolicyTests(unittest.TestCase):
+    def test_dependency_audit_includes_optional_features(self) -> None:
+        policy = tomllib.loads((ROOT / "deny.toml").read_text(encoding="utf-8"))
+        self.assertIs(policy["graph"]["all-features"], True)
+
     def workflow(self, name: str) -> str:
         return (WORKFLOWS / name).read_text(encoding="utf-8")
 
