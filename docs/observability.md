@@ -65,7 +65,7 @@ print(stats.committed_bucket_p95)
 index.set_observability(False)
 ```
 
-Query metrics are process-local and reset whenever observation is enabled. They are not written into the `.pari` file.
+Query metrics are process-local and reset whenever observation is enabled. `flush()` and `sync()` preserve observation and accumulated metrics on the same handle, including retries after a commit error. Explicitly reopening a file creates a new observer only when requested. Metrics are not written into the `.pari` file.
 
 ## Python progress callbacks
 

@@ -288,6 +288,8 @@ class IndexTests(unittest.TestCase):
             index.sync()
             synced_stats = index.stats()
             self.assertFalse(synced_stats.dirty)
+            self.assertEqual(synced_stats.query_operations, stats.query_operations)
+            self.assertEqual(synced_stats.query_count, stats.query_count)
             self.assertGreater(synced_stats.committed_memberships, 0)
             self.assertGreaterEqual(synced_stats.committed_bucket_p95, 1)
             self.assertGreaterEqual(synced_stats.committed_bucket_maximum, 1)
