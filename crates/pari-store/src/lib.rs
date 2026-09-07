@@ -615,6 +615,8 @@ impl PersistentIndexCore {
                 if parent_error.is_some() {
                     refreshed.dirty = true;
                 }
+                // Observation belongs to this handle, not the file generation.
+                refreshed.query_metrics = self.query_metrics.take();
                 *self = refreshed;
             }
             Err(error) => {
@@ -1721,6 +1723,120 @@ mod tests {
                 memory.query(query).expect("memory query")
             );
         }
+    }
+
+    macro_rules! query_observation_survives_commits {
+        ($test:ident, $index:ty, $sketch:ident) => {
+            #[test]
+            fn $test() {
+                let directory = test_directory(stringify!($test));
+                let path = directory.join("index.pari");
+                let value = $sketch(0..40);
+                let mut store = <$index>::create(&path, 0.8, 128, 7).expect("create");
+                store.set_observability(true);
+                store.insert(1, &value).expect("insert");
+                store.query(&value).expect("query overlay");
+                let before_flush = store.stats().expect("stats").queries;
+                assert_eq!(before_flush.expect("enabled").queries, 1);
+
+                store.flush().expect("flush dirty snapshot");
+                assert_eq!(store.stats().expect("stats").queries, before_flush);
+                store
+                    .query_many([&value, &value])
+                    .expect("query committed data");
+                let before_sync = store.stats().expect("stats").queries;
+                let observed = before_sync.expect("still enabled");
+                assert_eq!(observed.operations, 2);
+                assert_eq!(observed.queries, 3);
+                assert_eq!(observed.candidates, 3);
+
+                store.insert(2, &value).expect("make dirty");
+                store.sync().expect("sync dirty snapshot");
+                assert_eq!(store.stats().expect("stats").queries, before_sync);
+                store.flush().expect("clean flush");
+                store.sync().expect("clean sync");
+                assert_eq!(store.stats().expect("stats").queries, before_sync);
+                assert_eq!(
+                    store.query(&value).expect("continued observation"),
+                    vec![1, 2]
+                );
+                let continued = store.stats().expect("stats").queries.expect("enabled");
+                assert_eq!(continued.queries, 4);
+                assert_eq!(continued.candidates, 5);
+
+                store.set_observability(true);
+                assert_eq!(
+                    store.stats().expect("stats").queries,
+                    Some(Default::default())
+                );
+                store.set_observability(false);
+                store.remove(2);
+                store.sync().expect("sync while disabled");
+                assert!(store.stats().expect("stats").queries.is_none());
+                drop(store);
+                let reopened = <$index>::open(&path).expect("explicit reopen");
+                assert!(reopened.stats().expect("stats").queries.is_none());
+                drop(reopened);
+                fs::remove_dir_all(directory).expect("cleanup");
+            }
+        };
+    }
+
+    query_observation_survives_commits!(
+        affine32_query_metrics_survive_commits,
+        PersistentIndex32,
+        sketch
+    );
+    query_observation_survives_commits!(
+        affine64_query_metrics_survive_commits,
+        PersistentIndex64,
+        sketch64
+    );
+
+    #[test]
+    fn query_metrics_survive_refresh_errors_and_retry() {
+        let directory = test_directory("query-metrics-refresh-error");
+        let path = directory.join("index.pari");
+        let value = sketch(0..40);
+        let mut store = PersistentIndex32::create(&path, 0.8, 128, 7).expect("create");
+        store.insert(1, &value).expect("insert");
+        store.sync().expect("commit");
+        store.set_observability(true);
+        store.query(&value).expect("observe query");
+        let observed = store.stats().expect("stats").queries;
+
+        store
+            .inner
+            .refresh_after_commit(Some(StoreError::Io(io::Error::other(
+                "directory sync failed",
+            ))))
+            .expect_err("durability error must propagate");
+        assert!(store.stats().expect("stats").dirty);
+        assert_eq!(store.stats().expect("stats").queries, observed);
+        store.sync().expect("retry durability");
+        assert_eq!(store.stats().expect("stats").queries, observed);
+
+        store.inner.path = directory.join("missing.pari");
+        store
+            .inner
+            .refresh_after_commit(None)
+            .expect_err("reopen failure");
+        assert_eq!(store.stats().expect("stats").queries, observed);
+        store.inner.path = path;
+        store.sync().expect("retry reopen");
+        assert_eq!(store.stats().expect("stats").queries, observed);
+        assert_eq!(store.query(&value).expect("query after retry"), vec![1]);
+        assert_eq!(
+            store
+                .stats()
+                .expect("stats")
+                .queries
+                .expect("enabled")
+                .queries,
+            2
+        );
+        drop(store);
+        fs::remove_dir_all(directory).expect("cleanup");
     }
 
     #[test]

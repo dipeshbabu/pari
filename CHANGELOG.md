@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Persistent indexes retain query observation and accumulated counters across
+  flush, sync, and commit retries.
 - Redis's URL dependency now uses patched IDNA while retaining Rust 1.81;
   dependency audits include optional features.
 - All non-Python Rust workspace crates and the Criterion harness now compile
