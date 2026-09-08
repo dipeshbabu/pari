@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Python index handles retain unsaved changes when `close()` fails, allowing
+  storage errors to be resolved and the commit retried without data loss.
 - Persistent indexes retain query observation and accumulated counters across
   flush, sync, and commit retries.
 - Redis's URL dependency now uses patched IDNA while retaining Rust 1.81;
