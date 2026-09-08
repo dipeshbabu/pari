@@ -237,7 +237,7 @@ with Index.open("documents.pari") as index:
     print(index.stats().file_bytes)
 ```
 
-The context manager calls `sync()` and closes the Python handle on exit. `close()` is idempotent. Operations on a closed handle raise `ClosedIndexError`.
+The context manager calls `sync()` and closes the Python handle on exit. `close()` is idempotent after success. If saving fails, the storage exception propagates and the handle retains its pending changes so you can resolve the filesystem error and retry `sync()` or `close()`. This applies to `Index`, `Index64`, and local `DedupeIndex`, including context-manager exit. Operations on a closed handle raise `ClosedIndexError`.
 
 See [persistence.md](persistence.md) for the local backend's writer, reader, durability, crash, and backup semantics.
 

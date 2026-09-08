@@ -1033,15 +1033,17 @@ impl PyIndex {
         self.run_write(py, |store| store.sync().map_err(BindingError::from))
     }
 
-    /// Sync pending changes and make the Python handle unusable.
+    /// Sync pending changes and close only after a successful commit.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let inner = Arc::clone(&self.inner);
         py.detach(move || {
             let mut guard = inner.lock().map_err(|_| BindingError::Poisoned)?;
-            let Some(mut store) = guard.take() else {
+            let Some(store) = guard.as_mut() else {
                 return Ok(());
             };
-            store.sync().map_err(BindingError::from)
+            store.sync().map_err(BindingError::from)?;
+            *guard = None;
+            Ok(())
         })
         .map_err(binding_error)
     }
@@ -1244,10 +1246,12 @@ impl PyIndex64 {
         let inner = Arc::clone(&self.inner);
         py.detach(move || {
             let mut guard = inner.lock().map_err(|_| BindingError::Poisoned)?;
-            let Some(mut store) = guard.take() else {
+            let Some(store) = guard.as_mut() else {
                 return Ok(());
             };
-            store.sync().map_err(BindingError::from)
+            store.sync().map_err(BindingError::from)?;
+            *guard = None;
+            Ok(())
         })
         .map_err(binding_error)
     }
@@ -1480,12 +1484,13 @@ impl PyDedupeEngine {
         let inner = Arc::clone(&self.inner);
         py.detach(move || {
             let mut guard = inner.try_lock().map_err(BindingError::from)?;
-            let Some(mut state) = guard.take() else {
+            let Some(state) = guard.as_mut() else {
                 return Ok(());
             };
             if let Some(store) = &mut state.store {
                 store.sync().map_err(BindingError::from)?;
             }
+            *guard = None;
             Ok(())
         })
         .map_err(binding_error)
