@@ -1,5 +1,7 @@
 # Pari
 
+[![PyPI downloads per month](https://static.pepy.tech/badge/pari-similarity/month)](https://pepy.tech/projects/pari-similarity)
+
 Pari is a fast similarity indexing and deduplication engine for large datasets.
 
 The project is built around a Rust core with Python bindings and a CLI. The goal is to let users move from an in-memory prototype to persistent or shared indexes without rewriting their similarity logic.
