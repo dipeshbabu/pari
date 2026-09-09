@@ -61,7 +61,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - High-signal Ruff anti-pattern/security rules and selected Clippy restriction lints now reject unsafe exception flow, avoidable performance traps, loop-variable overwrites, and Rust debug/placeholder macros without enabling noisy rule groups wholesale.
 - Rust remains formatted by the pinned canonical `rustfmt`; maintained Python and stub files now use pinned Ruff 0.16.6 with explicit stable formatting/lint rules and protected benchmark-fixture exclusions.
 - Full registry-backed package verification was restored for all four public crates after the coordinated 0.2.0 publication, then scoped again by the affine64 transition below.
-- The coordinated affine64 crate transition builds the `pari-store` tarball without standalone registry verification, because the local crate consumes affine64 symbols that no published `pari-index` exposes yet. The complete local Rust 1.81 graph is still compiled and enforced, and the publish job registry-verifies all four crates once the matching `pari-index` release is on crates.io.
+- During the coordinated 0.3.0 version transition, CI and Release Validation inspect the `pari-index` and `pari-store` manifests and file lists instead of building their tarballs, because both require exact registry dependency versions that are not published yet. The complete local Rust 1.81 graph is still compiled, tested, and MSRV-checked, and the publish job registry-verifies all four crates in dependency order once each coordinated version reaches the crates.io index.
 
 ### Compatibility
 
