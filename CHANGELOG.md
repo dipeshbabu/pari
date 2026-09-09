@@ -6,6 +6,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-08
+
 ### Added
 
 - Pinned fast pre-commit checks cover repository text and syntax policy, both
@@ -58,8 +60,17 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   1.81 MSRV, but continues proposing compatible patch updates.
 - High-signal Ruff anti-pattern/security rules and selected Clippy restriction lints now reject unsafe exception flow, avoidable performance traps, loop-variable overwrites, and Rust debug/placeholder macros without enabling noisy rule groups wholesale.
 - Rust remains formatted by the pinned canonical `rustfmt`; maintained Python and stub files now use pinned Ruff 0.16.6 with explicit stable formatting/lint rules and protected benchmark-fixture exclusions.
-- The coordinated affine64 crate transition temporarily builds the `pari-store` tarball without standalone registry verification while the complete local Rust 1.81 graph remains enforced; full verification resumes after the matching `pari-index` release is published.
-- Full registry-backed package verification is restored for all four public crates after the coordinated 0.2.0 publication.
+- Full registry-backed package verification was restored for all four public crates after the coordinated 0.2.0 publication, then scoped again by the affine64 transition below.
+- The coordinated affine64 crate transition builds the `pari-store` tarball without standalone registry verification, because the local crate consumes affine64 symbols that no published `pari-index` exposes yet. The complete local Rust 1.81 graph is still compiled and enforced, and the publish job registry-verifies all four crates once the matching `pari-index` release is on crates.io.
+
+### Compatibility
+
+- Supported 0.1 and 0.2 Python, Rust, CLI, signature, and `.pari` format-v1 behavior remains compatible in 0.3.0.
+- The affine64 surface is now supported rather than partial: Python `MinHash64` and `Index64`, Rust `LshIndex64` and `PersistentIndex64`, and explicit CLI affine64 indexing, deduplication, search, inspection, explanation, and verification. Affine32 remains the default on every interface and its APIs and persisted bytes are unchanged.
+- `pari-affine32-v1` and `pari-affine64-v1` keep their existing semantics. Width is selected by explicit type or explicit CLI/JSONL request; no mode flag changes an existing type's width.
+- CLI machine-readable output remains revision 1. Affine64 selection and the metadata-derived fields are additive, and existing fields keep their meaning and type.
+- The four public Rust crates remain on Rust 1.81 and move together to exact `0.3.0` dependencies. The `pari-py` binding continues to declare and test Rust 1.83 for PyO3 0.29.
+- Planner models and CLI `plan`/`explain`, optional Datasketch and dataset adapters, the Redis descriptor and namespace layout, observability measurement policy beyond supported fields, and direct `pari-store-lazy`/`pari-store-build` APIs remain experimental.
 
 ## [0.2.0] - 2026-08-31
 
@@ -125,6 +136,7 @@ First public alpha of the Pari similarity and deduplication engine.
 
 This is an alpha release. Public 0.x compatibility is governed by `docs/compatibility.md`; interfaces marked experimental or internal may change before 1.0.
 
-[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/dipeshbabu/pari/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dipeshbabu/pari/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dipeshbabu/pari/releases/tag/v0.1.0

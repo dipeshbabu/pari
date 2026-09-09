@@ -87,7 +87,7 @@ Superseded runs for an updated pull request are canceled to avoid spending runne
 
 ## Compatibility and performance evidence
 
-Check the [v0.x compatibility contract](docs/compatibility.md) before changing a public Python, Rust, CLI, signature, or persisted-format surface. Supported 0.2.x interfaces must remain compatible in patch releases. Experimental interfaces can change in a minor release only when the release notes explain the impact and migration path. Persisted data and machine-readable output must never be silently reinterpreted.
+Check the [v0.x compatibility contract](docs/compatibility.md) before changing a public Python, Rust, CLI, signature, or persisted-format surface. Supported 0.3.x interfaces must remain compatible in patch releases. Experimental interfaces can change in a minor release only when the release notes explain the impact and migration path. Persisted data and machine-readable output must never be silently reinterpreted.
 
 A performance claim needs a reproducible baseline and comparison from the same machine, source revision, workload, and cache policy. Include the commands, environment, raw JSON reports, correctness/parity results, and an explanation of material variance in the pull request. Use the named campaign when the change affects end-to-end behavior:
 

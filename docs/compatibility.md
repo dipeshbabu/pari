@@ -1,6 +1,6 @@
 # Pari v0.x compatibility contract
 
-Pari is still pre-1.0, but pre-1.0 does not mean that every public surface may change without warning. This document defines the compatibility promises that began with 0.1 and continue in the current 0.2 release line.
+Pari is still pre-1.0, but pre-1.0 does not mean that every public surface may change without warning. This document defines the compatibility promises that began with 0.1 and continue in the current 0.3 release line.
 
 The binary `.pari` format has its own versioning rules and is not implicitly coupled to the package version.
 
@@ -8,9 +8,9 @@ The binary `.pari` format has its own versioning rules and is not implicitly cou
 
 Pari classifies interfaces into three levels.
 
-### Supported for v0.2
+### Supported for v0.3
 
-These interfaces are intended for normal users. Patch releases in the 0.2.x line must not intentionally break them. Everything listed as supported in 0.1 remains supported; 0.2 adds the deduplication, progress, and bounded-batch surfaces below.
+These interfaces are intended for normal users. Patch releases in the 0.3.x line must not intentionally break them. Everything listed as supported in 0.1 and 0.2 remains supported; 0.3 promotes the end-to-end affine64 surface below from partial to supported.
 
 Python:
 
@@ -54,8 +54,8 @@ Rust:
 CLI:
 
 - the `index`, `search`, `dedup`, `stats`, `verify`, and `completion` command names
-- documented command options in the 0.2.x line, including stderr-only progress
-- documented JSONL input fields in the 0.2.x line, including explicit
+- documented command options in the 0.3.x line, including stderr-only progress
+- documented JSONL input fields in the 0.3.x line, including explicit
   `pari-affine64-v1` selection and optional precomputed-signature seed metadata
 - machine-readable JSON/JSONL output revision 1, pinned by compiled CLI integration tests
 
@@ -75,7 +75,7 @@ Experimental interfaces are usable, tested, and documented, but may change at a 
 - low-level streamed bucket construction and format-layout APIs beyond the format-v1 reader/writer contract
 - direct use of `pari-store-lazy` and `pari-store-build`
 
-A 0.2.x patch release should still avoid unnecessary breakage to experimental APIs. If a security or correctness fix requires a break, the release notes must state it explicitly.
+A 0.3.x patch release should still avoid unnecessary breakage to experimental APIs. If a security or correctness fix requires a break, the release notes must state it explicitly.
 
 ### Internal tooling
 
@@ -97,15 +97,15 @@ Package verification runs for dependency roots and for dependent crates where th
 
 Several exact constraints keep otherwise-compatible version requirements from selecting packages that Cargo 1.81 cannot parse or compile: Clap 4.5.57 for the CLI and Criterion graph, IDNA adapter 1.2.0 for Redis's ICU backend, and redb 2.4.0 for the storage-layout benchmark. URL requires at least 2.5.4 so its IDNA dependency includes the fix for RUSTSEC-2024-0421; the adapter constraint preserves Rust 1.81 without pinning vulnerable IDNA. The dependency audit includes all optional features. Clap Complete remains on its latest compatible 4.5 release. These constraints should be removed or advanced when the affected upstream line again supports Rust 1.81, or when Pari intentionally raises its MSRV in a minor release.
 
-For `0.2.x` patch releases:
+For `0.3.x` patch releases:
 
-- no intentional breaking changes to supported 0.1 or 0.2 Python, Rust, or CLI interfaces
+- no intentional breaking changes to supported 0.1, 0.2, or 0.3 Python, Rust, or CLI interfaces
 - no incompatible reinterpretation of existing signature schemes
 - no incompatible change to machine-readable CLI output revision 1
 - no incompatible change to `.pari` format version 1
 - bug fixes may reject data that was previously accepted only because validation was incorrect or unsafe
 
-For a future `0.y.0` minor release after 0.2:
+For a future `0.y.0` minor release after 0.3:
 
 - supported APIs may change only with release notes and a migration section
 - deprecated supported APIs should normally remain available for at least one minor release when keeping them is safe and practical
@@ -114,7 +114,7 @@ For a future `0.y.0` minor release after 0.2:
 
 ## Python surface
 
-`pari.__all__` is the pinned top-level import set for the 0.2 line. Adding a supported top-level name is backward compatible. Removing or renaming a supported name is not. Entries explicitly classified as experimental, currently `LshPlan` and `plan_lsh`, may change only at a future minor release with migration notes.
+`pari.__all__` is the pinned top-level import set for the 0.3 line. Adding a supported top-level name is backward compatible. Removing or renaming a supported name is not. Entries explicitly classified as experimental, currently `LshPlan` and `plan_lsh`, may change only at a future minor release with migration notes.
 
 Exception classes are part of the supported API. Callers may catch the documented classes and must not need to parse Rust error strings.
 
@@ -148,7 +148,7 @@ Rules:
 
 ## CLI machine-readable output
 
-The JSON and JSONL field sets emitted by supported 0.2 `--json` commands extend machine-readable output revision 1 additively. Existing 0.1 fields retain their type and meaning. The current payloads do not embed a separate `schema_version` field; the CLI package version identifies the producer version, while compiled integration tests pin the revision-1 field sets.
+The JSON and JSONL field sets emitted by supported 0.3 `--json` commands extend machine-readable output revision 1 additively. Existing 0.1 and 0.2 fields retain their type and meaning. The current payloads do not embed a separate `schema_version` field; the CLI package version identifies the producer version, while compiled integration tests pin the revision-1 field sets.
 
 For revision 1:
 
@@ -162,13 +162,13 @@ Adding an explicit schema-version field in a future release is itself backward c
 
 Human-readable output is intentionally not a parser contract.
 
-The 0.2 JSONL input records remain strict: unknown input fields are rejected so misspellings fail early. Producers targeting 0.2.x should use only the documented fields in [`cli.md`](cli.md). Existing affine32 commands remain the default. Affine64 construction is an explicit `index`/`dedup` option, while commands that open an index derive its family from validated format metadata.
+The 0.3 JSONL input records remain strict: unknown input fields are rejected so misspellings fail early. Producers targeting 0.3.x should use only the documented fields in [`cli.md`](cli.md). Existing affine32 commands remain the default. Affine64 construction is an explicit `index`/`dedup` option, while commands that open an index derive its family from validated format metadata.
 
 ## Redis compatibility
 
 Redis is a shared runtime backend, not an archival persistence format. Pari owns the documented namespace keys and applications must not mutate those keys directly.
 
-The Redis descriptor and namespace layout are experimental in the 0.2 line. Cross-version Redis reuse is supported only when the reader validates the stored descriptor as compatible. Long-term archival data should use the versioned `.pari` format instead.
+The Redis descriptor and namespace layout are experimental in the 0.3 line. Cross-version Redis reuse is supported only when the reader validates the stored descriptor as compatible. Long-term archival data should use the versioned `.pari` format instead.
 
 ## Deprecation and security exceptions
 

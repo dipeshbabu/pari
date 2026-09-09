@@ -28,7 +28,7 @@ with Index.open("documents.pari") as index:
 ## Install the published package
 
 ```bash
-python -m pip install "pari-similarity==0.2.0"
+python -m pip install "pari-similarity==0.3.0"
 ```
 
 The PyPI distribution is named `pari-similarity`; the import namespace is `pari`.
@@ -50,11 +50,11 @@ maturin develop
 
 ## Stability
 
-The 0.2 top-level Python export set is defined by `pari.__all__` and pinned by installed-wheel tests. Patch releases in 0.2.x must not intentionally break exports classified as supported or make a previously valid supported typed call invalid. Planner exports remain explicitly experimental. See [compatibility.md](compatibility.md) for the full v0.x policy, deprecation rules, signature compatibility, and persisted-format guarantees.
+The 0.3 top-level Python export set is defined by `pari.__all__` and pinned by installed-wheel tests. Patch releases in 0.3.x must not intentionally break exports classified as supported or make a previously valid supported typed call invalid. Planner exports remain explicitly experimental. See [compatibility.md](compatibility.md) for the full v0.x policy, deprecation rules, signature compatibility, and persisted-format guarantees.
 
 ## Deduplicate records
 
-> **Availability:** `DedupeIndex` and `deduplicate` are included in Pari 0.2.0 and newer releases.
+> **Availability:** `DedupeIndex` and `deduplicate` are included in Pari 0.3.0 and newer releases.
 
 `deduplicate` is the concise API for users who do not need to manage signatures or an index directly. Supply a feature callback that returns byte-like shingles for one record:
 

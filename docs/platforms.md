@@ -2,22 +2,24 @@
 
 Pari's runtime code uses safe, portable Rust and does not enable architecture-specific `target-cpu=native`, unsafe SIMD, or host-only CPU features in release artifacts.
 
-## Published 0.2.0 artifacts
+## Published 0.3.0 artifacts
 
-The immutable 0.2.0 release contains:
+The immutable 0.3.0 release contains:
 
 | Interface | Operating system | Architecture | Artifact policy |
 | --- | --- | --- | --- |
 | Python wheel | Linux | x86-64 | manylinux2014 / glibc 2.17 |
+| Python wheel | Linux | arm64 | manylinux2014 aarch64 / glibc 2.17 |
 | Python wheel | macOS | arm64 | macOS 11 or newer tag |
 | Python wheel | Windows | x86-64 | CPython abi3 (`cp310`) |
 | CLI | Linux | x86-64 | Native release binary |
+| CLI | Linux | arm64 | Native release binary |
 | CLI | macOS | arm64 | Native release binary |
 | CLI | Windows | x86-64 | Native release binary |
 
-## Linux arm64 validation for subsequent releases
+## Linux arm64 validation
 
-Release Validation adds these artifacts for the next tagged version:
+Linux arm64 artifacts ship for the first time in 0.3.0. They are not retroactively attached to the immutable 0.1.0 or 0.2.0 releases. Release Validation builds and natively tests:
 
 | Interface | Rust target | Artifact |
 | --- | --- | --- |
@@ -28,6 +30,6 @@ The wheel is built with the pinned [`PyO3/maturin-action`](https://github.com/Py
 
 The CLI is compiled natively on `ubuntu-24.04-arm`. Validation checks `uname -m`, `pari --version`, `pari --help`, and a small JSONL index/verify workflow before packaging. This avoids claiming support for a binary that was only cross-compiled.
 
-The target uses the Rust compiler's baseline `aarch64-unknown-linux-gnu` CPU assumptions. Pari does not require optional ARM extensions beyond the target baseline. Existing Linux x86-64, macOS arm64, and Windows x86-64 jobs remain unchanged.
+The target uses the Rust compiler's baseline `aarch64-unknown-linux-gnu` CPU assumptions. Pari does not require optional ARM extensions beyond the target baseline. Linux x86-64, macOS arm64, and Windows x86-64 jobs are unchanged by the arm64 addition.
 
 Final release assembly gives x86-64 and arm64 Linux archives distinct names, includes both in `SHA256SUMS`, and subjects both to the same provenance attestation. Python wheel platform tags keep the Linux architectures unambiguous.
