@@ -56,6 +56,27 @@ pub fn exercise_backend_contract<B: StorageBackend>(backend: B) {
     exercise_queries_and_delete(&mut index, &mut reference, &first, &third);
     exercise_operations_and_stats(&mut index, capabilities);
 
+    // Exercise the primitive directly: the index wrapper deduplicates keys.
+    index
+        .insert(4, &first)
+        .expect("insert key for raw deletion");
+    assert_eq!(
+        index
+            .backend_mut()
+            .delete_many(&[4, 99, 4, 99])
+            .expect("backend primitive delete must succeed"),
+        1,
+        "backend primitive delete count must include only live distinct keys"
+    );
+    assert_eq!(
+        index
+            .backend_mut()
+            .delete_many(&[4, 4, 99])
+            .expect("repeated deletion must succeed"),
+        0,
+        "already removed keys must not be counted again"
+    );
+
     let mut reopened = reopen(index, &descriptor);
     assert_eq!(
         reopened
