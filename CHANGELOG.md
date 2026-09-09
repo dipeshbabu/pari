@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Benchmark timeouts and interruptions stop descendant processes before
+  cleaning staging or finalizing failure evidence.
 - Direct Redis batch deletion counts each live key once, even when the batch
   repeats keys.
 - Python index handles retain unsaved changes when `close()` fails, allowing

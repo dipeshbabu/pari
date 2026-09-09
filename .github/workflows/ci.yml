@@ -159,3 +159,5 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - run: cargo test --workspace --all-targets --all-features
+      - name: Test campaign process cleanup on Windows
+        run: python -m unittest scripts.tests.test_benchmark_campaign -v
