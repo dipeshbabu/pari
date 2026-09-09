@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Direct Redis batch deletion counts each live key once, even when the batch
+  repeats keys.
 - Python index handles retain unsaved changes when `close()` fails, allowing
   storage errors to be resolved and the commit retried without data loss.
 - Persistent indexes retain query observation and accumulated counters across
