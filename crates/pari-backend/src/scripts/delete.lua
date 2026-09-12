@@ -13,8 +13,7 @@ end
 local removed = 0
 for position = 2, #ARGV do
   local blob = blobs[position]
-  if blob then
-    redis.call('HDEL', KEYS[2], ARGV[position])
+  if blob and redis.call('HDEL', KEYS[2], ARGV[position]) == 1 then
     for offset = 1, #blob, 20 do
       redis.call('ZREM', KEYS[3], string.sub(blob, offset, offset + 19))
     end

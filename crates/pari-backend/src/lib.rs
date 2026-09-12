@@ -376,7 +376,7 @@ pub trait StorageBackend {
     /// Read candidate members for each requested bucket in input order.
     fn query_buckets(&mut self, buckets: &[BucketKey]) -> Result<Vec<Vec<u64>>, BackendError>;
 
-    /// Delete keys in one backend batch, returning the number actually removed.
+    /// Delete keys in one backend batch, counting each removed key only once.
     fn delete_many(&mut self, keys: &[u64]) -> Result<usize, BackendError>;
 
     /// Complete writes issued before this call.

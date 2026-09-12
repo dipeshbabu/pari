@@ -11,11 +11,13 @@ import os
 import platform
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -164,6 +166,10 @@ class Profile:
 
 class CampaignError(RuntimeError):
     """A benchmark bundle failed validation or execution."""
+
+
+class ProcessCleanupError(CampaignError):
+    """A stage may still have descendants writing into its staging directory."""
 
 
 class StageFailure(CampaignError):
@@ -394,19 +400,55 @@ def run_logged(
         stdout_path.open("w", encoding="utf-8") as stdout,
         stderr_path.open("w", encoding="utf-8") as stderr,
     ):
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=root,
             env=environment,
-            check=False,
             stdout=stdout,
             stderr=stderr,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout_seconds,
+            start_new_session=os.name != "nt",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
-    return completed.returncode
+        try:
+            return process.wait(timeout=timeout_seconds)
+        except BaseException as error:
+            try:
+                terminate_stage(process)
+            except BaseException as cleanup_error:
+                raise ProcessCleanupError(
+                    f"could not stop stage process tree {process.pid} after "
+                    f"{type(error).__name__}: {cleanup_error}"
+                ) from error
+            raise
+
+
+def terminate_stage(process: subprocess.Popen[str]) -> None:
+    """Stop the stage's descendants before logs or temporary files are handled."""
+
+    try:
+        if os.name == "nt":
+            taskkill = os.path.join(
+                os.environ.get("SYSTEMROOT", "C:\\Windows"), "System32", "taskkill.exe"
+            )
+            subprocess.run(
+                [taskkill, "/PID", str(process.pid), "/T", "/F"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+    finally:
+        # Reap the direct child even if terminating its descendants failed.
+        process.kill()
+        process.wait(timeout=30)
 
 
 def read_log_tail(
@@ -614,6 +656,9 @@ def run_stage(
             stderr_path=stderr_path,
             timeout_seconds=timeout_seconds,
         )
+    except ProcessCleanupError:
+        active_stage.phase = "execution-cleanup"
+        raise
     except subprocess.TimeoutExpired as error:
         active_stage.phase = "execution-timeout"
         detail = read_log_tail(stderr_path) if stderr_path.exists() else ""
@@ -1153,6 +1198,13 @@ def run_campaign(args: argparse.Namespace) -> Path:
         return output / "bundle.json"
     except BaseException as error:
         if staging is None:
+            raise
+        if isinstance(error, ProcessCleanupError):
+            print(
+                "warning: process cleanup could not be confirmed; "
+                f"retained unfinalized staging directory {staging}",
+                file=sys.stderr,
+            )
             raise
         if process_temp is None:
             process_temp = staging / "tmp"

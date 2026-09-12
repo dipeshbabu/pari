@@ -3,8 +3,10 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
 from argparse import Namespace
 from contextlib import redirect_stderr
@@ -320,10 +322,8 @@ class CampaignExecutionTests(unittest.TestCase):
     def test_run_logged_enforces_requested_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            completed = campaign.subprocess.CompletedProcess(["benchmark"], 0)
-            with patch.object(
-                campaign.subprocess, "run", return_value=completed
-            ) as run:
+            with patch.object(campaign.subprocess, "Popen") as run:
+                run.return_value.wait.return_value = 0
                 return_code = campaign.run_logged(
                     ["benchmark"],
                     root=root,
@@ -334,9 +334,163 @@ class CampaignExecutionTests(unittest.TestCase):
                 )
 
             self.assertEqual(return_code, 0)
-            self.assertEqual(run.call_args.kwargs["timeout"], 600)
+            run.return_value.wait.assert_called_once_with(timeout=600)
             self.assertEqual(run.call_args.kwargs["cwd"], root)
             self.assertEqual(run.call_args.kwargs["env"], {"PARI_TEST": "1"})
+
+    def test_run_logged_preserves_original_error_when_cleanup_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timeout = campaign.subprocess.TimeoutExpired(["benchmark"], 600)
+            with (
+                patch.object(campaign.subprocess, "Popen") as run,
+                patch.object(
+                    campaign, "terminate_stage", side_effect=OSError("cleanup denied")
+                ),
+                self.assertRaises(campaign.ProcessCleanupError) as failure,
+            ):
+                run.return_value.wait.side_effect = timeout
+                campaign.run_logged(
+                    ["benchmark"],
+                    root=root,
+                    environment={},
+                    stdout_path=root / "stdout.log",
+                    stderr_path=root / "stderr.log",
+                    timeout_seconds=600,
+                )
+            self.assertIs(failure.exception.__cause__, timeout)
+            self.assertIn("cleanup denied", str(failure.exception))
+
+    def test_run_logged_preserves_exit_status_and_logs(self) -> None:
+        for code in (0, 7):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                stdout = root / "stdout.log"
+                stderr = root / "stderr.log"
+                result = campaign.run_logged(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys; print('stage output'); print('diagnostic', file=sys.stderr); sys.exit(int(sys.argv[1]))",
+                        str(code),
+                    ],
+                    root=root,
+                    environment=os.environ.copy(),
+                    stdout_path=stdout,
+                    stderr_path=stderr,
+                    timeout_seconds=30,
+                )
+                self.assertEqual(result, code)
+                self.assertEqual(stdout.read_text(encoding="utf-8"), "stage output\n")
+                self.assertEqual(stderr.read_text(encoding="utf-8"), "diagnostic\n")
+
+    def test_process_cleanup_failure_retains_unfinalized_staging(self) -> None:
+        for preserve in (False, True):
+            with (
+                self.subTest(preserve=preserve),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                args = self.arguments(
+                    root, profile="smoke", preserve_failure_evidence=preserve
+                )
+                warning = io.StringIO()
+                with (
+                    patch.object(campaign, "git_state", return_value=(GIT_SHA, False)),
+                    patch.object(
+                        campaign,
+                        "run_logged",
+                        side_effect=campaign.ProcessCleanupError(
+                            "child may still be running"
+                        ),
+                    ),
+                    patch.object(campaign, "preserve_failure") as finalize,
+                    patch.object(campaign.shutil, "rmtree") as cleanup,
+                    redirect_stderr(warning),
+                    self.assertRaises(campaign.ProcessCleanupError),
+                ):
+                    campaign.run_campaign(args)
+                finalize.assert_not_called()
+                cleanup.assert_not_called()
+                self.assertFalse(args.output.exists())
+                staging = next(root.glob(".smoke.partial-*"))
+                self.assertTrue((staging / "tmp").is_dir())
+                self.assertFalse((staging / "failure.json").exists())
+                self.assertFalse((staging / "bundle.json").exists())
+                self.assertEqual(list(root.glob("smoke.failed-*")), [])
+                self.assertIn("retained unfinalized staging", warning.getvalue())
+
+    def test_run_logged_stops_descendants_before_returning_on_failure(self) -> None:
+        for interrupted in (False, True):
+            with (
+                self.subTest(interrupted=interrupted),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                ready = root / "ready"
+                release = root / "release"
+                finished = root / "finished"
+                child = (
+                    "from pathlib import Path; import sys,time; "
+                    "root=Path(sys.argv[1]); (root/'ready').touch(); "
+                    "deadline=time.monotonic()+15\n"
+                    "while not (root/'release').exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+                    "if (root/'release').exists(): (root/'finished').touch()\n"
+                )
+                parent = (
+                    "import subprocess,sys; "
+                    "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]).wait()"
+                )
+                original_wait = campaign.subprocess.Popen.wait
+
+                def fail_after_child_starts(
+                    process,
+                    timeout=None,
+                    *,
+                    ready=ready,
+                    interrupted=interrupted,
+                    original_wait=original_wait,
+                ):
+                    if timeout is not None and timeout > 500:
+                        deadline = time.monotonic() + 10
+                        while not ready.exists() and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        self.assertTrue(ready.exists(), "child failed to start")
+                        if interrupted:
+                            raise KeyboardInterrupt
+                        raise campaign.subprocess.TimeoutExpired(process.args, timeout)
+                    return original_wait(process, timeout=timeout)
+
+                try:
+                    with (
+                        patch.object(
+                            campaign.subprocess.Popen,
+                            "wait",
+                            new=fail_after_child_starts,
+                        ),
+                        self.assertRaises(
+                            KeyboardInterrupt
+                            if interrupted
+                            else campaign.subprocess.TimeoutExpired
+                        ),
+                    ):
+                        campaign.run_logged(
+                            [sys.executable, "-c", parent, child, str(root)],
+                            root=root,
+                            environment=os.environ.copy(),
+                            stdout_path=root / "stdout.log",
+                            stderr_path=root / "stderr.log",
+                            timeout_seconds=600,
+                        )
+                    release.touch()
+                    deadline = time.monotonic() + 1
+                    while not finished.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertFalse(
+                        finished.exists(), "child continued after stage failure"
+                    )
+                finally:
+                    release.touch()
 
     def test_scale_10m_preserves_failed_stage_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
