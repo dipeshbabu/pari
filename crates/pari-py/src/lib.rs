@@ -15,9 +15,9 @@ use pari_index::{
 use pari_store::{PersistentIndex32, PersistentIndex64, StoreError, StoreStats};
 use pyo3::{
     create_exception,
-    exceptions::PyException,
+    exceptions::{PyException, PyTypeError},
     prelude::*,
-    types::{PyAny, PyBytes, PyModule},
+    types::{PyAny, PyByteArray, PyBytes, PyMemoryView, PyModule},
 };
 
 create_exception!(_native, PariError, PyException);
@@ -153,15 +153,21 @@ fn owned_bytes(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(bytes) = value.cast::<PyBytes>() {
         return Ok(bytes.as_bytes().to_vec());
     }
-    if let Ok(bytes) = value.extract::<Vec<u8>>() {
-        return Ok(bytes);
+    if let Ok(bytes) = value.cast::<PyByteArray>() {
+        return Ok(bytes.to_vec());
     }
 
     // `PyO3`'s low-level buffer module is not exposed by abi3-py310. A Python
-    // memoryview still validates the generic buffer protocol through the stable
-    // ABI, and `tobytes` gives Rust-owned memory before detached work starts.
-    let builtins = py.import("builtins")?;
-    let view = builtins.getattr("memoryview")?.call1((value,))?;
+    // memoryview validates the buffer protocol through the stable ABI. Prefer
+    // raw buffer bytes over sequence extraction, which narrows wider elements.
+    let view = match PyMemoryView::from(value) {
+        Ok(view) => view,
+        Err(error) if error.is_instance_of::<PyTypeError>(py) => {
+            // Preserve existing integer-sequence inputs that export no buffer.
+            return value.extract::<Vec<u8>>().or(Err(error));
+        }
+        Err(error) => return Err(error),
+    };
     let bytes = view.call_method0("tobytes")?;
     Ok(bytes.cast::<PyBytes>()?.as_bytes().to_vec())
 }
