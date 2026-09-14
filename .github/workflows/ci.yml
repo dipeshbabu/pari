@@ -14,7 +14,7 @@ concurrency:
 
 env:
   CARGO_DENY_VERSION: "0.20.2"
-  RUFF_VERSION: "0.16.6"
+  RUFF_VERSION: "0.16.7"
   PRE_COMMIT_VERSION: "4.6.2"
   RUST_TOOLCHAIN: "1.97.1"
 
