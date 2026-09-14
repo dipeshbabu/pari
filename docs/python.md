@@ -176,7 +176,9 @@ second.update_many([b"new york", b"similarity search", b"python"])
 print(first.jaccard(second))
 ```
 
-`MinHash.update` and `MinHash.from_values` accept byte-like inputs. Python `bytes` use the direct borrowed path for scalar updates. `bytearray`, `memoryview`, and other contiguous unsigned-byte buffers are accepted through the Python buffer protocol. Batch values are copied into Rust-owned storage before the GIL is released so Python memory is never accessed without interpreter ownership.
+`MinHash.update` and `MinHash.from_values` accept byte-like inputs. Python `bytes` use the direct borrowed path for scalar updates. `bytearray`, `memoryview`, and other buffer exporters are hashed as raw bytes, equivalent to `memoryview(value).tobytes()` in C order, preserving element width and the supplied byte order. This applies to strided views and to `MinHash64` as well. Batch values are copied into Rust-owned storage before the GIL is released so Python memory is never accessed without interpreter ownership.
+
+Earlier bindings incorrectly treated some multi-byte buffers as integer sequences when every element fit in `u8`. Rebuild sketches and indexes created from those buffers; byte-oriented inputs were unaffected.
 
 `update_many` performs the CPU-heavy hashing and permutation loop through `Python::detach`, so the Python interpreter is not held while Rust performs the batch computation.
 

@@ -31,6 +31,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Python MinHash inputs hash raw buffer bytes consistently across scalar and
+  batch APIs, preserving multi-byte element widths and strided view contents.
 - Benchmark timeouts and interruptions stop descendant processes before
   cleaning staging or finalizing failure evidence.
 - Direct Redis batch deletion counts each live key once, even when the batch
