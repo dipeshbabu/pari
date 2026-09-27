@@ -5,6 +5,7 @@ import unittest
 from array import array
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import Mock
 
 from pari import (
     ClosedIndexError,
@@ -100,6 +101,26 @@ class DeduplicateFunctionTests(unittest.TestCase):
 
 
 class DedupeIndexTests(unittest.TestCase):
+    def test_closed_ingestion_does_not_run_callbacks_or_inspect_inputs(self) -> None:
+        feature = Mock(side_effect=AssertionError("closed feature callback ran"))
+        index = DedupeIndex(feature, num_perm=32)
+        index.close()
+
+        class UnreadableInput:
+            def __len__(self) -> int:
+                raise AssertionError("closed ingestion inspected input length")
+
+            def __iter__(self) -> Iterator[object]:
+                raise AssertionError("closed ingestion advanced input")
+
+        with self.assertRaises(ClosedIndexError):
+            index.add(object())
+        with self.assertRaises(ClosedIndexError):
+            index.add_many(UnreadableInput())
+        with self.assertRaises(ClosedIndexError):
+            index.add_many_features(UnreadableInput())
+        feature.assert_not_called()
+
     def test_batches_copy_features_before_advancing_reused_buffers(self) -> None:
         records = [1, 2, 1]
         shared = array("H", [0, 0])

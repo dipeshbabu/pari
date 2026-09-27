@@ -1070,8 +1070,11 @@ impl PyIndex {
         self.contains(py, key)
     }
 
-    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
+    fn __enter__(slf: PyRef<'_, Self>) -> PyResult<PyRef<'_, Self>> {
+        if slf.closed()? {
+            return Err(binding_error(BindingError::Closed));
+        }
+        Ok(slf)
     }
 
     fn __exit__(
@@ -1278,8 +1281,11 @@ impl PyIndex64 {
         self.contains(py, key)
     }
 
-    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
-        slf
+    fn __enter__(slf: PyRef<'_, Self>) -> PyResult<PyRef<'_, Self>> {
+        if slf.closed()? {
+            return Err(binding_error(BindingError::Closed));
+        }
+        Ok(slf)
     }
 
     fn __exit__(

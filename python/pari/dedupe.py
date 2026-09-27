@@ -186,6 +186,7 @@ class DedupeIndex(Generic[T]):
     def add(self, record: T) -> int:
         """Add one record and return its stable ingestion index."""
 
+        self._ensure_open()
         feature = self._require_feature()
         return self.add_features(record, feature(record))
 
@@ -194,6 +195,7 @@ class DedupeIndex(Generic[T]):
     ) -> int:
         """Add records in bounded, atomic native batches and return the count."""
 
+        self._ensure_open()
         feature = self._require_feature()
         total = len(records) if isinstance(records, Sized) else None
         return self._add_many_features(
@@ -219,6 +221,7 @@ class DedupeIndex(Generic[T]):
     ) -> int:
         """Add precomputed feature rows without retaining source payloads."""
 
+        self._ensure_open()
         total = len(items) if isinstance(items, Sized) else None
         return self._add_many_features(items, progress=progress, total=total)
 
