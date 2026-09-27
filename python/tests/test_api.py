@@ -319,6 +319,18 @@ class IndexTests(unittest.TestCase):
             self.assertEqual(reopened.search(value), [1])
             reopened.close()
 
+    def test_closed_context_entry_fails_before_running_the_body(self) -> None:
+        for index_type in (Index, Index64):
+            with (
+                self.subTest(index_type=index_type.__name__),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                index = index_type.create(Path(directory) / "closed.pari", num_perm=32)
+                index.close()
+                with self.assertRaises(ClosedIndexError), index:
+                    self.fail("closed index entered the context body")
+                index.close()
+
     def test_duplicate_and_compatibility_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "errors.pari"
