@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from array import array
+from collections.abc import Iterator
 from pathlib import Path
 
 from pari import (
@@ -98,6 +100,47 @@ class DeduplicateFunctionTests(unittest.TestCase):
 
 
 class DedupeIndexTests(unittest.TestCase):
+    def test_batches_copy_features_before_advancing_reused_buffers(self) -> None:
+        records = [1, 2, 1]
+        shared = array("H", [0, 0])
+
+        def features(record: int) -> list[memoryview]:
+            shared[0] = record * 256
+            shared[1] = record * 257
+            return [memoryview(shared)]
+
+        for batch_size in (1, 2, 3):
+            for precomputed in (False, True):
+                with (
+                    self.subTest(batch_size=batch_size, precomputed=precomputed),
+                    DedupeIndex(
+                        features, num_perm=32, seed=7, batch_size=batch_size
+                    ) as index,
+                ):
+                    if precomputed:
+                        added = index.add_many_features(
+                            (record, features(record)) for record in records
+                        )
+                    else:
+                        added = index.add_many(records)
+                    self.assertEqual(added, 3)
+                    self.assertEqual(index.result().kept_indices, (0, 1))
+                    self.assertEqual(index.result().dropped_indices, (2,))
+
+    def test_batch_feature_iterator_failure_preserves_only_prior_batches(self) -> None:
+        def features(record: int) -> Iterator[bytes]:
+            yield str(record).encode()
+            if record == 3:
+                raise ValueError("feature extraction failed")
+
+        with DedupeIndex(features, num_perm=32, batch_size=2) as index:
+            with self.assertRaisesRegex(ValueError, "feature extraction failed"):
+                index.add_many([0, 1, 2, 3])
+            self.assertEqual(len(index), 2)
+            self.assertEqual(index.result().kept, (0, 1))
+            self.assertEqual(index.add(4), 2)
+            self.assertEqual(index.result().kept, (0, 1, 4))
+
     def test_progress_is_batch_granular_and_reports_exact_total(self) -> None:
         records = [{"text": f"record {index}"} for index in range(5)]
         events: list[ProgressEvent] = []
