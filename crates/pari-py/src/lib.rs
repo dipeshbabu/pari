@@ -1386,17 +1386,21 @@ impl PyDedupeEngine {
     fn add_many(
         &self,
         py: Python<'_>,
-        keys: Vec<u64>,
+        start_key: u64,
         feature_rows: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let rows = collect_feature_rows(py, feature_rows)?;
-        if keys.len() != rows.len() {
-            return Err(ConfigurationError::new_err(format!(
-                "keys and feature rows must have equal lengths, got {} and {}",
-                keys.len(),
-                rows.len()
-            )));
+        if rows.is_empty() {
+            return Ok(());
         }
+        let keys = (0..rows.len())
+            .map(|offset| {
+                u64::try_from(offset)
+                    .ok()
+                    .and_then(|offset| start_key.checked_add(offset))
+                    .ok_or_else(|| ConfigurationError::new_err("ingestion key exceeds u64 range"))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
 
         let num_perm = self.num_perm;
         let seed = self.seed;
