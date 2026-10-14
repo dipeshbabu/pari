@@ -84,7 +84,7 @@ jobs:
           fi
       - name: Generate CycloneDX SBOM
         run: python scripts/release.py sbom --output release-metadata/pari-${{ steps.version.outputs.value }}.cdx.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-metadata
           path: release-metadata
@@ -122,7 +122,7 @@ jobs:
           cargo package --locked -p pari-index --list --no-verify | grep -Fx LICENSE
           cargo package --locked -p pari-index --list --no-verify | grep -Fx NOTICE
           cargo package --locked -p pari-store --list --no-verify | grep -Fx LICENSE
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-crates
           path: target/package/*.crate
@@ -194,7 +194,7 @@ jobs:
       - name: Test installed package
         if: matrix.label != 'linux-arm64'
         run: python -m unittest discover -s python/tests -p "test_*.py" -v
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-wheel-${{ matrix.label }}
           path: dist/*.whl
@@ -209,7 +209,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-wheel-linux-arm64
           path: dist
@@ -249,7 +249,7 @@ jobs:
       - name: Smoke installed source distribution outside checkout
         working-directory: ${{ runner.temp }}
         run: python -c "from pari import MinHash; print(MinHash.from_values([b'release'], num_perm=16, seed=7))"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-sdist
           path: dist/*.tar.gz
@@ -314,7 +314,7 @@ jobs:
           --binary "${{ matrix.binary }}"
           --output-dir release-cli
           --platform "${{ matrix.label }}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cli-${{ matrix.label }}
           path: release-cli/*
@@ -326,7 +326,7 @@ jobs:
     needs: [metadata, rust-packages, python-wheels, python-arm64-validation, python-sdist, cli]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: "*"
           path: release-dist
@@ -351,7 +351,7 @@ jobs:
           test -f "release-dist/pari-$version-windows.zip"
           test -f "release-dist/pari-$version.cdx.json"
           test -s release-dist/SHA256SUMS
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-candidate-bundle
           path: release-dist
@@ -367,7 +367,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bundle
           path: release-dist
@@ -445,7 +445,7 @@ jobs:
           cargo package --locked -p pari-format
           cargo package --locked -p pari-index
           cargo package --locked -p pari-store
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-candidate-bundle
           path: release-dist
@@ -469,7 +469,7 @@ jobs:
           test -f "release-dist/pari-$VERSION-windows.zip"
           test -f "release-dist/pari-$VERSION.cdx.json"
           test -s release-dist/SHA256SUMS
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-bundle
           path: release-dist
@@ -491,7 +491,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: "python-*"
           path: dist
@@ -513,7 +513,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bundle
           path: release-dist
