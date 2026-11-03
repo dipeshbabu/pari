@@ -10,7 +10,7 @@ Pari classifies interfaces into three levels.
 
 ### Supported for v0.1
 
-These interfaces are intended for normal users. Patch releases in the 0.1.x line must not intentionally break them. The 0.1.1 alpha includes the supported deduplication, progress, and bounded-batch surfaces below. Existing 0.1.0 and historically published 0.2.0 interfaces remain compatible.
+These interfaces are intended for normal users. Patch releases in the 0.1.x line must not intentionally break them. The 0.1.1 alpha includes the supported deduplication, progress, and bounded-batch surfaces below. Existing 0.1.0 interfaces remain compatible.
 
 Python:
 
@@ -99,7 +99,7 @@ Several exact constraints keep otherwise-compatible version requirements from se
 
 For `0.1.x` patch releases:
 
-- no intentional breaking changes to supported 0.1 and historically published 0.2 Python, Rust, or CLI interfaces
+- no intentional breaking changes to supported 0.1 Python, Rust, or CLI interfaces
 - no incompatible reinterpretation of existing signature schemes
 - no incompatible change to machine-readable CLI output revision 1
 - no incompatible change to `.pari` format version 1
