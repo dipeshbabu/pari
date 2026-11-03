@@ -96,10 +96,9 @@ For v0.1.0, the crates.io publication job verifies the bootstrapped crates rathe
 
 ## Subsequent releases
 
-The current alpha release target is 0.1.1; the following preparation PR targets
-0.1.3. Historical 0.2.0 publications remain unchanged. Registries order 0.2.0
-above 0.1.x, so installation docs must use explicit version pins. Do not rename
-existing releases or yank working packages just to change version ordering.
+The current alpha release target is 0.1.1; the next preparation PR targets
+0.1.3. The workspace version, release tag, package versions, and installation
+examples must agree before publication.
 
 For releases after 0.1.0:
 

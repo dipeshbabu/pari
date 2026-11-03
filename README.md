@@ -54,8 +54,6 @@ verify it against `SHA256SUMS`, extract it, and put `pari` on your `PATH`.
 | Windows x86_64 | [`pari-0.1.1-windows.zip`](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/pari-0.1.1-windows.zip) |
 
 Packages and archives become available when the tagged release workflow completes.
-The earlier `0.2.0` packages retain their original versions. Use the explicit
-`0.1.1` pins above: registry badges and unpinned installs may still select `0.2.0`.
 See [release notes](docs/releases/0.1.1.md) and [platform support](docs/platforms.md).
 
 ## Compare Records
