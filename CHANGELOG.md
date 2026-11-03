@@ -6,6 +6,12 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-03
+
+Pari returns to the 0.1.x alpha release line. The previously published 0.2.0
+packages and tag remain historical artifacts; use an explicit version pin to
+install 0.1.1. Supported APIs and format-v1 data remain compatible.
+
 ### Added
 
 - Pinned fast pre-commit checks cover repository text and syntax policy, both
@@ -64,7 +70,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   1.81 MSRV, but continues proposing compatible patch updates.
 - High-signal Ruff anti-pattern/security rules and selected Clippy restriction lints now reject unsafe exception flow, avoidable performance traps, loop-variable overwrites, and Rust debug/placeholder macros without enabling noisy rule groups wholesale.
 - Rust remains formatted by the pinned canonical `rustfmt`; maintained Python and stub files now use pinned Ruff 0.16.7 with explicit stable formatting/lint rules and protected benchmark-fixture exclusions.
-- The coordinated affine64 crate transition temporarily builds the `pari-store` tarball without standalone registry verification while the complete local Rust 1.81 graph remains enforced; full verification resumes after the matching `pari-index` release is published.
+- During coordinated releases, dependent crate manifests and file lists are checked before publication; the publish job builds and registry-verifies all four tarballs in dependency order. The complete local Rust 1.81 graph remains enforced.
 - Full registry-backed package verification is restored for all four public crates after the coordinated 0.2.0 publication.
 
 ## [0.2.0] - 2026-08-31
@@ -131,6 +137,7 @@ First public alpha of the Pari similarity and deduplication engine.
 
 This is an alpha release. Public 0.x compatibility is governed by `docs/compatibility.md`; interfaces marked experimental or internal may change before 1.0.
 
-[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/dipeshbabu/pari/compare/v0.2.0...v0.1.1
 [0.2.0]: https://github.com/dipeshbabu/pari/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dipeshbabu/pari/releases/tag/v0.1.0

@@ -7,7 +7,7 @@ This document defines the operator procedure for Pari releases. The workspace ve
 A version tag `vX.Y.Z` builds and validates:
 
 - `pari-similarity` source distribution and abi3 wheels.
-- `pari` CLI archives for Linux x86_64, macOS arm64, and Windows x86_64.
+- `pari` CLI archives for Linux x86_64, Linux arm64, macOS arm64, and Windows x86_64.
 - crates.io packages for the public Rust crates: `pari-core`, `pari-format`, `pari-index`, and `pari-store`.
 - SHA-256 checksums.
 - a CycloneDX dependency SBOM generated from locked Cargo metadata.
@@ -96,6 +96,11 @@ For v0.1.0, the crates.io publication job verifies the bootstrapped crates rathe
 
 ## Subsequent releases
 
+The current alpha release target is 0.1.1; the following preparation PR targets
+0.1.3. Historical 0.2.0 publications remain unchanged. Registries order 0.2.0
+above 0.1.x, so installation docs must use explicit version pins. Do not rename
+existing releases or yank working packages just to change version ordering.
+
 For releases after 0.1.0:
 
 1. update the workspace version and exact public-crate dependency versions in one PR;
@@ -107,14 +112,14 @@ For releases after 0.1.0:
 
 Before tagging, dispatch `release.yml` manually from the exact green `main` branch. The manual run performs the full artifact build and an authentication-only crates.io OIDC exchange in the `crates-io` environment; it does not publish. A missing or mismatched trusted-publisher configuration fails that job. PyPI configuration is verified by the successful prior OIDC deployment and must still name owner `dipeshbabu`, repository `pari`, workflow `release.yml`, and environment `pypi`.
 
-For 0.2.0, after the release-candidate PR and manual preflight are green:
+For 0.1.1, after the release-candidate PR and manual preflight are green:
 
 ```bash
 git checkout main
 git pull --ff-only
 git status --porcelain
-git tag -s v0.2.0 -m "Pari 0.2.0 alpha"
-git push origin v0.2.0
+git tag -s v0.1.1 -m "Pari 0.1.1 alpha"
+git push origin v0.1.1
 ```
 
 Confirm the tag points to the exact preflighted commit before pushing. The tag workflow must publish all four crates, the Python distribution, attest the assembled files, and create the prerelease. Do not create a GitHub Release separately or move the tag if publication fails.
