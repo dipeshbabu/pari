@@ -2,22 +2,24 @@
 
 Pari's runtime code uses safe, portable Rust and does not enable architecture-specific `target-cpu=native`, unsafe SIMD, or host-only CPU features in release artifacts.
 
-## Published 0.2.0 artifacts
+## 0.1.1 alpha release targets
 
-The immutable 0.2.0 release contains:
+The tagged 0.1.1 workflow builds and install-tests Python abi3 wheels and CLI
+archives for Linux x86_64, Linux arm64, macOS arm64, and Windows x86_64. Artifacts
+are available after publication succeeds. See [0.1.1 release notes](releases/0.1.1.md).
 
 | Interface | Operating system | Architecture | Artifact policy |
 | --- | --- | --- | --- |
-| Python wheel | Linux | x86-64 | manylinux2014 / glibc 2.17 |
-| Python wheel | macOS | arm64 | macOS 11 or newer tag |
-| Python wheel | Windows | x86-64 | CPython abi3 (`cp310`) |
-| CLI | Linux | x86-64 | Native release binary |
+| Python wheel | Linux | x86_64, arm64 | manylinux2014 / glibc 2.17, CPython abi3 |
+| Python wheel | macOS | arm64 | macOS 11 or newer, CPython abi3 |
+| Python wheel | Windows | x86_64 | CPython abi3 (`cp310`) |
+| CLI | Linux | x86_64, arm64 | Native release binary |
 | CLI | macOS | arm64 | Native release binary |
-| CLI | Windows | x86-64 | Native release binary |
+| CLI | Windows | x86_64 | Native release binary |
 
-## Linux arm64 validation for subsequent releases
+## Linux arm64 validation
 
-Release Validation adds these artifacts for the next tagged version:
+Release Validation includes these artifacts for 0.1.1 and subsequent tags:
 
 | Interface | Rust target | Artifact |
 | --- | --- | --- |
