@@ -15,3 +15,8 @@ incompatible Redis major and SHA-1 minor/major update classes while continuing
 to propose compatible patch releases. Remove those ignore rules only as part of
 an intentional MSRV increase or after an upstream release again supports the
 declared toolchain, with the full local, package, and CI graph revalidated.
+
+The Python binding stays on PyO3 0.29 with Rust 1.83. PyO3 0.30 requires
+Rust 1.85, so Dependabot continues proposing 0.29 patch updates while ignoring
+0.30 and newer. Advance that constraint only with an explicit compatibility
+decision, an updated binding MSRV, and the full Python and release checks.
