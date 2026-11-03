@@ -76,7 +76,8 @@ class DependencyUpdatePolicyTests(unittest.TestCase):
         self.assertNotIn("- dependency-name: url", dependabot)
         self.assertIn("- dependency-name: idna_adapter", dependabot)
         self.assertIn('versions: [">= 1.2.1"]', dependabot)
-        self.assertNotIn("- dependency-name: pyo3", dependabot)
+        self.assertIn("- dependency-name: pyo3", dependabot)
+        self.assertIn('versions: [">= 0.30"]', dependabot)
 
 
 if __name__ == "__main__":

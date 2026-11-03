@@ -5,6 +5,9 @@ updates:
     schedule:
       interval: weekly
     ignore:
+      # PyO3 0.30 requires Rust 1.85; the Python binding supports Rust 1.83.
+      - dependency-name: pyo3
+        versions: [">= 0.30"]
       # Redis 1.x requires Rust 1.85 or newer; 0.32.7 supports Rust 1.80.
       - dependency-name: redis
         update-types: ["version-update:semver-major"]
