@@ -6,6 +6,11 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-03
+
+Pari 0.1.1 alpha coordinates the Rust, Python, and CLI release. Supported
+APIs and format-v1 data remain compatible.
+
 ### Added
 
 - Pinned fast pre-commit checks cover repository text and syntax policy, both
@@ -64,51 +69,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   1.81 MSRV, but continues proposing compatible patch updates.
 - High-signal Ruff anti-pattern/security rules and selected Clippy restriction lints now reject unsafe exception flow, avoidable performance traps, loop-variable overwrites, and Rust debug/placeholder macros without enabling noisy rule groups wholesale.
 - Rust remains formatted by the pinned canonical `rustfmt`; maintained Python and stub files now use pinned Ruff 0.16.7 with explicit stable formatting/lint rules and protected benchmark-fixture exclusions.
-- The coordinated affine64 crate transition temporarily builds the `pari-store` tarball without standalone registry verification while the complete local Rust 1.81 graph remains enforced; full verification resumes after the matching `pari-index` release is published.
-- Full registry-backed package verification is restored for all four public crates after the coordinated 0.2.0 publication.
-
-## [0.2.0] - 2026-08-31
-
-### Added
-
-- Release automation and packaging hardening for future alpha releases.
-- High-level typed Python deduplication through `DedupeIndex` and `deduplicate`, with exact verification, representative selection, bounded batches, local persistence, and cancellation-aware progress.
-- Streaming text reference-build, deduplication, and cross-corpus audit workflows with exact verification and transactional outputs.
-- Datasketch 2.x affine32 signature interoperability, golden fixtures, migration adapters, and a semantics-matched comparison harness.
-- Deterministic, bounded CPU parallelism for batch MinHash construction in Rust and Python.
-- Opt-in query metrics, exact bucket diagnostics, and batch-granular CLI/Python progress reporting.
-- Deterministic LSH planning and existing-index explanation across Rust, CLI, and Python.
-- Streaming source-code corpus deduplication with lexical features, exact verification, and reproducible metrics.
-- Structured customer/product candidate generation with labeled recall and reduction evaluation.
-- Optional bounded-batch adapters for PyArrow/Parquet, Polars, and Hugging Face Datasets.
-- Evidence-based defer decision for Weighted MinHash and SimHash future families.
-- Evidence-based defer decision and deterministic fan-out prototype for sharded indexes.
-- Refreshed native-Linux 100K and 1M campaign evidence with persistent storage, text-audit, and Datasketch stages.
-
-### Fixed
-
-- Reference deduplication and matching workloads no longer retain partial final outputs after failure.
-- External and lazy storage builders no longer report false parent-directory sync failures on Windows.
-- Rust storage tests now use parallel-safe temporary filenames that are valid on Windows.
-- PyArrow dataset adapters now accept preconfigured `Scanner` inputs without invalid batch arguments.
-- Reference workload publication now claims final paths atomically without replacing concurrent files.
-- Benchmark campaign commands select the main harness explicitly after the package gained an evaluation binary.
-
-### Repository policy
-
-- GitHub now enforces protected `main`, immutable `v*` release tags, squash-only merges, exact-head checks, and automatic merged-branch deletion.
-- CI continuously enforces the declared Rust 1.81 minimum for every published crate and package.
-- Release Validation derives and checks the complete Python source-distribution manifest, including forbidden-file rejection.
-- Active CI actions and Redis service images are immutable and checked automatically.
-- Private vulnerability reporting, dependency proposals, and advisory/license/source CI policy are enabled.
-- Repository metadata, focused issue forms, and contributor evidence guidance provide consistent public entry points.
-
-### Compatibility
-
-- Existing supported 0.1 Python, Rust, CLI, signature, and `.pari` format-v1 behavior remains compatible in 0.2.0.
-- CLI machine-readable output remains revision 1; new fields are additive, while the new `plan` and `explain` output remains experimental.
-- The four public Rust crates remain on Rust 1.81 and move together to exact version 0.2.0 dependencies.
-- Planner models, optional dataset and Datasketch adapters, Redis layout, observability measurement policy beyond supported fields, and direct builder/lazy-store APIs remain experimental.
+- During coordinated releases, dependent crate manifests and file lists are checked before publication; the publish job builds and registry-verifies all four tarballs in dependency order. The complete local Rust 1.81 graph remains enforced.
 
 ## [0.1.0] - 2026-08-28
 
@@ -131,6 +92,6 @@ First public alpha of the Pari similarity and deduplication engine.
 
 This is an alpha release. Public 0.x compatibility is governed by `docs/compatibility.md`; interfaces marked experimental or internal may change before 1.0.
 
-[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/dipeshbabu/pari/compare/v0.1.0...v0.2.0
+[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/dipeshbabu/pari/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/dipeshbabu/pari/releases/tag/v0.1.0
