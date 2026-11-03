@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence, Sized
+from collections.abc import Callable, Iterable, Iterator, Sequence, Sized
 from dataclasses import dataclass
 from itertools import islice
 from os import PathLike
@@ -186,6 +186,7 @@ class DedupeIndex(Generic[T]):
     def add(self, record: T) -> int:
         """Add one record and return its stable ingestion index."""
 
+        self._ensure_open()
         feature = self._require_feature()
         return self.add_features(record, feature(record))
 
@@ -194,6 +195,7 @@ class DedupeIndex(Generic[T]):
     ) -> int:
         """Add records in bounded, atomic native batches and return the count."""
 
+        self._ensure_open()
         feature = self._require_feature()
         total = len(records) if isinstance(records, Sized) else None
         return self._add_many_features(
@@ -207,7 +209,7 @@ class DedupeIndex(Generic[T]):
 
         self._ensure_open()
         key = len(self._records)
-        self._engine.add_many([key], [features])
+        self._engine.add_many(key, [features])
         self._records.append(record)
         return key
 
@@ -219,6 +221,7 @@ class DedupeIndex(Generic[T]):
     ) -> int:
         """Add precomputed feature rows without retaining source payloads."""
 
+        self._ensure_open()
         total = len(items) if isinstance(items, Sized) else None
         return self._add_many_features(items, progress=progress, total=total)
 
@@ -235,9 +238,18 @@ class DedupeIndex(Generic[T]):
         iterator = iter(items)
         added = 0
         started = perf_counter() if progress is not None else None
+
+        def feature_rows(records: list[T]) -> Iterator[Iterable[ReadableBuffer]]:
+            for record, features in islice(iterator, self._batch_size):
+                records.append(record)
+                # The native collector copies this row before advancing the source,
+                # which may reuse its feature list or mutable buffers.
+                yield features
+
         while True:
-            batch = list(islice(iterator, self._batch_size))
-            if not batch:
+            records: list[T] = []
+            self._engine.add_many(len(self._records), feature_rows(records))
+            if not records:
                 if (
                     progress is not None
                     and started is not None
@@ -253,19 +265,14 @@ class DedupeIndex(Generic[T]):
                     )
                 return added
 
-            start = len(self._records)
-            keys = list(range(start, start + len(batch)))
-            records = [record for record, _features in batch]
-            feature_rows = [features for _record, features in batch]
-            self._engine.add_many(keys, feature_rows)
             self._records.extend(records)
-            added += len(batch)
+            added += len(records)
             if progress is not None and started is not None:
                 self._emit_progress(
                     progress,
                     completed=added,
                     total=total,
-                    batch_size=len(batch),
+                    batch_size=len(records),
                     started=started,
                     final=total is not None and added == total,
                 )

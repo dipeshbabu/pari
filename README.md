@@ -1,218 +1,177 @@
-# Pari
+<h1 align="center">Pari</h1>
 
-[![PyPI downloads per month](https://static.pepy.tech/badge/pari-similarity/month)](https://pepy.tech/projects/pari-similarity)
+<p align="center">
+  Find similar records and deduplicate datasets with Rust, Python, or your terminal.
+</p>
 
-Pari is a fast similarity indexing and deduplication engine for large datasets.
+<p align="center">
+  <a href="https://pypi.org/project/pari-similarity/"><img alt="PyPI" src="https://img.shields.io/pypi/v/pari-similarity?style=flat-square&color=3ECF8E"></a>
+  <a href="https://crates.io/crates/pari-core"><img alt="crates.io" src="https://img.shields.io/crates/v/pari-core?style=flat-square&color=3ECF8E"></a>
+  <a href="https://github.com/dipeshbabu/pari/actions/workflows/ci.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/dipeshbabu/pari/ci.yml?branch=main&label=build&style=flat-square&color=3ECF8E"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3ECF8E?style=flat-square"></a>
+</p>
 
-The project is built around a Rust core with Python bindings and a CLI. The goal is to let users move from an in-memory prototype to persistent or shared indexes without rewriting their similarity logic.
+---
 
-## Status
+Pari builds MinHash signatures, finds approximate similarity candidates with LSH,
+and groups duplicate records. Start in memory, save an index to a versioned `.pari`
+file, or process bounded batches from larger datasets through the same Rust engine.
 
-Pari **0.3.0 alpha** is publicly available from PyPI, crates.io, and [GitHub Releases](https://github.com/dipeshbabu/pari/releases/tag/v0.3.0). Pari is still pre-1.0: supported 0.3.x interfaces follow the [v0.x compatibility policy](docs/compatibility.md), while experimental surfaces may change in a future minor release with release notes and migration guidance.
+**Pari 0.1.3 alpha** targets Python 3.10+ and Rust 1.81+ for the public crates.
+The project is pre-1.0; see the [compatibility policy](docs/compatibility.md).
+The Python extension requires Rust 1.83 when built from source.
 
-Choose the interface that fits your workload:
+## Installation
 
-| Interface | Install or download | Start here |
-| --- | --- | --- |
-| Python 3.10+ | `python -m pip install "pari-similarity==0.3.0"` | [Python API guide](docs/python.md) |
-| Rust 1.81+ | `cargo add pari-core@0.3.0 pari-index@0.3.0` | [Architecture and crate layers](docs/architecture.md) |
-| CLI | [Download a 0.3.0 archive](https://github.com/dipeshbabu/pari/releases/tag/v0.3.0) | [CLI guide](docs/cli.md) |
+### Python
 
-The [project links](#project-links) collect release notes, compatibility and security policies, integrations, workload guides, and benchmark evidence.
-
-## Python quick start
-
-Install the published distribution (CPython 3.10 or newer):
-
-```bash
-python -m pip install "pari-similarity==0.3.0"
+```sh
+python -m pip install "pari-similarity==0.1.3"
 ```
 
-The distribution name is `pari-similarity`; the import name is `pari`:
+The distribution name is `pari-similarity`; the import name is `pari`.
+
+### Rust
+
+```sh
+cargo add pari-core@0.1.3 pari-index@0.1.3 pari-store@0.1.3
+```
+
+Use only the layers your application needs. Add `pari-format = "0.1.3"` when
+working directly with codecs or persisted-format metadata. Keep public crates on
+the same release version.
+
+### CLI
+
+Download an archive from the [0.1.3 release](https://github.com/dipeshbabu/pari/releases/tag/v0.1.3),
+verify it against `SHA256SUMS`, extract it, and put `pari` on your `PATH`.
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86_64 | [`pari-0.1.3-linux.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.3/pari-0.1.3-linux.tar.gz) |
+| Linux arm64 | [`pari-0.1.3-linux-arm64.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.3/pari-0.1.3-linux-arm64.tar.gz) |
+| macOS arm64 | [`pari-0.1.3-macos.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.3/pari-0.1.3-macos.tar.gz) |
+| Windows x86_64 | [`pari-0.1.3-windows.zip`](https://github.com/dipeshbabu/pari/releases/download/v0.1.3/pari-0.1.3-windows.zip) |
+
+Packages and archives become available when the tagged release workflow completes.
+The earlier `0.2.0` packages retain their original versions. Use the explicit
+`0.1.3` pins above: registry badges and unpinned installs may still select `0.2.0`.
+See [release notes](docs/releases/0.1.3.md) and [platform support](docs/platforms.md).
+
+## Compare Records
+
+Build two signatures and estimate their Jaccard similarity:
 
 ```python
 from pari import MinHash
 
 first = MinHash.from_values(
-    [b"new york", b"rust", b"search"],
-    num_perm=128,
-    seed=7,
+    [b"new york", b"rust", b"search"], num_perm=128, seed=7
 )
 second = MinHash.from_values(
-    [b"new york", b"python", b"search"],
-    num_perm=128,
-    seed=7,
+    [b"new york", b"python", b"search"], num_perm=128, seed=7
 )
 
 print(first.jaccard(second))
 ```
 
-See the [Python API guide](docs/python.md) for persistent indexes, batch operations, and the 0.2 API surface.
+Use the same permutation count and seed for signatures you compare.
+The [Python guide](docs/python.md) covers persistent indexes, batch operations,
+and the explicit `MinHash64` and `Index64` APIs.
 
-## Rust quick start
+## Index and Search
 
-The four public crates are versioned and released together at 0.3.0:
-
-| Crate | Use it for |
-| --- | --- |
-| [`pari-core`](https://crates.io/crates/pari-core/0.3.0) | MinHash signatures and similarity primitives |
-| [`pari-format`](https://crates.io/crates/pari-format/0.3.0) | Safe codecs and the versioned index format |
-| [`pari-index`](https://crates.io/crates/pari-index/0.3.0) | In-memory LSH indexing and duplicate grouping |
-| [`pari-store`](https://crates.io/crates/pari-store/0.3.0) | Crash-safe local persistent indexes |
-
-Add only the layers your application uses:
-
-```bash
-cargo add pari-core@0.3.0 pari-index@0.3.0 pari-store@0.3.0
-```
-
-Or declare them directly:
-
-```toml
-[dependencies]
-pari-core = "0.3.0"
-pari-index = "0.3.0"
-pari-store = "0.3.0"
-```
-
-Add `pari-format = "0.3.0"` only when working directly with codecs or format metadata.
-
-## CLI quick start
-
-Download the published archive for your platform:
-
-| Platform | Archive |
-| --- | --- |
-| Linux x86_64 | [`pari-0.3.0-linux.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-linux.tar.gz) |
-| Linux arm64 | [`pari-0.3.0-linux-arm64.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-linux-arm64.tar.gz) |
-| macOS arm64 | [`pari-0.3.0-macos.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-macos.tar.gz) |
-| Windows x86_64 | [`pari-0.3.0-windows.zip`](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-windows.zip) |
-
-Linux arm64 wheels and CLI archives are built and natively smoke-tested on ARM runners, and ship for the first time in 0.3.0. They are not retroactively attached to the immutable 0.1.0 or 0.2.0 releases. See the [platform support matrix](docs/platforms.md).
-
-Linux:
-
-```bash
-curl -LO https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-linux.tar.gz
-tar -xzf pari-0.3.0-linux.tar.gz
-./pari-0.3.0-linux/pari --version
-```
-
-macOS:
-
-```bash
-curl -LO https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-macos.tar.gz
-tar -xzf pari-0.3.0-macos.tar.gz
-./pari-0.3.0-macos/pari --version
-```
-
-Windows PowerShell:
-
-```powershell
-Invoke-WebRequest -Uri "https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-windows.zip" -OutFile "pari-0.3.0-windows.zip"
-Expand-Archive -Path "pari-0.3.0-windows.zip" -DestinationPath .
-.\pari-0.3.0-windows\pari.exe --version
-```
-
-Verify downloads with the published [`SHA256SUMS`](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/SHA256SUMS) before installing the binary on `PATH`.
-
-Given JSONL records such as:
+Create `documents.jsonl` with one record per line:
 
 ```json
 {"key":1,"values":["new york","rust","search"]}
 {"key":2,"values":["new york","python","search"]}
 ```
 
-build and verify a persistent index:
+Build a persistent index and verify its contents:
 
-```bash
+```sh
 pari index --input documents.jsonl --output documents.pari --json
 pari verify --index documents.pari --json
+pari search --help
 ```
 
-Run native duplicate grouping without sending candidate edges through Python:
+Indexes use safe, versioned persistence. LSH returns approximate candidates;
+verify candidates against source features when your application needs an exact
+similarity threshold.
 
-```bash
+## Deduplicate a Dataset
+
+Group duplicate candidates through the native engine:
+
+```sh
 pari dedup --input documents.jsonl --emit groups --json
 ```
 
-See [docs/cli.md](docs/cli.md) for indexing, search, deduplication, inspection, JSONL output, verification, and shell completion.
+Python's `DedupeIndex` and `deduplicate` add bounded batches, exact verification,
+representative selection, and progress callbacks. Optional adapters read
+PyArrow/Parquet, Polars, and Hugging Face datasets.
 
-Source users evaluating shared memory or Redis backends can follow the [storage backend guide](docs/storage-backends.md); those experimental crates are not part of the published 0.3.0 Rust set.
+- [Python deduplication](docs/python.md)
+- [Dataset integrations](docs/dataset-integrations.md)
+- [Text deduplication and corpus audits](docs/text-workloads.md)
+- [Code corpus deduplication](docs/code-workloads.md)
+- [Entity matching](docs/entity-matching.md)
 
-## Project links
+## Reference
 
-- [PyPI: `pari-similarity`](https://pypi.org/project/pari-similarity/0.3.0/)
-- [GitHub Release and binary downloads](https://github.com/dipeshbabu/pari/releases/tag/v0.3.0)
-- [0.3.0 release notes](docs/releases/0.3.0.md), [0.2.0 release notes](docs/releases/0.2.0.md)
-- [Compatibility policy](docs/compatibility.md)
-- [Platform support and release targets](docs/platforms.md)
-- [Security policy](SECURITY.md) and [dependency maintenance](docs/dependency-policy.md)
-- [Python guide](docs/python.md), [CLI guide](docs/cli.md), [dataset integrations](docs/dataset-integrations.md), [text workloads](docs/text-workloads.md), [code corpus deduplication](docs/code-workloads.md), and [entity matching](docs/entity-matching.md)
-- [Datasketch 2.x interoperability and migration](docs/datasketch-v2.md)
-- [Weighted MinHash and SimHash evaluation](docs/similarity-family-evaluation.md)
-- [Shardable and mergeable index evaluation](docs/sharding-evaluation.md)
-- [Benchmark methodology](docs/benchmarks.md), [native-Linux and historical evidence](docs/benchmark-evidence.md), [CPU parallelism](docs/parallelism.md), [LSH planning](docs/planning.md), [observability](docs/observability.md), and [workload roadmap](https://github.com/dipeshbabu/pari/issues)
+Use `--help` to explore commands and options:
 
-## Design goals
+```sh
+pari --help
+pari index --help
+pari dedup --help
+```
 
-- Batch-first compute, insert, query, and remote storage paths.
-- Safe, versioned persistence instead of executable object serialization.
-- A persistent local index between RAM-only prototypes and remote databases.
-- Shared backends without coupling LSH code to database-specific commands.
-- A small Rust core shared by Python and CLI frontends.
-- Correctness tests and benchmark evidence for performance-sensitive changes.
-- No merge to `main` while required CI is failing.
+- [CLI reference](docs/cli.md) and [Python API](docs/python.md)
+- [Architecture](docs/architecture.md) and [storage backends](docs/storage-backends.md)
+- [Datasketch 2.x interoperability](docs/datasketch-v2.md)
+- [LSH planning](docs/planning.md), [observability](docs/observability.md), and [CPU parallelism](docs/parallelism.md)
+- [Benchmark methodology](docs/benchmarks.md) and [recorded benchmark evidence](docs/benchmark-evidence.md)
+- [Compatibility](docs/compatibility.md), [changelog](CHANGELOG.md), and [release procedure](docs/releasing.md)
 
-## Layers
+The committed benchmark scale envelope is 1M records. Performance figures apply
+to the environment and workload recorded with each result.
 
-- `pari-core`: signatures and similarity primitives.
-- `pari-index`: LSH and candidate generation.
-- `pari-store`: crash-safe local persistent indexes.
-- `pari-backend`: typed in-process and shared remote storage backends, including Redis.
-- `pari-py`: PyO3 Python bindings and the `pari` package.
-- `pari-cli`: command-line workflows.
+## Developing
 
-See [docs/architecture.md](docs/architecture.md), [docs/compatibility.md](docs/compatibility.md), and the GitHub issues for the implementation roadmap.
+```sh
+git clone https://github.com/dipeshbabu/pari.git
+cd pari
 
-## Development
-
-Install the pinned fast commit checks:
-
-```bash
 python -m pip install "pre-commit==4.6.2"
 pre-commit install
 pre-commit run --all-files
-```
 
-The hook covers inexpensive Rust and Python formatting, syntax, lint,
-conflict-marker, private-key, and workflow-pin checks. It does not replace the
-full validation below; CI remains authoritative.
-
-```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 ```
 
-Python formatting and linting use the pinned Ruff toolchain:
+CI remains authoritative. Build the CLI with `cargo build --release -p pari-cli`.
+For Python development, install the checkout with `python -m pip install .`.
 
-```bash
-python -m pip install "ruff==0.16.6"
-ruff format --check python scripts benchmarks examples
-ruff check python scripts benchmarks examples
-```
+| Path | Purpose |
+| --- | --- |
+| `crates/pari-core` | MinHash signatures and similarity primitives |
+| `crates/pari-index` | LSH candidates and duplicate grouping |
+| `crates/pari-format` | Codecs and versioned file format |
+| `crates/pari-store` | Persistent local indexes |
+| `crates/pari-cli` | Command-line workflows |
+| `crates/pari-py`, `python/pari` | Python bindings and APIs |
 
-Python wheel development additionally uses maturin:
+## Contributing
 
-```bash
-python -m pip install "maturin>=1.14,<2"
-python -m pip install .
-maturin build --release
-```
-
-Build the CLI from source with `cargo build --release -p pari-cli`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and compatibility rules.
+Report bugs and propose changes through [GitHub issues](https://github.com/dipeshbabu/pari/issues).
+For security reports, follow [SECURITY.md](SECURITY.md).
 
 ## License
 
-Pari is MIT licensed. See [LICENSE](LICENSE). Portions derived from or informed by third-party MIT-licensed projects are documented in [NOTICE](NOTICE).
+Pari is released under the [MIT license](LICENSE). Third-party attribution is
+recorded in [NOTICE](NOTICE).

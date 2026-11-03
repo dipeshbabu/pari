@@ -6,7 +6,21 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-09-08
+## [0.1.3] - Unreleased
+
+### Changed
+
+- Prepare the next coordinated alpha release on the 0.1.x line, following
+  0.1.1. The workspace, public dependencies, lockfiles, installation examples,
+  and release validation all target 0.1.3.
+- Retain the supported interfaces, signature schemes, format-v1 persistence,
+  CLI output revision 1, and platform coverage documented for 0.1.1.
+
+## [0.1.1] - 2026-11-03
+
+Pari returns to the 0.1.x alpha release line. The previously published 0.2.0
+packages and tag remain historical artifacts; use an explicit version pin to
+install 0.1.1. Supported APIs and format-v1 data remain compatible.
 
 ### Added
 
@@ -33,6 +47,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Python MinHash inputs hash raw buffer bytes consistently across scalar and
+  batch APIs, preserving multi-byte element widths and strided view contents.
 - Benchmark timeouts and interruptions stop descendant processes before
   cleaning staging or finalizing failure evidence.
 - Direct Redis batch deletion counts each live key once, even when the batch
@@ -63,18 +79,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Dependabot suppresses Redis 1.x and SHA-1 0.11+ while they exceed the Rust
   1.81 MSRV, but continues proposing compatible patch updates.
 - High-signal Ruff anti-pattern/security rules and selected Clippy restriction lints now reject unsafe exception flow, avoidable performance traps, loop-variable overwrites, and Rust debug/placeholder macros without enabling noisy rule groups wholesale.
-- Rust remains formatted by the pinned canonical `rustfmt`; maintained Python and stub files now use pinned Ruff 0.16.6 with explicit stable formatting/lint rules and protected benchmark-fixture exclusions.
-- Full registry-backed package verification was restored for all four public crates after the coordinated 0.2.0 publication, then scoped again by the affine64 transition below.
-- During the coordinated 0.3.0 version transition, CI and Release Validation inspect the `pari-index` and `pari-store` manifests and file lists instead of building their tarballs, because both require exact registry dependency versions that are not published yet. The complete local Rust 1.81 graph is still compiled, tested, and MSRV-checked, and the publish job registry-verifies all four crates in dependency order once each coordinated version reaches the crates.io index.
-
-### Compatibility
-
-- Supported 0.1 and 0.2 Python, Rust, CLI, signature, and `.pari` format-v1 behavior remains compatible in 0.3.0.
-- The affine64 surface is now supported rather than partial: Python `MinHash64` and `Index64`, Rust `LshIndex64` and `PersistentIndex64`, and explicit CLI affine64 indexing, deduplication, search, inspection, explanation, and verification. Affine32 remains the default on every interface and its APIs and persisted bytes are unchanged.
-- `pari-affine32-v1` and `pari-affine64-v1` keep their existing semantics. Width is selected by explicit type or explicit CLI/JSONL request; no mode flag changes an existing type's width.
-- CLI machine-readable output remains revision 1. Affine64 selection and the metadata-derived fields are additive, and existing fields keep their meaning and type.
-- The four public Rust crates remain on Rust 1.81 and move together to exact `0.3.0` dependencies. The `pari-py` binding continues to declare and test Rust 1.83 for PyO3 0.29.
-- Planner models and CLI `plan`/`explain`, optional Datasketch and dataset adapters, the Redis descriptor and namespace layout, observability measurement policy beyond supported fields, and direct `pari-store-lazy`/`pari-store-build` APIs remain experimental.
+- Rust remains formatted by the pinned canonical `rustfmt`; maintained Python and stub files now use pinned Ruff 0.16.7 with explicit stable formatting/lint rules and protected benchmark-fixture exclusions.
+- During coordinated releases, dependent crate manifests and file lists are checked before publication; the publish job builds and registry-verifies all four tarballs in dependency order. The complete local Rust 1.81 graph remains enforced.
+- Full registry-backed package verification is restored for all four public crates after the coordinated 0.2.0 publication.
 
 ## [0.2.0] - 2026-08-31
 
@@ -140,7 +147,8 @@ First public alpha of the Pari similarity and deduplication engine.
 
 This is an alpha release. Public 0.x compatibility is governed by `docs/compatibility.md`; interfaces marked experimental or internal may change before 1.0.
 
-[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/dipeshbabu/pari/compare/v0.2.0...v0.3.0
+[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/dipeshbabu/pari/compare/v0.1.1...v0.1.3
+[0.1.1]: https://github.com/dipeshbabu/pari/compare/v0.2.0...v0.1.1
 [0.2.0]: https://github.com/dipeshbabu/pari/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dipeshbabu/pari/releases/tag/v0.1.0

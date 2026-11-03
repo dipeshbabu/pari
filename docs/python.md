@@ -28,7 +28,7 @@ with Index.open("documents.pari") as index:
 ## Install the published package
 
 ```bash
-python -m pip install "pari-similarity==0.3.0"
+python -m pip install "pari-similarity==0.1.3"
 ```
 
 The PyPI distribution is named `pari-similarity`; the import namespace is `pari`.
@@ -50,11 +50,11 @@ maturin develop
 
 ## Stability
 
-The 0.3 top-level Python export set is defined by `pari.__all__` and pinned by installed-wheel tests. Patch releases in 0.3.x must not intentionally break exports classified as supported or make a previously valid supported typed call invalid. Planner exports remain explicitly experimental. See [compatibility.md](compatibility.md) for the full v0.x policy, deprecation rules, signature compatibility, and persisted-format guarantees.
+The 0.1 top-level Python export set is defined by `pari.__all__` and pinned by installed-wheel tests. Patch releases in 0.1.x must not intentionally break exports classified as supported or make a previously valid supported typed call invalid. Planner exports remain explicitly experimental. See [compatibility.md](compatibility.md) for the full v0.x policy, deprecation rules, signature compatibility, and persisted-format guarantees.
 
 ## Deduplicate records
 
-> **Availability:** `DedupeIndex` and `deduplicate` are included in Pari 0.3.0 and newer releases.
+> **Availability:** `DedupeIndex` and `deduplicate` are included in Pari 0.1.3 and newer releases.
 
 `deduplicate` is the concise API for users who do not need to manage signatures or an index directly. Supply a feature callback that returns byte-like shingles for one record:
 
@@ -176,7 +176,9 @@ second.update_many([b"new york", b"similarity search", b"python"])
 print(first.jaccard(second))
 ```
 
-`MinHash.update` and `MinHash.from_values` accept byte-like inputs. Python `bytes` use the direct borrowed path for scalar updates. `bytearray`, `memoryview`, and other contiguous unsigned-byte buffers are accepted through the Python buffer protocol. Batch values are copied into Rust-owned storage before the GIL is released so Python memory is never accessed without interpreter ownership.
+`MinHash.update` and `MinHash.from_values` accept byte-like inputs. Python `bytes` use the direct borrowed path for scalar updates. `bytearray`, `memoryview`, and other buffer exporters are hashed as raw bytes, equivalent to `memoryview(value).tobytes()` in C order, preserving element width and the supplied byte order. This applies to strided views and to `MinHash64` as well. Batch values are copied into Rust-owned storage before the GIL is released so Python memory is never accessed without interpreter ownership.
+
+Earlier bindings incorrectly treated some multi-byte buffers as integer sequences when every element fit in `u8`. Rebuild sketches and indexes created from those buffers; byte-oriented inputs were unaffected.
 
 `update_many` performs the CPU-heavy hashing and permutation loop through `Python::detach`, so the Python interpreter is not held while Rust performs the batch computation.
 

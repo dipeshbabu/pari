@@ -34,7 +34,7 @@ accepted shortcut, and the protected checks cannot be bypassed by this option.
    ```bash
    cargo fmt --all -- --check
    cargo fmt --manifest-path benchmarks/criterion/Cargo.toml --all -- --check
-   python -m pip install "ruff==0.16.6"
+   python -m pip install "ruff==0.16.8"
    ruff format --check python scripts benchmarks examples
    ruff check python scripts benchmarks examples
    python scripts/check_workflow_pins.py
@@ -72,7 +72,7 @@ accepted shortcut, and the protected checks cannot be bypassed by this option.
 ### Formatting policy
 
 - Rust uses the canonical `rustfmt` component from the pinned Rust toolchain. Run `cargo fmt --all` and the separate Criterion-workspace command before committing Rust changes. Repository settings live in `rustfmt.toml`.
-- Maintained Python and `.pyi` files use Ruff 0.16.6 with the explicit stable policy in `pyproject.toml`. Run `ruff check --fix python scripts benchmarks examples` first, then `ruff format python scripts benchmarks examples`. CI uses the corresponding `--check` commands.
+- Maintained Python and `.pyi` files use Ruff 0.16.8 with the explicit stable policy in `pyproject.toml`. Run `ruff check --fix python scripts benchmarks examples` first, then `ruff format python scripts benchmarks examples`. CI uses the corresponding `--check` commands.
 - Ruff also enforces high-signal security, exception-flow, performance, comprehension, return-flow, and Pylint/Ruff correctness rules. Exemptions must stay scoped to a file with a documented trust boundary; do not silence a rule family globally to land a change.
 - Rust denies `dbg!`, `todo!`, and `unimplemented!` in both Cargo workspaces. Clippy's entire `restriction` group is intentionally not enabled because it contains contradictory and context-dependent rules; propose additional restriction lints individually with a clean baseline.
 - `examples/code_corpus_fixture/**` is benchmark input, not maintained application source. It is deliberately excluded so a formatter upgrade cannot silently change workload evidence. Markdown is also excluded from Ruff; documentation formatting remains review-driven.
@@ -87,7 +87,7 @@ Superseded runs for an updated pull request are canceled to avoid spending runne
 
 ## Compatibility and performance evidence
 
-Check the [v0.x compatibility contract](docs/compatibility.md) before changing a public Python, Rust, CLI, signature, or persisted-format surface. Supported 0.3.x interfaces must remain compatible in patch releases. Experimental interfaces can change in a minor release only when the release notes explain the impact and migration path. Persisted data and machine-readable output must never be silently reinterpreted.
+Check the [v0.x compatibility contract](docs/compatibility.md) before changing a public Python, Rust, CLI, signature, or persisted-format surface. Supported 0.1.x interfaces must remain compatible in patch releases. Experimental interfaces can change in a minor release only when the release notes explain the impact and migration path. Persisted data and machine-readable output must never be silently reinterpreted.
 
 A performance claim needs a reproducible baseline and comparison from the same machine, source revision, workload, and cache policy. Include the commands, environment, raw JSON reports, correctness/parity results, and an explanation of material variance in the pull request. Use the named campaign when the change affects end-to-end behavior:
 

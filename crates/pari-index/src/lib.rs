@@ -258,9 +258,10 @@ impl QueryObserver {
 }
 
 fn nearest_rank(sorted: &[u64], percentile: usize) -> u64 {
-    let span = sorted.len().saturating_sub(1);
-    let index = span.saturating_mul(percentile).div_ceil(100).min(span);
-    sorted[index]
+    // Split the product to compute ceil(n * percentile / 100) without overflow.
+    let rank =
+        (sorted.len() / 100) * percentile + ((sorted.len() % 100) * percentile).div_ceil(100);
+    sorted[rank - 1]
 }
 
 /// Errors returned by the in-memory LSH index.
@@ -845,6 +846,28 @@ mod tests {
         assert_eq!(distribution.maximum, 100);
         assert!((distribution.average_members() - 22.0).abs() < f64::EPSILON);
         assert_eq!(BucketDistribution::from_sizes([]).buckets, 0);
+    }
+
+    #[test]
+    fn bucket_percentiles_use_one_based_nearest_ranks() {
+        for (count, expected) in [
+            (1, (1, 1, 1)),
+            (2, (1, 2, 2)),
+            (20, (10, 19, 20)),
+            (100, (50, 95, 99)),
+            (101, (51, 96, 100)),
+        ] {
+            let distribution = BucketDistribution::from_sizes((0..=count).rev());
+            assert_eq!(
+                (distribution.p50, distribution.p95, distribution.p99),
+                expected,
+                "percentiles for {count} non-empty buckets"
+            );
+        }
+        assert_eq!(
+            BucketDistribution::from_sizes([0, 0]),
+            BucketDistribution::default()
+        );
     }
 
     #[test]
