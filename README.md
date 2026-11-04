@@ -17,7 +17,7 @@ Pari builds MinHash signatures, finds approximate similarity candidates with LSH
 and groups duplicate records. Start in memory, save an index to a versioned `.pari`
 file, or process bounded batches from larger datasets through the same Rust engine.
 
-**Pari 0.1.1 alpha** targets Python 3.10+ and Rust 1.81+ for the public crates.
+**Pari 0.1.2 alpha** targets Python 3.10+ and Rust 1.81+ for the public crates.
 The project is pre-1.0; see the [compatibility policy](docs/compatibility.md).
 The Python extension requires Rust 1.83 when built from source.
 
@@ -26,7 +26,7 @@ The Python extension requires Rust 1.83 when built from source.
 ### Python
 
 ```sh
-python -m pip install "pari-similarity==0.1.1"
+python -m pip install "pari-similarity==0.1.2"
 ```
 
 The distribution name is `pari-similarity`; the import name is `pari`.
@@ -34,27 +34,27 @@ The distribution name is `pari-similarity`; the import name is `pari`.
 ### Rust
 
 ```sh
-cargo add pari-core@0.1.1 pari-index@0.1.1 pari-store@0.1.1
+cargo add pari-core@0.1.2 pari-index@0.1.2 pari-store@0.1.2
 ```
 
-Use only the layers your application needs. Add `pari-format = "0.1.1"` when
+Use only the layers your application needs. Add `pari-format = "0.1.2"` when
 working directly with codecs or persisted-format metadata. Keep public crates on
 the same release version.
 
 ### CLI
 
-Download an archive from the [0.1.1 release](https://github.com/dipeshbabu/pari/releases/tag/v0.1.1),
+Download an archive from the [0.1.2 release](https://github.com/dipeshbabu/pari/releases/tag/v0.1.2),
 verify it against `SHA256SUMS`, extract it, and put `pari` on your `PATH`.
 
 | Platform | Archive |
 | --- | --- |
-| Linux x86_64 | [`pari-0.1.1-linux.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/pari-0.1.1-linux.tar.gz) |
-| Linux arm64 | [`pari-0.1.1-linux-arm64.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/pari-0.1.1-linux-arm64.tar.gz) |
-| macOS arm64 | [`pari-0.1.1-macos.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/pari-0.1.1-macos.tar.gz) |
-| Windows x86_64 | [`pari-0.1.1-windows.zip`](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/pari-0.1.1-windows.zip) |
+| Linux x86_64 | [`pari-0.1.2-linux.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.2/pari-0.1.2-linux.tar.gz) |
+| Linux arm64 | [`pari-0.1.2-linux-arm64.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.2/pari-0.1.2-linux-arm64.tar.gz) |
+| macOS arm64 | [`pari-0.1.2-macos.tar.gz`](https://github.com/dipeshbabu/pari/releases/download/v0.1.2/pari-0.1.2-macos.tar.gz) |
+| Windows x86_64 | [`pari-0.1.2-windows.zip`](https://github.com/dipeshbabu/pari/releases/download/v0.1.2/pari-0.1.2-windows.zip) |
 
 Packages and archives become available when the tagged release workflow completes.
-See [release notes](docs/releases/0.1.1.md) and [platform support](docs/platforms.md).
+See [release notes](docs/releases/0.1.2.md) and [platform support](docs/platforms.md).
 
 ## Compare Records
 
