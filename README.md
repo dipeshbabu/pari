@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/pari-similarity/"><img alt="PyPI" src="https://img.shields.io/pypi/v/pari-similarity?style=flat-square&color=3ECF8E"></a>
+  <a href="https://pepy.tech/projects/pari-similarity"><img alt="PyPI downloads per month" src="https://static.pepy.tech/badge/pari-similarity/month"></a>
   <a href="https://crates.io/crates/pari-core"><img alt="crates.io" src="https://img.shields.io/crates/v/pari-core?style=flat-square&color=3ECF8E"></a>
   <a href="https://github.com/dipeshbabu/pari/actions/workflows/ci.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/dipeshbabu/pari/ci.yml?branch=main&label=build&style=flat-square&color=3ECF8E"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3ECF8E?style=flat-square"></a>
