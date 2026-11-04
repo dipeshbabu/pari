@@ -96,8 +96,7 @@ For v0.1.0, the crates.io publication job verifies the bootstrapped crates rathe
 
 ## Subsequent releases
 
-The current alpha release target is 0.1.3; the next preparation PR targets
-0.1.3. The workspace version, release tag, package versions, and installation
+The current alpha release target is 0.1.3. Release versions advance one patch at a time on the 0.1.x line. The workspace version, release tag, package versions, and installation
 examples must agree before publication.
 
 For releases after 0.1.0:

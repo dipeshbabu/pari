@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import tomllib
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -36,7 +38,9 @@ class DependencyUpdatePolicyTests(unittest.TestCase):
         self.assertIn('clap = { version = "=4.5.57"', cli)
         self.assertIn('clap_complete = "=4.5.67"', cli)
         self.assertIn('rust-version = "1.83"', python)
-        self.assertIn('pyo3 = { version = "0.29.2"', python)
+        python_manifest = tomllib.loads(python)
+        pyo3_requirement = python_manifest["dependencies"]["pyo3"]["version"]
+        self.assertRegex(pyo3_requirement, r"^0\.29\.\d+$")
         self.assertIn('rust-version = "1.81"', criterion)
         self.assertIn('clap = "=4.5.57"', criterion)
         self.assertIn('redb = "=2.4.0"', criterion)
@@ -45,7 +49,20 @@ class DependencyUpdatePolicyTests(unittest.TestCase):
         self.assertIn('name = "clap_lex"\nversion = "0.7.7"', lockfile)
         self.assertIn('name = "idna_adapter"\nversion = "1.2.0"', lockfile)
         self.assertNotIn('name = "idna"\nversion = "0.5.0"', lockfile)
-        self.assertIn('name = "pyo3"\nversion = "0.29.2"', lockfile)
+        locked_pyo3 = [
+            package
+            for package in tomllib.loads(lockfile)["package"]
+            if package["name"].startswith("pyo3")
+        ]
+        self.assertEqual(len(locked_pyo3), 5)
+        pyo3_versions = {package["version"] for package in locked_pyo3}
+        self.assertEqual(len(pyo3_versions), 1)
+        locked_version = pyo3_versions.pop()
+        self.assertRegex(locked_version, r"^0\.29\.\d+$")
+        self.assertGreaterEqual(
+            int(locked_version.rsplit(".", 1)[1]),
+            int(pyo3_requirement.rsplit(".", 1)[1]),
+        )
         self.assertIn('name = "clap_lex"\nversion = "0.7.7"', criterion_lockfile)
         self.assertIn('name = "redb"\nversion = "2.4.0"', criterion_lockfile)
         self.assertIn(

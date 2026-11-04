@@ -10,11 +10,16 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Changed
 
-- Prepare the next coordinated alpha release on the 0.1.x line, following
-  0.1.1. The workspace, public dependencies, lockfiles, installation examples,
-  and release validation all target 0.1.3.
-- Retain the supported interfaces, signature schemes, format-v1 persistence,
-  CLI output revision 1, and platform coverage documented for 0.1.1.
+- Prepare the next sequential coordinated alpha release across Rust, Python,
+  and CLI, preserving the supported compatibility and platform contracts.
+
+## [0.1.2] - Unreleased
+
+### Changed
+
+- Prepare the next coordinated alpha release across Rust, Python, and CLI.
+- Update the maintained PyO3 patch release while preserving Rust 1.83 for the
+  Python extension, and accept synchronized compatible patch updates in CI.
 
 ## [0.1.1] - 2026-11-03
 
@@ -103,6 +108,7 @@ First public alpha of the Pari similarity and deduplication engine.
 This is an alpha release. Public 0.x compatibility is governed by `docs/compatibility.md`; interfaces marked experimental or internal may change before 1.0.
 
 [Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.1.3...HEAD
-[0.1.3]: https://github.com/dipeshbabu/pari/compare/v0.1.1...v0.1.3
+[0.1.3]: https://github.com/dipeshbabu/pari/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/dipeshbabu/pari/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/dipeshbabu/pari/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/dipeshbabu/pari/releases/tag/v0.1.0
