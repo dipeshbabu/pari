@@ -4,7 +4,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
 };
 
-use crc32fast::hash as crc32;
+use crc32fast::{hash as crc32, Hasher};
 
 use crate::{Algorithm, CodecId, FormatError, IndexMetadata, SectionKind, SignatureScheme};
 
@@ -20,6 +20,7 @@ const KNOWN_SECTION_FLAGS: u16 = SECTION_FLAG_REQUIRED;
 const MAX_SECTION_COUNT: usize = 1_024;
 const MAX_SECTION_BYTES: u64 = 256 * 1024 * 1024;
 const SUPPORTED_FEATURE_FLAGS: u64 = 0;
+const CHECKSUM_BUFFER_BYTES: usize = 64 * 1024;
 
 /// File I/O or structural errors produced by the lazy container reader.
 #[derive(Debug)]
@@ -129,10 +130,11 @@ pub struct FileLayout {
 }
 
 impl FileLayout {
-    /// Scan a seekable Pari container without reading section payloads.
+    /// Scan a seekable Pari container without materializing section payloads.
     ///
     /// Memory use is proportional to the number of understood sections rather
-    /// than the file size. Unknown optional sections are validated and skipped;
+    /// than the file size. Known payloads are read on demand. Unknown optional
+    /// payloads are streamed to verify their checksums before being skipped;
     /// unknown required sections are rejected.
     pub fn read_from<R: Read + Seek>(reader: &mut R) -> Result<Self, LayoutError> {
         let file_length = reader.seek(SeekFrom::End(0))?;
@@ -203,6 +205,8 @@ impl FileLayout {
                 });
             } else if required {
                 return Err(FormatError::UnknownRequiredSection { kind: kind_raw }.into());
+            } else {
+                verify_skipped_payload(reader, payload_length, checksum)?;
             }
             cursor = payload_end;
         }
@@ -325,6 +329,28 @@ fn read_exact_format<R: Read>(
         }
         Err(error) => Err(LayoutError::Io(error)),
     }
+}
+
+fn verify_skipped_payload(
+    reader: &mut impl Read,
+    mut remaining: u64,
+    expected: u32,
+) -> Result<(), LayoutError> {
+    let mut buffer = vec![0_u8; CHECKSUM_BUFFER_BYTES];
+    let buffer_length = u64::try_from(buffer.len()).map_err(|_| FormatError::LengthOverflow)?;
+    let mut hasher = Hasher::new();
+    while remaining > 0 {
+        let count = usize::try_from(remaining.min(buffer_length))
+            .map_err(|_| FormatError::LengthOverflow)?;
+        read_exact_format(reader, &mut buffer[..count], "section payload")?;
+        hasher.update(&buffer[..count]);
+        remaining -= u64::try_from(count).map_err(|_| FormatError::LengthOverflow)?;
+    }
+    let actual = hasher.finalize();
+    if actual != expected {
+        return Err(FormatError::SectionChecksumMismatch { expected, actual }.into());
+    }
+    Ok(())
 }
 
 fn decode_header(header: &[u8; HEADER_SIZE]) -> Result<(IndexMetadata, u32), FormatError> {
@@ -532,6 +558,22 @@ mod tests {
             Err(LayoutError::Format(FormatError::UnknownRequiredSection {
                 kind: 999
             }))
+        ));
+    }
+
+    #[test]
+    fn unknown_optional_payload_corruption_is_rejected() {
+        let mut bytes = GOLDEN_V1.to_vec();
+        bytes[HEADER_SIZE..HEADER_SIZE + 2].copy_from_slice(&999_u16.to_le_bytes());
+        bytes[HEADER_SIZE + 2..HEADER_SIZE + 4].copy_from_slice(&0_u16.to_le_bytes());
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        let mut cursor = Cursor::new(bytes);
+        assert!(matches!(
+            FileLayout::read_from(&mut cursor),
+            Err(LayoutError::Format(
+                FormatError::SectionChecksumMismatch { .. }
+            ))
         ));
     }
 

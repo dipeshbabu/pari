@@ -6,6 +6,17 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Fixed
+
+- Unknown optional index sections have their checksums verified before the lazy
+  reader skips them, preventing damaged extensions from passing `pari verify`.
+- `pari verify` rejects containers with missing, duplicate, or malformed required
+  index metadata even when their outer frames and checksums are valid.
+- `pari dedup` rejects output paths that alias the input file, preserving source
+  records for both pair and group output and both signature families.
+- Parquet column projection is applied once, so nested fields such as
+  `document.text` retain their nested row structure without a second-selection error.
+
 ## [0.1.1] - 2026-11-03
 
 Pari 0.1.1 alpha coordinates the Rust, Python, and CLI release. Supported
