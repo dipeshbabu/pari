@@ -959,7 +959,7 @@ fn search32(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
             )?;
             writeln!(writer)?;
         } else {
-            let id = query.id.as_deref().unwrap_or("-");
+            let id = query.id.as_deref().unwrap_or("-").escape_debug();
             writeln!(writer, "{query_index}\t{id}\t{}", join_u64(&candidates))?;
         }
         query_index += 1;
@@ -1025,7 +1025,7 @@ fn search64(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
             )?;
             writeln!(writer)?;
         } else {
-            let id = query.id.as_deref().unwrap_or("-");
+            let id = query.id.as_deref().unwrap_or("-").escape_debug();
             writeln!(writer, "{query_index}\t{id}\t{}", join_u64(&candidates))?;
         }
         query_index += 1;
