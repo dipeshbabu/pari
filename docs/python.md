@@ -275,8 +275,8 @@ with Index64.open("documents-64.pari") as index:
 `Index64` rejects `MinHash` values, `Index` rejects `MinHash64` values, and
 each index type rejects persisted files of the other width with
 `CompatibilityError`. No conversion, narrowing, or relabeling occurs. The
-optional Datasketch adapter and CLI affine64 ingestion remain separate future
-slices.
+optional Datasketch adapter supports full-width affine64 signatures, and the CLI
+supports affine64 ingestion through its explicit signature-family option.
 
 All persistent index operations that may perform Rust compute or filesystem work run outside the Python GIL. The Python binding keeps the Rust index behind a synchronized handle so scalar and batch calls share the same safety contract.
 
@@ -305,4 +305,4 @@ The type surface accepts `str` and `os.PathLike[str]` paths, `bytes | bytearray 
 
 ## Supported Python versions
 
-The 0.2 wheel line supports CPython 3.10 through 3.14 on Linux, macOS, and Windows. The native extension is built with `abi3-py310`, so one platform wheel can target the stable ABI rather than requiring a different extension ABI for every CPython minor release.
+Published wheels support CPython 3.10 through 3.14 on Linux, macOS, and Windows. The native extension is built with `abi3-py310`, so one platform wheel can target the stable ABI rather than requiring a different extension ABI for every CPython minor release.
