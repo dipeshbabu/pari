@@ -5,7 +5,7 @@ from importlib.resources import files
 
 import pari
 
-V02_PUBLIC_EXPORTS = {
+PUBLIC_EXPORTS = {
     "ClosedIndexError",
     "CompatibilityError",
     "ConfigurationError",
@@ -32,9 +32,9 @@ V02_PUBLIC_EXPORTS = {
 
 
 class PublicContractTests(unittest.TestCase):
-    def test_v02_top_level_exports_are_pinned(self) -> None:
-        self.assertEqual(set(pari.__all__), V02_PUBLIC_EXPORTS)
-        for name in V02_PUBLIC_EXPORTS:
+    def test_top_level_exports_are_pinned(self) -> None:
+        self.assertEqual(set(pari.__all__), PUBLIC_EXPORTS)
+        for name in PUBLIC_EXPORTS:
             self.assertTrue(hasattr(pari, name), name)
 
     def test_documented_exceptions_share_one_base_class(self) -> None:
