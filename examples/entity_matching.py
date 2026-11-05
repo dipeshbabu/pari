@@ -246,11 +246,9 @@ def metric(value: float | None, unit: str, direction: str) -> dict[str, Any]:
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    encoded = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    with path.open("x", encoding="utf-8", newline="\n") as output:
+        output.write(encoded)
 
 
 def true_pair_count(records: Sequence[RecordRef]) -> int:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import uuid
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -53,7 +54,7 @@ class StagedOutputs(AbstractContextManager["StagedOutputs"]):
                 raise RuntimeError(f"workflow did not create staged outputs: {missing}")
             for attribute, stage in self._staged.items():
                 final = self._original[attribute]
-                identity = self._identity(stage)
+                identity = self._identity(stage, require_regular=True)
                 os.link(stage, final, follow_symlinks=False)
                 published.append((final, identity))
             for stage in self._staged.values():
@@ -91,6 +92,8 @@ class StagedOutputs(AbstractContextManager["StagedOutputs"]):
             ) from original
 
     @staticmethod
-    def _identity(path: Path) -> tuple[int, int]:
+    def _identity(path: Path, *, require_regular: bool = False) -> tuple[int, int]:
         current = path.stat(follow_symlinks=False)
+        if require_regular and not stat.S_ISREG(current.st_mode):
+            raise RuntimeError("staged workload outputs must be regular files")
         return current.st_dev, current.st_ino

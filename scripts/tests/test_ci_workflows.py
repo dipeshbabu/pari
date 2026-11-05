@@ -11,6 +11,31 @@ CACHE_SHA = "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
 
 
 class CiWorkflowPolicyTests(unittest.TestCase):
+    def test_rust_publication_does_not_execute_package_builds_with_credentials(
+        self,
+    ) -> None:
+        workflow = self.workflow("release.yml")
+        publisher = workflow.split("\n  publish-crates:\n", 1)[1].split(
+            "\n  publish-pypi:\n", 1
+        )[0]
+        builder = workflow.split("\n  rust-packages:\n", 1)[1].split(
+            "\n  verify-crates-oidc:\n", 1
+        )[0]
+        self.assertIn("id-token: write", publisher)
+        self.assertIn("python scripts/publish_crates.py", publisher)
+        self.assertIn("name: release-candidate-bundle", publisher)
+        self.assertNotIn("cargo ", publisher)
+        self.assertNotIn("rust-toolchain", publisher)
+        self.assertNotIn("id-token: write", builder)
+        self.assertNotIn("environment: crates-io", builder)
+        packaging = builder.split("- name: Package and verify", 1)[1].split(
+            "\n      -", 1
+        )[0]
+        for name in ("pari-core", "pari-format", "pari-index", "pari-store"):
+            self.assertIn(f"-p {name}", packaging)
+        self.assertNotIn("--no-verify", packaging)
+        self.assertIn('"scripts/publish_crates.py"', workflow)
+
     def test_dependency_audit_includes_optional_features(self) -> None:
         policy = tomllib.loads((ROOT / "deny.toml").read_text(encoding="utf-8"))
         self.assertIs(policy["graph"]["all-features"], True)
