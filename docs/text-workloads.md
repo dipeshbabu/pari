@@ -2,7 +2,7 @@
 
 `examples/text_workload.py` is Pari's reference workflow for streaming document deduplication and train/evaluation contamination auditing. It keeps normalization and shingling outside the engine while using the same public Python APIs as applications.
 
-> **Availability:** this workflow is included in Pari 0.1.1 and newer source distributions. Install `pari-similarity==0.1.1` or the current checkout before running it.
+> **Availability:** this workflow is included in Pari 0.1.2 and newer source distributions. Install `pari-similarity==0.1.2` or the current checkout before running it.
 
 ## Input
 

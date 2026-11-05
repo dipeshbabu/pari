@@ -110,8 +110,8 @@ For v0.1.0, the crates.io publication job verifies the bootstrapped crates rathe
 
 ## Subsequent releases
 
-The current alpha release target is 0.1.1; the next preparation PR targets
-0.1.3. The workspace version, release tag, package versions, and installation
+The current alpha release target is 0.1.2; the next preparation PR targets
+0.1.3. Release versions advance one patch at a time on the 0.1.x line. The workspace version, release tag, package versions, and installation
 examples must agree before publication.
 
 For releases after 0.1.0:
@@ -125,14 +125,14 @@ For releases after 0.1.0:
 
 Before tagging, dispatch `release.yml` manually from the exact green `main` branch. The manual run performs the full artifact build and an authentication-only crates.io OIDC exchange in the `crates-io` environment; it does not publish. A missing or mismatched trusted-publisher configuration fails that job. PyPI configuration is verified by the successful prior OIDC deployment and must still name owner `dipeshbabu`, repository `pari`, workflow `release.yml`, and environment `pypi`.
 
-For 0.1.1, after the release-candidate PR and manual preflight are green:
+For 0.1.2, after the release-candidate PR and manual preflight are green:
 
 ```bash
 git checkout main
 git pull --ff-only
 git status --porcelain
-git tag -s v0.1.1 -m "Pari 0.1.1 alpha"
-git push origin v0.1.1
+git tag -s v0.1.2 -m "Pari 0.1.2 alpha"
+git push origin v0.1.2
 ```
 
 Confirm the tag points to the exact preflighted commit before pushing. The tag workflow must publish all four crates, the Python distribution, attest the assembled files, and create the prerelease. Do not create a GitHub Release separately or move the tag if publication fails.

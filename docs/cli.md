@@ -4,14 +4,14 @@ The `pari` binary is a thin operational layer over the same Rust APIs used by th
 
 ## Install a published binary
 
-Pari 0.1.1 CLI archives are published to the [GitHub Release](https://github.com/dipeshbabu/pari/releases/tag/v0.1.1) after the tagged workflow succeeds:
+Pari 0.1.2 CLI archives are published to the [GitHub Release](https://github.com/dipeshbabu/pari/releases/tag/v0.1.2) after the tagged workflow succeeds:
 
-- [Linux x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/pari-0.1.1-linux.tar.gz)
-- [Linux arm64](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/pari-0.1.1-linux-arm64.tar.gz)
-- [macOS arm64](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/pari-0.1.1-macos.tar.gz)
-- [Windows x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/pari-0.1.1-windows.zip)
+- [Linux x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.1.2/pari-0.1.2-linux.tar.gz)
+- [Linux arm64](https://github.com/dipeshbabu/pari/releases/download/v0.1.2/pari-0.1.2-linux-arm64.tar.gz)
+- [macOS arm64](https://github.com/dipeshbabu/pari/releases/download/v0.1.2/pari-0.1.2-macos.tar.gz)
+- [Windows x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.1.2/pari-0.1.2-windows.zip)
 
-Each archive contains `LICENSE`, `NOTICE`, `README.md`, and the `pari` executable (`pari.exe` on Windows). Verify the archive against the release's [`SHA256SUMS`](https://github.com/dipeshbabu/pari/releases/download/v0.1.1/SHA256SUMS), extract it, and move the executable to a directory on `PATH` if desired.
+Each archive contains `LICENSE`, `NOTICE`, `README.md`, and the `pari` executable (`pari.exe` on Windows). Verify the archive against the release's [`SHA256SUMS`](https://github.com/dipeshbabu/pari/releases/download/v0.1.2/SHA256SUMS), extract it, and move the executable to a directory on `PATH` if desired.
 
 ## Build from source for contributors
 
