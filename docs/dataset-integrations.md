@@ -55,6 +55,10 @@ The adapter's `batch_size` controls source conversion. `DedupeIndex.batch_size` 
 
 Parquet paths use [`ParquetFile.iter_batches`](https://arrow.apache.org/docs/python/generated/pyarrow.parquet.ParquetFile.html#pyarrow.parquet.ParquetFile.iter_batches), which caps records per yielded batch. Arrow buffers remain columnar until one bounded record batch crosses the Python boundary through `to_pylist()`. At that point values and row dictionaries are Python copies.
 
+For Parquet paths, `columns` also accepts nested field paths such as
+`"document.text"`. Projection is applied by the Parquet reader, and the yielded
+row keeps Arrow's nested dictionary structure.
+
 ```python
 from pari.integrations import iter_pyarrow_rows
 

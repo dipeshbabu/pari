@@ -8,7 +8,10 @@ use std::{
 };
 
 use pari_core::{MinHash32, MinHash64, AFFINE32_SCHEME, AFFINE64_SCHEME};
-use pari_format::{FileLayout, SignatureScheme};
+use pari_format::{
+    encode_bucket_segment, Algorithm, CodecId, FileLayout, IndexFile, IndexMetadata, Section,
+    SectionKind, SignatureScheme,
+};
 
 fn pari() -> Command {
     Command::new(env!("CARGO_BIN_EXE_pari"))
@@ -76,6 +79,161 @@ fn signature64(values: &[&str], num_perm: usize, seed: u64) -> Vec<u64> {
         sketch.update(value.as_bytes());
     }
     sketch.signature().to_vec()
+}
+
+#[test]
+fn dedup_rejects_output_aliases_without_destroying_input() {
+    let original = b"{\"key\":1,\"values\":[\"same\"]}\n{\"key\":2,\"values\":[\"same\"]}\n";
+    for scheme in [AFFINE32_SCHEME, AFFINE64_SCHEME] {
+        for emit in ["pairs", "groups"] {
+            for hard_link in [false, true] {
+                let input = temp_path("dedup-alias-input", "jsonl");
+                fs::write(&input, original).expect("source records");
+                let output = if hard_link {
+                    let alias = temp_path("dedup-alias-output", "jsonl");
+                    fs::hard_link(&input, &alias).expect("input alias");
+                    alias
+                } else {
+                    input.clone()
+                };
+                let result = pari()
+                    .args([
+                        "dedup",
+                        "--input",
+                        input.to_str().expect("input path"),
+                        "--output",
+                        output.to_str().expect("output path"),
+                        "--emit",
+                        emit,
+                        "--signature-scheme",
+                        scheme,
+                    ])
+                    .output()
+                    .expect("dedup command");
+                assert_eq!(result.status.code(), Some(2));
+                assert!(String::from_utf8_lossy(&result.stderr).contains("input and output"));
+                assert_eq!(fs::read(&input).expect("preserved input"), original);
+                assert_eq!(fs::read(&output).expect("preserved alias"), original);
+                if hard_link {
+                    fs::remove_file(output).expect("cleanup alias");
+                }
+                fs::remove_file(input).expect("cleanup input");
+            }
+        }
+    }
+}
+
+#[test]
+fn verify_rejects_valid_frames_with_invalid_index_structure() {
+    for scheme in [
+        SignatureScheme::PariAffine32V1,
+        SignatureScheme::PariAffine64V1,
+    ] {
+        let metadata = IndexMetadata::new(
+            Algorithm::MinHashLsh,
+            scheme,
+            CodecId::U64,
+            32,
+            7,
+            0.8,
+            8,
+            4,
+            0,
+        )
+        .expect("valid metadata");
+        let count_section = |kind, count: u64| {
+            Section::new(kind, true, count.to_le_bytes().to_vec()).expect("section")
+        };
+        let invalid_sections = [
+            Vec::new(),
+            vec![count_section(SectionKind::Keys, 0)],
+            vec![
+                count_section(SectionKind::Keys, 1),
+                count_section(SectionKind::BandHashes, 0),
+            ],
+            vec![
+                count_section(SectionKind::Keys, 0),
+                count_section(SectionKind::BandHashes, 0),
+                count_section(SectionKind::Keys, 0),
+            ],
+        ];
+        for sections in invalid_sections {
+            let path = temp_path("invalid-index-structure", "pari");
+            let bytes = IndexFile::new(metadata.clone(), sections)
+                .expect("valid container framing")
+                .encode()
+                .expect("valid frame checksums");
+            fs::write(&path, &bytes).expect("malformed snapshot");
+            let output = pari()
+                .args(["verify", "--index", path.to_str().expect("path"), "--json"])
+                .output()
+                .expect("verify snapshot");
+            assert_eq!(output.status.code(), Some(2));
+            assert!(output.stdout.is_empty());
+            assert_eq!(fs::read(&path).expect("unmodified snapshot"), bytes);
+            fs::remove_file(path).expect("cleanup");
+        }
+    }
+}
+
+#[test]
+fn verify_checks_unknown_optional_sections_without_breaking_forward_compatibility() {
+    for scheme in [
+        SignatureScheme::PariAffine32V1,
+        SignatureScheme::PariAffine64V1,
+    ] {
+        let path = temp_path("optional-checksum", "pari");
+        let metadata = IndexMetadata::new(
+            Algorithm::MinHashLsh,
+            scheme,
+            CodecId::U64,
+            32,
+            7,
+            0.8,
+            8,
+            4,
+            0,
+        )
+        .expect("valid metadata");
+        let sections = vec![
+            Section::new(SectionKind::Keys, true, 0_u64.to_le_bytes().to_vec()).expect("keys"),
+            Section::new(SectionKind::BandHashes, true, 0_u64.to_le_bytes().to_vec())
+                .expect("hashes"),
+            Section::new(SectionKind::Tombstones, false, vec![42; 70_000])
+                .expect("future optional section"),
+            Section::new(
+                SectionKind::Buckets,
+                true,
+                encode_bucket_segment(&[]).expect("empty buckets"),
+            )
+            .expect("buckets"),
+        ];
+        let mut bytes = IndexFile::new(metadata, sections)
+            .expect("container")
+            .encode()
+            .expect("encode container");
+        let layout = FileLayout::read_from(&mut std::io::Cursor::new(&bytes))
+            .expect("known optional layout");
+        let extension = layout.section(SectionKind::Tombstones).expect("extension");
+        let offset = usize::try_from(extension.payload_offset()).expect("small offset");
+        bytes[offset - 16..offset - 14].copy_from_slice(&999_u16.to_le_bytes());
+        fs::write(&path, &bytes).expect("valid future snapshot");
+        let output = pari()
+            .args(["verify", "--index", path.to_str().expect("path"), "--json"])
+            .output()
+            .expect("verify future snapshot");
+        assert_success(&output);
+
+        bytes[offset] ^= 1;
+        fs::write(&path, bytes).expect("corrupt optional payload");
+        let output = pari()
+            .args(["verify", "--index", path.to_str().expect("path"), "--json"])
+            .output()
+            .expect("verify corrupt snapshot");
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
+        fs::remove_file(path).expect("cleanup");
+    }
 }
 
 #[test]

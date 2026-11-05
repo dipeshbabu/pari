@@ -54,9 +54,11 @@ def iter_pyarrow_rows(
         batches = parquet.ParquetFile(source).iter_batches(
             batch_size=batch_size, columns=selected
         )
+        selected = None
     elif isinstance(source, pa.Table):
         table = source.select(selected) if selected is not None else source
         batches = table.to_batches(max_chunksize=batch_size)
+        selected = None
     elif isinstance(source, pa.RecordBatch):
         batches = (source,)
     elif isinstance(source, pa.RecordBatchReader):
