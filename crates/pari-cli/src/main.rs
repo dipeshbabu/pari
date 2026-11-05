@@ -23,7 +23,7 @@ use pari_index::{
     QueryMetrics, StorageMode,
 };
 use pari_store::{PersistentIndex32, PersistentIndex64, StoreStats};
-use same_file::Handle;
+use same_file::{is_same_file, Handle};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Parser)]
@@ -1066,6 +1066,7 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     if args.batch_size == 0 {
         return Err("--batch-size must be positive".into());
     }
+    ensure_distinct_input_output(&args.input, &args.output)?;
     match args.signature_scheme {
         CliSignatureScheme::PariAffine32V1 => dedup32(args),
         CliSignatureScheme::PariAffine64V1 => dedup64(args),
@@ -1172,7 +1173,7 @@ fn write_pairs(
     args: &DedupArgs,
     pairs: impl IntoIterator<Item = (u64, u64)>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut writer = open_writer(&args.output)?;
+    let mut writer = open_writer(&args.output, &args.input)?;
     for (left, right) in pairs {
         if args.json {
             serde_json::to_writer(&mut writer, &PairResult { left, right })?;
@@ -1186,7 +1187,7 @@ fn write_pairs(
 }
 
 fn write_groups(args: &DedupArgs, groups: &[DuplicateGroup]) -> Result<(), Box<dyn Error>> {
-    let mut writer = open_writer(&args.output)?;
+    let mut writer = open_writer(&args.output, &args.input)?;
     for group in groups {
         if args.json {
             serde_json::to_writer(
@@ -1296,6 +1297,14 @@ fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
     let reporter = ProgressReporter::new(&args.progress)?;
     let mut file = File::open(&args.index)?;
     let layout = FileLayout::read_from(&mut file)?;
+    match layout.metadata().signature_scheme() {
+        SignatureScheme::PariAffine32V1 => {
+            PersistentIndex32::open(&args.index)?;
+        }
+        SignatureScheme::PariAffine64V1 => {
+            PersistentIndex64::open(&args.index)?;
+        }
+    }
     let bands = usize::try_from(layout.metadata().bands())?;
     let mut locations = Vec::new();
     let mut bucket_sections = 0_usize;
@@ -1518,7 +1527,20 @@ fn open_reader(path: &str) -> Result<Box<dyn BufRead>, Box<dyn Error>> {
     }
 }
 
-fn open_writer(path: &str) -> Result<Box<dyn Write>, Box<dyn Error>> {
+fn ensure_distinct_input_output(input: &str, output: &str) -> Result<(), Box<dyn Error>> {
+    if input == "-" || output == "-" {
+        return Ok(());
+    }
+    match is_same_file(input, output) {
+        Ok(true) => Err("dedup input and output must refer to different files".into()),
+        Ok(false) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn open_writer(path: &str, input: &str) -> Result<Box<dyn Write>, Box<dyn Error>> {
+    ensure_distinct_input_output(input, path)?;
     if path == "-" {
         Ok(Box::new(BufWriter::new(io::stdout())))
     } else {

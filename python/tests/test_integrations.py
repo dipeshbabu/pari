@@ -38,6 +38,39 @@ class OptionalDependencyTests(unittest.TestCase):
 
 @unittest.skipUnless(HAS_PYARROW, "PyArrow is not installed")
 class PyArrowIntegrationTests(unittest.TestCase):
+    def test_parquet_nested_projection_is_applied_once(self) -> None:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        table = pa.table(
+            {
+                "id": [1, 2, 3],
+                "document": [
+                    {"text": "same", "language": "en"},
+                    None,
+                    {"text": "same", "language": "fr"},
+                ],
+            }
+        )
+        expected = [
+            {"id": 1, "document": {"text": "same"}},
+            {"id": 2, "document": None},
+            {"id": 3, "document": {"text": "same"}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nested.parquet"
+            pq.write_table(table, path, row_group_size=2)
+            for batch_size in (1, 2):
+                with self.subTest(batch_size=batch_size):
+                    actual = list(
+                        integrations.iter_pyarrow_rows(
+                            path,
+                            columns=["id", "document.text"],
+                            batch_size=batch_size,
+                        )
+                    )
+                    self.assertEqual(actual, expected)
+
     def test_table_parquet_projection_nulls_and_direct_ingestion(self) -> None:
         import pyarrow as pa
         import pyarrow.dataset as ds

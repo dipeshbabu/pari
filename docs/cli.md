@@ -146,6 +146,10 @@ Search progress is emitted every 1,000 queries by default. Use `--progress-every
 
 ## Deduplicate
 
+When writing to a file, `--output` must refer to a different file from `--input`.
+Pari rejects the same path and aliases such as hard links or symlinks so the
+source records are preserved.
+
 Emit unique LSH candidate pairs:
 
 ```bash
