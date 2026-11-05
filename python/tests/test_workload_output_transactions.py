@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -30,6 +31,45 @@ text = load("pari_text_transaction_test", "examples/text_workload.py")
 
 
 class WorkloadOutputTransactionTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "symlink creation requires Windows privileges")
+    def test_staged_symlinks_are_not_published(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original"
+            original.write_bytes(b"preserve original data")
+            namespace = SimpleNamespace(output=root / "result")
+            with (
+                self.assertRaisesRegex(RuntimeError, "regular files"),
+                StagedOutputs(namespace, ("output",)),
+            ):
+                namespace.output.symlink_to(original)
+            self.assertEqual(original.read_bytes(), b"preserve original data")
+            self.assertFalse(namespace.output.exists())
+            self.assertFalse(namespace.output.is_symlink())
+            self.assertEqual(list(root.glob(".*.pari-workload-*.tmp*")), [])
+
+    def test_metrics_writers_preserve_existing_files_and_hard_link_targets(
+        self,
+    ) -> None:
+        for module in (code, entity, text):
+            with (
+                self.subTest(workload=module.__name__),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                original = root / "original.json"
+                alias = root / "metrics.json"
+                original.write_bytes(b"preserve original data")
+                alias.hardlink_to(original)
+                with self.assertRaises(FileExistsError):
+                    module.write_json(alias, {"metric": "value"})
+                self.assertEqual(original.read_bytes(), b"preserve original data")
+                self.assertEqual(alias.read_bytes(), b"preserve original data")
+                invalid = root / "invalid.json"
+                with self.assertRaises(TypeError):
+                    module.write_json(invalid, object())
+                self.assertFalse(invalid.exists())
+
     def test_concurrent_destination_is_not_replaced_or_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

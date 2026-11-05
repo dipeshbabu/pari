@@ -8,6 +8,14 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Human-readable search output escapes control characters in query IDs while
+  preserving their original values in JSON output.
+- Reference workload metrics use exclusive file creation to preserve existing
+  files and linked targets, and staged outputs must be regular files.
+- Redis CI and benchmark services use the reviewed, digest-pinned security patch.
+- Rust publication uploads fully verified prebuilt crate archives without running
+  Cargo or package build scripts in the credentialed job.
+
 - Unknown optional index sections have their checksums verified before the lazy
   reader skips them, preventing damaged extensions from passing `pari verify`.
 - `pari verify` rejects containers with missing, duplicate, or malformed required
