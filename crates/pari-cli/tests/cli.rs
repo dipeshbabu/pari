@@ -82,6 +82,67 @@ fn signature64(values: &[&str], num_perm: usize, seed: u64) -> Vec<u64> {
 }
 
 #[test]
+fn search_text_output_escapes_control_characters_and_json_preserves_ids() {
+    let hostile_id = "query\u{1b}[31m\n\r\tend";
+    for scheme in [AFFINE32_SCHEME, AFFINE64_SCHEME] {
+        let index = temp_path("escaped-query-id", "pari");
+        let queries = temp_path("escaped-query-id", "jsonl");
+        if scheme == AFFINE32_SCHEME {
+            pari_store::PersistentIndex32::create(&index, 0.8, 32, 7)
+                .expect("create affine32 index")
+                .close()
+                .expect("close index");
+        } else {
+            pari_store::PersistentIndex64::create(&index, 0.8, 32, 7)
+                .expect("create affine64 index")
+                .close()
+                .expect("close index");
+        }
+        let records = [
+            serde_json::json!({"id": hostile_id, "values": ["query"]}).to_string(),
+            serde_json::json!({"id": "caf\u{e9}", "values": ["query"]}).to_string(),
+        ];
+        fs::write(&queries, records.join("\n") + "\n").expect("query records");
+        let output = pari()
+            .args([
+                "search",
+                "--index",
+                index.to_str().expect("index path"),
+                "--input",
+                queries.to_str().expect("query path"),
+            ])
+            .output()
+            .expect("search text");
+        assert_success(&output);
+        let text = String::from_utf8(output.stdout).expect("UTF-8 output");
+        assert!(!text.contains(['\u{1b}', '\r']));
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "0\tquery\\u{1b}[31m\\n\\r\\tend\t");
+        assert_eq!(lines[1], "1\tcaf\u{e9}\t");
+
+        let output = pari()
+            .args([
+                "search",
+                "--index",
+                index.to_str().expect("index path"),
+                "--input",
+                queries.to_str().expect("query path"),
+                "--json",
+            ])
+            .output()
+            .expect("search JSON");
+        assert_success(&output);
+        let text = String::from_utf8(output.stdout).expect("JSON output");
+        let first: serde_json::Value =
+            serde_json::from_str(text.lines().next().expect("first result")).expect("result JSON");
+        assert_eq!(first["id"], hostile_id);
+        fs::remove_file(index).expect("cleanup index");
+        fs::remove_file(queries).expect("cleanup queries");
+    }
+}
+
+#[test]
 fn dedup_rejects_output_aliases_without_destroying_input() {
     let original = b"{\"key\":1,\"values\":[\"same\"]}\n{\"key\":2,\"values\":[\"same\"]}\n";
     for scheme in [AFFINE32_SCHEME, AFFINE64_SCHEME] {

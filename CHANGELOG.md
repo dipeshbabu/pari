@@ -6,9 +6,17 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
-## [0.1.2] - Unreleased
+## [0.1.2] - 2026-11-05
 
 ### Fixed
+
+- Human-readable search output escapes control characters in query IDs while
+  preserving their original values in JSON output.
+- Reference workload metrics use exclusive file creation to preserve existing
+  files and linked targets, and staged outputs must be regular files.
+- Redis CI and benchmark services use the reviewed, digest-pinned security patch.
+- Rust publication uploads fully verified prebuilt crate archives without running
+  Cargo or package build scripts in the credentialed job.
 
 - Unknown optional index sections have their checksums verified before the lazy
   reader skips them, preventing damaged extensions from passing `pari verify`.
@@ -21,7 +29,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Changed
 
-- Prepare the next coordinated alpha release across Rust, Python, and CLI.
+- Coordinate the alpha release across Rust, Python, and CLI.
 - Update the maintained PyO3 patch release while preserving Rust 1.83 for the
   Python extension, and accept synchronized compatible patch updates in CI.
 

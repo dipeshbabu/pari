@@ -50,11 +50,14 @@ accepted shortcut, and the protected checks cannot be bypassed by this option.
    ```bash
    cargo +1.81 check --locked \
      -p pari-core -p pari-format -p pari-index -p pari-store
-   cargo +1.81 package --locked -p pari-core
-   cargo +1.81 package --locked -p pari-format
-   cargo +1.81 package --locked -p pari-index
-   cargo +1.81 package --locked -p pari-store
+   cargo +1.97.1 package --locked \
+     -p pari-core -p pari-format -p pari-index -p pari-store
    ```
+
+   The MSRV check compiles the local graph. Coordinated archive verification uses
+   the pinned release toolchain's staging registry, including versions that are
+   not published yet. Publication uploads those verified bytes without rebuilding
+   in the credentialed job.
 
    Run the checks for every surface the change affects. For Python bindings, build and test the installed wheel rather than importing from the source tree:
 

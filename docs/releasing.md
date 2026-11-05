@@ -61,6 +61,11 @@ Create GitHub environments `pypi` and `crates-io` with required reviewers where 
 
 `main` is protected separately: changes require an up-to-date pull request, the configured cross-platform check matrix, resolved conversations, and linear history. Normal pull requests use Squash and merge only, and their branches are deleted after merge.
 
+Release-tag creation is restricted to the repository maintainer. Independent
+rules prevent updating or deleting existing release tags. The `crates-io` and
+`pypi` publication environments accept only `main` for preflight checks and
+`v*` tags for releases.
+
 ## Validate a release candidate
 
 From a clean checkout:
@@ -75,7 +80,16 @@ cargo +1.81 check --locked -p pari-core -p pari-format -p pari-index -p pari-sto
 
 Opening a PR that changes release-sensitive paths automatically runs the Release Validation workflow. It builds install-tested Python wheels, CLI archives, public root Rust packages, checks dependent public crate metadata, generates an SBOM, and assembles checksums without publish permissions.
 
-During a coordinated version transition, Cargo inspects the `pari-index` and `pari-store` package manifests and file lists with `--list --no-verify` because it cannot produce their tarballs until the exact-version registry dependencies exist. The workspace still compiles their local dependency graph on Rust 1.81. On the signed tag, the publication job waits for each dependency to reach the crates.io index, publishes the next crate, then packages and registry-verifies all four crates before the GitHub Release can be created.
+The pinned release toolchain packages all four public crates together. Cargo
+verifies the archives against its temporary staging registry, so coordinated
+dependency versions can be checked before they are published. The complete local
+graph is also checked independently on Rust 1.81.
+
+The credentialed publication job runs no Cargo commands or package build scripts.
+It validates the assembled checksum manifest and archive identities, uploads the
+prebuilt bytes in dependency order through the registry API, and verifies each
+published checksum and index entry before continuing. The same immutable bundle
+is then attested and attached to the GitHub Release.
 
 The source-distribution job derives its expected public assets from `tool.maturin.include`, adds release-critical root files and every `python/pari` module/stub, and validates the built tarball with `python scripts/release.py validate-sdist`. Duplicate members, unsafe paths, links, missing declarations, and secret/local-environment artifacts fail the job before installation. The sdist is then installed and imported from outside the checkout.
 

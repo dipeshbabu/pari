@@ -93,6 +93,10 @@ scheme and count. A supplied `seed` must match the opened index. `stats`,
 `explain`, and `verify` likewise validate and derive the family from the file,
 so an affine32 index is never opened as affine64 or vice versa.
 
+Human-readable search output escapes control characters in query IDs so each
+result stays on one line and IDs cannot introduce terminal control sequences.
+JSON output preserves the original ID value.
+
 Use `-` as the input or output path for stdin/stdout.
 
 ## Build a persistent index
