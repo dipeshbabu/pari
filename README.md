@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/pari-similarity/0.1.3/"><img alt="PyPI" src="https://img.shields.io/badge/PyPI-v0.1.3-3ECF8E?style=flat-square"></a>
-  <a href="https://pepy.tech/projects/pari-similarity"><img alt="PyPI downloads per month" src="https://static.pepy.tech/badge/pari-similarity/month"></a>
+  <a href="https://pepy.tech/projects/pari-similarity"><img alt="Total PyPI downloads" src="https://img.shields.io/badge/dynamic/xml?url=https%3A%2F%2Fstatic.pepy.tech%2Fpersonalized-badge%2Fpari-similarity%3Fperiod%3Dtotal%26units%3DINTERNATIONAL_SYSTEM%26left_color%3DBLACK%26right_color%3DGREEN%26left_text%3Ddownloads&query=string%28%28%2F%2F%2A%5Blocal-name%28%29%3D%27text%27%5D%29%5Blast%28%29%5D%29&label=downloads&style=flat-square&color=3ECF8E&labelColor=555"></a>
   <a href="https://crates.io/crates/pari-core/0.1.3"><img alt="crates.io" src="https://img.shields.io/badge/crates.io-v0.1.3-3ECF8E?style=flat-square"></a>
   <a href="https://github.com/dipeshbabu/pari/actions/workflows/ci.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/dipeshbabu/pari/ci.yml?branch=main&label=build&style=flat-square&color=3ECF8E"></a>
   <a href="https://github.com/dipeshbabu/pari/blob/v0.1.3/LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3ECF8E?style=flat-square"></a>
