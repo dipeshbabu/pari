@@ -6,6 +6,21 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Fixed
+
+- Dataset adapters reject non-integer and boolean batch sizes before importing
+  optional libraries or touching a source.
+- Explicit invalid backend values no longer silently select memory storage.
+- Code-corpus verification rechecks cached source snapshots and refuses to
+  publish outputs when a source changes during grouping.
+
+### Changed
+
+- Define patch/backport eligibility, protected maintenance branches, coordinated
+  validation, publication, and retirement without a standing support branch.
+- Add checksum-pinned public text, code, contamination, and labeled product
+  workloads with exact, Datasketch, and SciPy correctness baselines.
+
 ## [0.1.2] - 2026-11-05
 
 ### Fixed

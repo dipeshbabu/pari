@@ -269,6 +269,9 @@ class DedupeIndexTests(unittest.TestCase):
                 persisted.close()
 
     def test_configuration_and_closed_errors_are_stable(self) -> None:
+        for backend in ("", False, 0, []):
+            with self.subTest(backend=backend), self.assertRaises(ConfigurationError):
+                DedupeIndex(text_features, backend=backend)
         with self.assertRaises(ConfigurationError):
             DedupeIndex(text_features, batch_size=0)
         with self.assertRaises(ConfigurationError):

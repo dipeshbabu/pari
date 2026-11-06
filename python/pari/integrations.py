@@ -31,8 +31,12 @@ def _require(module: str, extra: str) -> Any:
 
 
 def _positive_batch_size(batch_size: int) -> int:
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be positive, got {batch_size}")
+    if (
+        isinstance(batch_size, bool)
+        or not isinstance(batch_size, int)
+        or batch_size <= 0
+    ):
+        raise ValueError(f"batch_size must be positive integer, got {batch_size}")
     return batch_size
 
 

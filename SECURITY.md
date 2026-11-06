@@ -4,6 +4,9 @@
 
 The latest published 0.x release receives security fixes. Older 0.x lines may be superseded rather than patched in place; release notes identify the supported replacement. `main` is development code, not a published support line.
 
+The [maintenance and backport policy](docs/maintenance.md) defines focused fixes,
+time-boxed exceptions for older lines, and the required protected release gates.
+
 ## Report privately
 
 Use GitHub's **Security → Report a vulnerability** form. Private vulnerability reporting is enabled. Include affected versions, impact, reproduction details, and suggested mitigation.

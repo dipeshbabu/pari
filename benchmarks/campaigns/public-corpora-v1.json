@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "campaign_id": "public-corpora-v1",
+  "sources": {
+    "sms": {
+      "url": "https://archive.ics.uci.edu/static/public/228/sms+spam+collection.zip",
+      "filename": "sms.zip",
+      "sha256": "1587ea43e58e82b14ff1f5425c88e17f8496bfcdb67a583dbff9eefaf9963ce3",
+      "maximum_bytes": 1048576,
+      "revision": "UCI dataset 228, 2011 collection; archive content pinned by SHA-256",
+      "source": "https://archive.ics.uci.edu/dataset/228/sms+spam+collection",
+      "license": "CC-BY-4.0",
+      "license_reference": "https://archive.ics.uci.edu/dataset/228/sms+spam+collection",
+      "attribution": "Tiago Almeida and Jose Maria Gomez Hidalgo, SMS Spam Collection (2011), UCI, DOI 10.24432/C5CC84"
+    },
+    "code": {
+      "url": "https://codeload.github.com/python/cpython/tar.gz/60403a5409ff2c3f3b07dd2ca91a7a3e096839c7",
+      "filename": "cpython.tar.gz",
+      "sha256": "37c8e18b35e659da6ff4db74caea50ed4170cf66c6d51f97d22e436e338d7b5b",
+      "maximum_bytes": 41943040,
+      "revision": "CPython v3.13.0, commit 60403a5409ff2c3f3b07dd2ca91a7a3e096839c7",
+      "source": "https://github.com/python/cpython/tree/60403a5409ff2c3f3b07dd2ca91a7a3e096839c7/Lib",
+      "license": "PSF-2.0 and per-file notices",
+      "license_reference": "https://github.com/python/cpython/blob/60403a5409ff2c3f3b07dd2ca91a7a3e096839c7/LICENSE",
+      "attribution": "Python Software Foundation and CPython contributors; only compact measurements and file identities are redistributed"
+    },
+    "entities": {
+      "url": "https://dbs.uni-leipzig.de/files/datasets/Abt-Buy.zip",
+      "filename": "abt-buy.zip",
+      "sha256": "b9ff2937d97371b7a00b0a97033213bfbdee24e8f1a0718a41ea8364472a8ff8",
+      "maximum_bytes": 1048576,
+      "revision": "Leipzig Abt-Buy, VLDB 2010 benchmark; archive content pinned by SHA-256",
+      "source": "https://dbs.uni-leipzig.de/research/projects/benchmark-datasets-for-entity-resolution",
+      "license": "CC-BY-4.0",
+      "license_reference": "https://dbs.uni-leipzig.de/research/projects/benchmark-datasets-for-entity-resolution",
+      "attribution": "Database Group of Prof. Erhard Rahm, University of Leipzig; Kopcke, Thor, Rahm, Evaluation of Entity Resolution Approaches on Real-World Match Problems, VLDB 2010"
+    }
+  },
+  "config": {
+    "num_perm": 64,
+    "seed": 7,
+    "threads": 2,
+    "batch_size": 256,
+    "text_threshold": 0.8,
+    "code_threshold": 0.8,
+    "entity_threshold": 0.4,
+    "entity_sensitivity_thresholds": [0.2, 0.1],
+    "text_shingle_size": 3,
+    "code_shingle_size": 5,
+    "code_maximum_file_bytes": 262144,
+    "audit_holdout_items": 256,
+    "audit_planted_items": 256,
+    "exact_baseline_sample_items": 128,
+    "worker_timeout_seconds": 1800
+  }
+}
