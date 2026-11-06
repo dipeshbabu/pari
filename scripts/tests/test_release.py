@@ -164,21 +164,26 @@ class ReadmeOnboardingTests(unittest.TestCase):
             f"pari-{version}-linux.tar.gz",
             f"pari-{version}-macos.tar.gz",
             f"pari-{version}-windows.zip",
+            f"https://img.shields.io/badge/PyPI-v{version}-",
+            f"https://img.shields.io/badge/crates.io-v{version}-",
             "The distribution name is `pari-similarity`; the import name is `pari`",
         ]
         for value in expected:
             self.assertIn(value, readme)
 
-    def test_relative_readme_links_exist(self) -> None:
+    def test_readme_links_are_portable_and_repository_links_match_release(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         links = re.findall(r"\]\(([^)]+)\)", readme)
-        relative_links = [
-            link.split("#", 1)[0]
-            for link in links
-            if "://" not in link and not link.startswith("#")
-        ]
-        for link in relative_links:
-            self.assertTrue((ROOT / link).exists(), link)
+        links.extend(re.findall(r'href="([^"]+)"', readme))
+        self.assertTrue(links)
+        repository = "https://github.com/dipeshbabu/pari/blob/"
+        prefix = repository + f"v{release.workspace_version()}/"
+        for link in links:
+            self.assertTrue("://" in link or link.startswith(("#", "mailto:")), link)
+            if link.startswith(repository):
+                self.assertTrue(link.startswith(prefix), link)
+                relative = link.removeprefix(prefix).split("#", 1)[0]
+                self.assertTrue((ROOT / relative).is_file(), link)
 
 
 if __name__ == "__main__":

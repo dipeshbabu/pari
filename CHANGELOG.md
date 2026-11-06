@@ -6,10 +6,16 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
-## [0.1.3] - Unreleased
+## [0.1.3] - 2026-11-06
 
 ### Fixed
 
+- Published README links target the matching tagged documentation, and release
+  version badges use immutable version-specific images.
+- Non-callable progress handlers are rejected before input inspection or batch
+  ingestion, preserving existing memory and persistent index contents.
+  The convenience helper also rejects non-callable feature/progress values
+  before creating a local index.
 - Dataset adapters reject non-integer and boolean batch sizes before importing
   optional libraries or touching a source.
 - Explicit invalid backend values no longer silently select memory storage.

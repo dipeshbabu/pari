@@ -57,6 +57,11 @@ class ProgressEvent:
 ProgressCallback = Callable[[ProgressEvent], bool | None]
 
 
+def _validate_progress(progress: ProgressCallback | None) -> None:
+    if progress is not None and not callable(progress):
+        raise ConfigurationError("progress must be callable or None")
+
+
 @dataclass(frozen=True, slots=True)
 class DuplicateGroup(Generic[T]):
     """One deterministic connected component of duplicate records."""
@@ -196,6 +201,7 @@ class DedupeIndex(Generic[T]):
         """Add records in bounded, atomic native batches and return the count."""
 
         self._ensure_open()
+        _validate_progress(progress)
         feature = self._require_feature()
         total = len(records) if isinstance(records, Sized) else None
         return self._add_many_features(
@@ -222,6 +228,7 @@ class DedupeIndex(Generic[T]):
         """Add precomputed feature rows without retaining source payloads."""
 
         self._ensure_open()
+        _validate_progress(progress)
         total = len(items) if isinstance(items, Sized) else None
         return self._add_many_features(items, progress=progress, total=total)
 
@@ -439,6 +446,9 @@ def deduplicate(
 ) -> DeduplicationResult[T]:
     """Deduplicate an iterable with a concise, typed batch-first API."""
 
+    _validate_progress(progress)
+    if not callable(feature):
+        raise ConfigurationError("feature must be callable")
     index = DedupeIndex(
         feature,
         threshold=threshold,

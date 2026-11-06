@@ -101,6 +101,80 @@ class DeduplicateFunctionTests(unittest.TestCase):
 
 
 class DedupeIndexTests(unittest.TestCase):
+    def test_invalid_convenience_callbacks_do_not_create_local_index(self) -> None:
+        for invalid in ({"feature": None}, {"progress": False}):
+            with (
+                self.subTest(invalid=invalid),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "records.pari"
+                options = {"feature": lambda value: [value.encode()], "progress": None}
+                options.update(invalid)
+                with self.assertRaises(ConfigurationError):
+                    deduplicate(
+                        ["record"], backend="local", path=path, num_perm=32, **options
+                    )
+                self.assertFalse(path.exists())
+
+    def test_invalid_progress_preserves_committed_batches(self) -> None:
+        for backend in ("memory", "local"):
+            for method in ("add_many", "add_many_features"):
+                for progress in (False, 0, "invalid"):
+                    with (
+                        self.subTest(backend=backend, method=method, progress=progress),
+                        tempfile.TemporaryDirectory() as directory,
+                    ):
+                        path = (
+                            Path(directory) / "records.pari"
+                            if backend == "local"
+                            else None
+                        )
+                        index = DedupeIndex(
+                            lambda value: [value.encode()],
+                            num_perm=32,
+                            backend=backend,
+                            path=path,
+                            batch_size=2,
+                        )
+                        try:
+                            index.add("existing")
+                            index.sync()
+                            before = path.read_bytes() if path is not None else None
+                            records = ["new-a", "new-b"]
+                            inputs = (
+                                records
+                                if method == "add_many"
+                                else [(row, [row.encode()]) for row in records]
+                            )
+                            with self.assertRaisesRegex(
+                                ConfigurationError, "progress must be callable"
+                            ):
+                                getattr(index, method)(inputs, progress=progress)
+                            self.assertEqual(len(index), 1)
+                            index.sync()
+                            if path is not None:
+                                self.assertEqual(path.read_bytes(), before)
+                        finally:
+                            index.close()
+
+    def test_invalid_progress_does_not_inspect_input(self) -> None:
+        class Unreadable:
+            def __len__(self):
+                raise AssertionError("input length inspected")
+
+            def __iter__(self):
+                raise AssertionError("input iterator inspected")
+
+        with DedupeIndex(lambda value: [value.encode()], num_perm=32) as index:
+            for method in ("add_many", "add_many_features"):
+                with (
+                    self.subTest(method=method),
+                    self.assertRaisesRegex(
+                        ConfigurationError, "progress must be callable"
+                    ),
+                ):
+                    getattr(index, method)(Unreadable(), progress=False)
+
     def test_closed_ingestion_does_not_run_callbacks_or_inspect_inputs(self) -> None:
         feature = Mock(side_effect=AssertionError("closed feature callback ran"))
         index = DedupeIndex(feature, num_perm=32)
