@@ -91,9 +91,22 @@ These are not compatibility surfaces.
 
 Pari follows semantic-versioning intent while it is pre-1.0.
 
-Every Rust workspace crate except `pari-py`, plus the separate Criterion harness, declares and continuously tests Rust 1.81 as its minimum supported Rust version. Dependency updates must pass the complete locked MSRV check with `pari-py` excluded; the CLI and Redis-enabled backend are also named explicitly so those historically drifting graphs remain visible. The Python binding separately declares and tests Rust 1.83 because PyO3 0.19 is the first release line that fixes RUSTSEC-2026-0176 and RUSTSEC-2026-0177, and it requires Rust 1.83. Pari does not suppress those memory-safety and thread-safety advisories to preserve a lower build-tool version for an internal extension crate.
+Every Rust workspace crate except `pari-py`, plus the separate Criterion harness,
+declares and continuously tests Rust 1.81 as its minimum supported Rust version.
+Dependency updates must pass the complete locked MSRV check with `pari-py`
+excluded; the CLI and Redis-enabled backend are also named explicitly so those
+historically drifting graphs remain visible. The Python binding separately
+declares and tests Rust 1.83 for its maintained PyO3 dependency line. Pari does not
+suppress applicable memory-safety or thread-safety advisories to preserve a lower
+build-tool version for an internal extension crate.
 
-Package verification runs for dependency roots and for dependent crates where the matching exact dependency versions exist on crates.io. During a coordinated pre-release version transition, dependent package manifests and file lists are inspected with `--list --no-verify` while source compilation uses workspace dependencies; full tarball and registry verification resumes after the dependency set is publishable in order. Raising the published crates' minimum requires an explicit minor-release compatibility decision rather than an incidental lockfile refresh.
+The pinned release toolchain packages and verifies all four public Rust crates
+together against Cargo's temporary staging registry before publication. The
+credentialed job uploads those prebuilt bytes and verifies registry checksums;
+it does not execute package builds. Raising the published crates' minimum
+requires an explicit minor-release compatibility decision rather than an
+incidental lockfile refresh. The [maintenance policy](maintenance.md) defines
+how fixes reach an older released line without including future feature work.
 
 Several exact constraints keep otherwise-compatible version requirements from selecting packages that Cargo 1.81 cannot parse or compile: Clap 4.5.57 for the CLI and Criterion graph, IDNA adapter 1.2.0 for Redis's ICU backend, and redb 2.4.0 for the storage-layout benchmark. URL requires at least 2.5.4 so its IDNA dependency includes the fix for RUSTSEC-2024-0421; the adapter constraint preserves Rust 1.81 without pinning vulnerable IDNA. The dependency audit includes all optional features. Clap Complete remains on its latest compatible 4.5 release. These constraints should be removed or advanced when the affected upstream line again supports Rust 1.81, or when Pari intentionally raises its MSRV in a minor release.
 

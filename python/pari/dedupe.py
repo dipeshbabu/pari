@@ -143,8 +143,8 @@ class DedupeIndex(Generic[T]):
         if representative is not None and not callable(representative):
             raise ConfigurationError("representative must be callable or None")
 
-        selected_backend: Backend = backend or (
-            "local" if path is not None else "memory"
+        selected_backend: Backend = (
+            ("local" if path is not None else "memory") if backend is None else backend
         )
         if selected_backend not in ("memory", "local"):
             raise ConfigurationError("backend must be 'memory' or 'local'")

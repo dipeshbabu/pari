@@ -1,5 +1,9 @@
 # Benchmark evidence
 
+Real text, code, contamination, and labeled product results are recorded in the
+[public-corpus evidence report](public-corpus-evidence.md). Their workloads and
+denominators differ from the synthetic campaign summarized below.
+
 This report is generated from validated, versioned benchmark bundles. Timings are evidence, not CI thresholds. Compare rows only when their workload configuration and environment are materially compatible.
 
 ## Run provenance

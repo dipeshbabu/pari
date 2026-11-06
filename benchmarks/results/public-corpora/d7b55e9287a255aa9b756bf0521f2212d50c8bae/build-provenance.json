@@ -1,0 +1,7 @@
+{
+  "build_command": "uv run --no-project --with maturin==1.14.1 rustup run 1.97.1 maturin build --release",
+  "clean": true,
+  "git_sha": "d7b55e9287a255aa9b756bf0521f2212d50c8bae",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "wheel_sha256": "b61942526c173a80dd1d90511ba9c0a95b665b60b6f3df4a228f041dc225d922"
+}

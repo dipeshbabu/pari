@@ -1,0 +1,220 @@
+{
+  "code": {
+    "cross_repository_groups": 0,
+    "groups": 36,
+    "largest_group_examples": [
+      {
+        "members": [
+          {
+            "key": 697,
+            "path": "Lib/test/test_asyncio/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1075,
+            "path": "Lib/test/test_importlib/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1078,
+            "path": "Lib/test/test_importlib/builtin/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1082,
+            "path": "Lib/test/test_importlib/extension/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1089,
+            "path": "Lib/test/test_importlib/frozen/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1093,
+            "path": "Lib/test/test_importlib/import_/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1139,
+            "path": "Lib/test/test_importlib/source/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1169,
+            "path": "Lib/test/test_interpreters/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1409,
+            "path": "Lib/test/test_tkinter/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1442,
+            "path": "Lib/test/test_ttk/__main__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1464,
+            "path": "Lib/test/test_unittest/__main__.py",
+            "repository": "python/cpython"
+          }
+        ],
+        "representative": {
+          "key": 697,
+          "path": "Lib/test/test_asyncio/__main__.py",
+          "repository": "python/cpython"
+        }
+      },
+      {
+        "members": [
+          {
+            "key": 923,
+            "path": "Lib/test/test_doctest/__init__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1074,
+            "path": "Lib/test/test_importlib/__init__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1077,
+            "path": "Lib/test/test_importlib/builtin/__init__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1081,
+            "path": "Lib/test/test_importlib/extension/__init__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1088,
+            "path": "Lib/test/test_importlib/frozen/__init__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1092,
+            "path": "Lib/test/test_importlib/import_/__init__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1138,
+            "path": "Lib/test/test_importlib/source/__init__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1265,
+            "path": "Lib/test/test_pathlib/__init__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1539,
+            "path": "Lib/test/test_zipfile/__init__.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1553,
+            "path": "Lib/test/test_zoneinfo/__init__.py",
+            "repository": "python/cpython"
+          }
+        ],
+        "representative": {
+          "key": 923,
+          "path": "Lib/test/test_doctest/__init__.py",
+          "repository": "python/cpython"
+        }
+      },
+      {
+        "members": [
+          {
+            "key": 1114,
+            "path": "Lib/test/test_importlib/namespace_pkgs/both_portions/foo/one.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1115,
+            "path": "Lib/test/test_importlib/namespace_pkgs/both_portions/foo/two.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1116,
+            "path": "Lib/test/test_importlib/namespace_pkgs/module_and_namespace_package/a_test.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1117,
+            "path": "Lib/test/test_importlib/namespace_pkgs/not_a_namespace_pkg/foo/one.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1118,
+            "path": "Lib/test/test_importlib/namespace_pkgs/portion1/foo/one.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1119,
+            "path": "Lib/test/test_importlib/namespace_pkgs/portion2/foo/two.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1120,
+            "path": "Lib/test/test_importlib/namespace_pkgs/project1/parent/child/one.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1121,
+            "path": "Lib/test/test_importlib/namespace_pkgs/project2/parent/child/two.py",
+            "repository": "python/cpython"
+          },
+          {
+            "key": 1122,
+            "path": "Lib/test/test_importlib/namespace_pkgs/project3/parent/child/three.py",
+            "repository": "python/cpython"
+          }
+        ],
+        "representative": {
+          "key": 1114,
+          "path": "Lib/test/test_importlib/namespace_pkgs/both_portions/foo/one.py",
+          "repository": "python/cpython"
+        }
+      }
+    ],
+    "maximum": 11,
+    "members": 138,
+    "p50": 3,
+    "p95": 10,
+    "source_groups_sha256": "d40a73f4cc0c2fa30d7008cf345ab108a0cfb6aca7fd22f0ea4590bd2ab8142d"
+  },
+  "entities": {
+    "groups": 239,
+    "maximum": 675,
+    "members": 1721,
+    "p50": 2,
+    "p95": 16,
+    "source_groups_sha256": "aa779a0b8de0c6951b2ca7dfe7ab925724b0a969cdabe841885bbd172a478b6a",
+    "threshold_sensitivity_plans": {
+      "0.1": {
+        "bands": 15,
+        "index_sha256": "e077539a89c3c8e6923a5e9ec78051c9b9c501732b559ae0fa5d9ee23cc0b336",
+        "rows": 1,
+        "scheme": "pari-affine32-v1"
+      },
+      "0.2": {
+        "bands": 28,
+        "index_sha256": "0c917d984a895020c940f6d288cf430cbc84c5c3417b7ce0da54f75b3e2b2b82",
+        "rows": 2,
+        "scheme": "pari-affine32-v1"
+      }
+    }
+  },
+  "text": {
+    "groups": 330,
+    "maximum": 30,
+    "members": 823,
+    "p50": 2,
+    "p95": 4,
+    "source_groups_sha256": "721511840bf6f199f0df28da51218155fd085389c04cf5ecaee8fd050ba4d02e"
+  }
+}

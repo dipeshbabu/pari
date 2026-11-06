@@ -35,6 +35,22 @@ class OptionalDependencyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "batch_size must be positive"):
             list(integrations.iter_pyarrow_rows(object(), batch_size=0))
 
+    def test_invalid_batch_sizes_fail_before_optional_imports(self) -> None:
+        adapters = (
+            integrations.iter_pyarrow_rows,
+            integrations.iter_polars_rows,
+            integrations.iter_huggingface_rows,
+        )
+        for adapter in adapters:
+            for value in (True, False, 1.5, float("nan"), "2", None, 0, -1):
+                with (
+                    self.subTest(adapter=adapter.__name__, batch_size=value),
+                    mock.patch.object(integrations, "_require") as dependency,
+                    self.assertRaisesRegex(ValueError, "positive integer"),
+                ):
+                    list(adapter(object(), batch_size=value))
+                dependency.assert_not_called()
+
 
 @unittest.skipUnless(HAS_PYARROW, "PyArrow is not installed")
 class PyArrowIntegrationTests(unittest.TestCase):
