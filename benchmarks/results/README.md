@@ -1,5 +1,16 @@
 # Versioned benchmark results
 
+Public-corpus evidence lives under `public-corpora/<source-sha>/` and is validated
+with `python benchmarks/public_corpora.py validate --directory <bundle-directory>`.
+Its compact bundle includes source/build provenance, report hashes, and an outer
+`SHA256SUMS` manifest. The [evidence report](../../docs/public-corpus-evidence.md)
+explains the completed four-track campaign and its limits. Raw corpora and full
+scratch outputs remain outside Git.
+
+Checksummed results are stored verbatim through `.gitattributes`. Automatic
+whitespace/EOL fixers exclude this directory; read-only syntax and secret checks
+still apply. Validate original bytes rather than reformatting archived evidence.
+
 Validated public bundles belong under:
 
 ```text
