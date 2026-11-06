@@ -13,7 +13,7 @@ body:
     attributes:
       label: Pari version or commit
       description: Give the package version, CLI version, or full Git commit SHA.
-      placeholder: pari-similarity 0.1.2
+      placeholder: pari-similarity 0.1.3
     validations:
       required: true
   - type: dropdown

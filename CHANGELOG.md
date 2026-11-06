@@ -6,8 +6,12 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-06
+
 ### Fixed
 
+- Published README links target the matching tagged documentation, and release
+  version badges use immutable version-specific images.
 - Non-callable progress handlers are rejected before input inspection or batch
   ingestion, preserving existing memory and persistent index contents.
   The convenience helper also rejects non-callable feature/progress values
@@ -22,6 +26,7 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Changed
 
+- Correct package-author and copyright credits to Dipesh Tharu Mahato.
 - Define patch/backport eligibility, protected maintenance branches, coordinated
   validation, publication, and retirement without a standing support branch.
 - Add checksum-pinned public text, code, contamination, and labeled product
@@ -142,7 +147,8 @@ First public alpha of the Pari similarity and deduplication engine.
 
 This is an alpha release. Public 0.x compatibility is governed by `docs/compatibility.md`; interfaces marked experimental or internal may change before 1.0.
 
-[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/dipeshbabu/pari/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/dipeshbabu/pari/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/dipeshbabu/pari/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/dipeshbabu/pari/releases/tag/v0.1.0
