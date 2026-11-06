@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "examples" / "code_workload.py"
@@ -23,6 +24,81 @@ def read_jsonl(path: Path) -> list[dict[str, object]]:
 
 
 class CodeWorkloadTests(unittest.TestCase):
+    def test_cached_code_features_reject_changed_sources(self) -> None:
+        for source_kind in ("file", "jsonl"):
+            with (
+                self.subTest(source_kind=source_kind),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "source"
+                original = "answer = 17\n"
+                if source_kind == "jsonl":
+                    path.write_text(
+                        json.dumps({"content": original}) + "\n", encoding="utf-8"
+                    )
+                else:
+                    path.write_text(original, encoding="utf-8")
+                before = path.stat()
+                reference = workload.CodeRef(
+                    0,
+                    "repo",
+                    "a.py",
+                    source_kind,
+                    str(path),
+                    0,
+                    before.st_size,
+                    before.st_mtime_ns,
+                )
+                with workload.FeatureLookup(1, 4) as lookup:
+                    self.assertTrue(lookup.features(reference))
+                    path.write_text("changed source contents\n", encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "source changed"):
+                        lookup.features(reference)
+
+    def test_source_change_after_grouping_rolls_back_all_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "records.jsonl"
+            source.write_text(
+                json.dumps({"repository": "repo", "path": "a.py", "content": "x=1"})
+                + "\n",
+                encoding="utf-8",
+            )
+            paths = [
+                root / name for name in ("groups", "decisions", "metrics", "index")
+            ]
+            original_result = workload.DedupeIndex.result
+
+            def change_source(index):
+                result = original_result(index)
+                with source.open("ab") as output:
+                    output.write(b"\n")
+                return result
+
+            with (
+                mock.patch.object(workload.DedupeIndex, "result", new=change_source),
+                self.assertRaisesRegex(ValueError, "source changed"),
+            ):
+                workload.main(
+                    [
+                        "--input-jsonl",
+                        str(source),
+                        "--groups-output",
+                        str(paths[0]),
+                        "--decisions-output",
+                        str(paths[1]),
+                        "--metrics-output",
+                        str(paths[2]),
+                        "--index",
+                        str(paths[3]),
+                        "--num-perm",
+                        "32",
+                    ]
+                )
+            self.assertTrue(source.exists())
+            self.assertTrue(all(not path.exists() for path in paths))
+            self.assertEqual(list(root.glob(".*.pari-workload-*")), [])
+
     def test_language_neutral_lexer_normalizes_literals_deterministically(self) -> None:
         first = workload.code_tokens("value = 17; name = 'alpha'")
         second = workload.code_tokens('value = 99; name = "beta"')

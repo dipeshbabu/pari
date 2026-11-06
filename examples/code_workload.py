@@ -14,6 +14,7 @@ import unicodedata
 from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Any, Literal
 
@@ -105,6 +106,7 @@ class FeatureLookup:
     def features(self, reference: CodeRef) -> frozenset[bytes]:
         cached = self._cache.get(reference.key)
         if cached is not None:
+            self.verify_source(reference)
             self._cache.move_to_end(reference.key)
             return cached
 
@@ -115,7 +117,8 @@ class FeatureLookup:
             self._cache.popitem(last=False)
         return features
 
-    def _load_text(self, reference: CodeRef) -> str:
+    @staticmethod
+    def verify_source(reference: CodeRef) -> Path:
         path = Path(reference.source_path)
         current = path.stat()
         if (
@@ -123,6 +126,10 @@ class FeatureLookup:
             or current.st_mtime_ns != reference.source_mtime_ns
         ):
             raise ValueError(f"source changed during workload: {path}")
+        return path
+
+    def _load_text(self, reference: CodeRef) -> str:
+        path = self.verify_source(reference)
 
         if reference.source_kind == "file":
             raw = path.read_bytes()
@@ -527,6 +534,12 @@ def _dedupe_command(args: argparse.Namespace) -> None:
         if lookup is not None:
             lookup.close()
     elapsed = time.perf_counter() - started
+
+    checked_sources: set[str] = set()
+    for reference in chain(result.kept, result.dropped):
+        if reference.source_path not in checked_sources:
+            FeatureLookup.verify_source(reference)
+            checked_sources.add(reference.source_path)
 
     representative_for: dict[int, CodeRef] = {}
     for group in result.groups:

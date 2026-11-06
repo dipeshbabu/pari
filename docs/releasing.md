@@ -15,6 +15,10 @@ A version tag `vX.Y.Z` builds and validates:
 
 The release workflow never builds in a job that has publication credentials. Build jobs have read-only repository access. OIDC permissions exist only in publication/attestation jobs.
 
+For fixes to a released minor line after `main` has moved on, follow the
+[maintenance and backport policy](maintenance.md). It defines release bases,
+eligible fixes, branch protection, validation, and retirement.
+
 ## Before the first 0.1.0 release
 
 ### 1. Merge the release automation
