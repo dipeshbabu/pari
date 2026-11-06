@@ -13,6 +13,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Explicit invalid backend values no longer silently select memory storage.
 - Code-corpus verification rechecks cached source snapshots and refuses to
   publish outputs when a source changes during grouping.
+- Checksummed benchmark evidence keeps its original bytes on Windows and Unix
+  checkouts instead of being rewritten by line-ending conversion or fixers.
 
 ### Changed
 
@@ -20,6 +22,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   validation, publication, and retirement without a standing support branch.
 - Add checksum-pinned public text, code, contamination, and labeled product
   workloads with exact, Datasketch, and SciPy correctness baselines.
+- Record a validated four-track public-corpus run, including labeled candidate
+  recall/reduction tradeoffs and explicit limits on performance conclusions.
 
 ## [0.1.2] - 2026-11-05
 

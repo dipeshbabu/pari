@@ -1,0 +1,141 @@
+{
+  "audit_seconds": 0.2989600999862887,
+  "build_seconds": 5.059614700003294,
+  "exact_hash_ground_truth_parity": true,
+  "exact_pairs": 517,
+  "exact_queries_matched": 284,
+  "output_artifacts": {
+    "matches.jsonl": {
+      "bytes": 73872,
+      "sha256": "9e37b036e6ca287b2e610206129a031130a3da046ff5bbaeafb96164fe3e0626"
+    },
+    "metrics.json": {
+      "bytes": 2378,
+      "sha256": "b25cb0b46d33d9ac12de2729f57e23de2c5e1a57ddfc30ac8a8fe2466f0a016b"
+    },
+    "reference-manifest.json": {
+      "bytes": 559,
+      "sha256": "88790276f8db1dbb4e1ab9469715ce725a6490ac9e9963e43b95d7eb136086fc"
+    },
+    "reference-manifest.metrics.json": {
+      "bytes": 1485,
+      "sha256": "db12f0a99b0a5b09010c5af0b33c955b5b5c8ca65f23cc3b6e21199617113476"
+    },
+    "reference-manifest.pari": {
+      "bytes": 1248704,
+      "sha256": "e497ea09331a14f55d2681896dd9e4ebfd3b90d7000d0248af0a803a81e99ec5"
+    },
+    "reference-manifest.records.sqlite3": {
+      "bytes": 126976,
+      "sha256": "dc6f5cf9239f17cae2b2c31553641fbf6d7f581b8f885a03bbbfc1c9fd8555eb"
+    }
+  },
+  "planted_queries": 256,
+  "process_peak_rss_bytes": 52641792,
+  "queries": 512,
+  "reference_items": 5318,
+  "source_identity_disjoint_holdout_queries": 256,
+  "status": "passed",
+  "track": "audit",
+  "workload_metrics": {
+    "config": {
+      "batch_size": 256,
+      "exact": true,
+      "exact_threshold": 1.0,
+      "id_field": "id",
+      "input": "D:\\pari\\dist\\pre013\\data-canonical\\queries.jsonl",
+      "limit": null,
+      "num_perm": 64,
+      "reference_items": 5318,
+      "reference_manifest": "D:\\pari\\dist\\pre013\\canonical-run\\audit\\reference-manifest.json",
+      "seed": 7,
+      "shingle_size": 3,
+      "text_field": "text",
+      "threads": 2,
+      "threshold": 0.8
+    },
+    "engine": "pari",
+    "environment": {
+      "architecture": "AMD64",
+      "git_sha": "d7b55e9287a255aa9b756bf0521f2212d50c8bae",
+      "operating_system": "Windows",
+      "pari_version": "0.1.2",
+      "python_version": "3.13.12"
+    },
+    "generated_unix_seconds": 1793997511,
+    "metrics": {
+      "candidate_count": {
+        "direction": "lower",
+        "unit": "pairs",
+        "value": 528
+      },
+      "candidate_rate": {
+        "direction": "lower",
+        "unit": "ratio",
+        "value": 0.00019391688604738624
+      },
+      "candidate_reduction": {
+        "direction": "higher",
+        "unit": "ratio",
+        "value": 0.9998060831139526
+      },
+      "elapsed_seconds": {
+        "direction": "lower",
+        "unit": "seconds",
+        "value": 0.09430590001284145
+      },
+      "exact_match_count": {
+        "direction": "neutral",
+        "unit": "pairs",
+        "value": 517
+      },
+      "matched_query_count": {
+        "direction": "neutral",
+        "unit": "queries",
+        "value": 284
+      },
+      "output_bytes": {
+        "direction": "lower",
+        "unit": "bytes",
+        "value": 73872
+      },
+      "overlap_rate": {
+        "direction": "neutral",
+        "unit": "ratio",
+        "value": 0.5546875
+      },
+      "process_peak_rss_bytes": {
+        "direction": "lower",
+        "unit": "bytes",
+        "value": null
+      },
+      "queries_per_second": {
+        "direction": "higher",
+        "unit": "queries/second",
+        "value": 5429.140699895574
+      },
+      "query_count": {
+        "direction": "neutral",
+        "unit": "queries",
+        "value": 512
+      },
+      "reference_index_bytes": {
+        "direction": "lower",
+        "unit": "bytes",
+        "value": 1248704
+      },
+      "reopen_seconds": {
+        "direction": "lower",
+        "unit": "seconds",
+        "value": 0.003638399997726083
+      },
+      "unmatched_query_count": {
+        "direction": "neutral",
+        "unit": "queries",
+        "value": 228
+      }
+    },
+    "schema_version": 1,
+    "workload": "text-cross-corpus-audit"
+  }
+}

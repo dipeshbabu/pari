@@ -1,0 +1,2 @@
+# Keep checksummed evidence byte-for-byte across Windows and Unix checkouts.
+benchmarks/results/** -text

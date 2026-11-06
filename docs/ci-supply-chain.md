@@ -36,3 +36,8 @@ changing a version; update all pins, SHA comments, policy tests, and
 documentation together, then run `pre-commit run --all-files` and the
 malformed-sample probe. Protected CI remains authoritative and does not trust a
 contributor's local hook result.
+
+Checksummed benchmark evidence is stored byte-for-byte through `.gitattributes`.
+Mutating whitespace, EOF, and merge-marker hooks exclude `benchmarks/results/`;
+read-only syntax and private-key checks remain enabled. A Git checkout regression
+and the committed evidence checksum test guard Windows/Unix portability.

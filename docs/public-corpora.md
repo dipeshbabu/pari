@@ -65,6 +65,8 @@ independent exhaustive feature-hash lookup.
 
 ## Baselines and correctness gates
 
+The first completed run is documented in the [public-corpus evidence report](public-corpus-evidence.md).
+
 For every text/code/entity corpus, compare explicit affine32 and affine64
 signatures, index construction/sync, querying, index size, bucket distribution,
 and exact verification. Report the two widths independently. Datasketch uses
@@ -72,6 +74,10 @@ the same features, seed, count, native permutation arrays, and bands/rows;
 signature bytes must match exactly. Its candidate sets are reported separately
 because implementations use different band-hashing code. Scalar/batch and
 reopened-index candidates must match Pari's original result.
+
+Datasketch's index is in memory; Pari's construction metric includes persistence
+and sync. Compare phases only with their stated guarantees. Whole-index timing
+does not isolate those different durability costs.
 
 A full-corpus Python feature-hash baseline counts exact feature equality.
 SciPy's exact binary Jaccard implementation is an additional correctness

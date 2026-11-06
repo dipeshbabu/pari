@@ -1,0 +1,206 @@
+{
+  "analysis": {
+    "affine32": {
+      "bands": 5,
+      "bucket_maximum": 30,
+      "bucket_p50": 1,
+      "bucket_p95": 2,
+      "bucket_p99": 3,
+      "build_and_sync_seconds": 0.19500459998380393,
+      "candidate_pairs": 1275,
+      "candidate_rate": 8.208885026742616e-05,
+      "datasketch_build_seconds": 0.12813019999885,
+      "datasketch_candidate_parity": true,
+      "datasketch_query_seconds": 0.0847561999980826,
+      "datasketch_signature_parity": true,
+      "datasketch_signature_seconds": 0.9314095000154339,
+      "exact_verified_pairs": 1249,
+      "index_bytes": 1307648,
+      "index_bytes_per_item": 234.59777538571942,
+      "items_per_second": 20183.563974866174,
+      "query_all_seconds": 0.22063060000073165,
+      "rows": 11,
+      "scalar_batch_and_reopen_parity": true,
+      "scheme": "pari-affine32-v1",
+      "signature_bytes_per_item": 256,
+      "signature_seconds": 0.08116070000687614,
+      "verification_seconds": 0.007820300001185387,
+      "verified_components": 330,
+      "verified_grouping_seconds": 0.0040868000069167465
+    },
+    "affine64": {
+      "bands": 5,
+      "bucket_maximum": 30,
+      "bucket_p50": 1,
+      "bucket_p95": 2,
+      "bucket_p99": 3,
+      "build_and_sync_seconds": 0.23031930002616718,
+      "candidate_pairs": 1253,
+      "candidate_rate": 8.067241520398822e-05,
+      "datasketch_build_seconds": 0.15723079998861067,
+      "datasketch_candidate_parity": true,
+      "datasketch_query_seconds": 0.11343800000031479,
+      "datasketch_signature_parity": true,
+      "datasketch_signature_seconds": 0.9574749000021257,
+      "exact_verified_pairs": 1232,
+      "index_bytes": 1308064,
+      "index_bytes_per_item": 234.6724076067456,
+      "items_per_second": 19705.464464541838,
+      "query_all_seconds": 0.20903979998547584,
+      "rows": 11,
+      "scalar_batch_and_reopen_parity": true,
+      "scheme": "pari-affine64-v1",
+      "signature_bytes_per_item": 512,
+      "signature_seconds": 0.0525463999947533,
+      "verification_seconds": 0.007782600005157292,
+      "verified_components": 325,
+      "verified_grouping_seconds": 0.0023560000117868185
+    },
+    "exact_feature_hash_baseline": {
+      "groups": 306,
+      "pairs": 1161,
+      "scope": "full corpus; already-prepared frozenset features; Python hash collisions use exact equality",
+      "seconds": 0.0033679000043775886
+    },
+    "scipy_exact_subset": {
+      "affine32_candidate_recall": 1.0,
+      "exact_pairs": 1,
+      "feature_columns": 1996,
+      "items": 128,
+      "python_exact_parity": true,
+      "scope": "bounded exact correctness baseline; exclude from full-corpus throughput comparisons",
+      "seconds": 0.14053460001014173,
+      "selection": "first input records in deterministic preparation order"
+    }
+  },
+  "empty_feature_rows": 0,
+  "items": 5574,
+  "output_artifacts": {
+    "analysis-32.pari": {
+      "bytes": 1307648,
+      "sha256": "b2b5a83ee5128758a56f46accc6ffa44293fbc86d0bc3f1272348687cf5087ef"
+    },
+    "analysis-64.pari": {
+      "bytes": 1308064,
+      "sha256": "436a03a818895fd6c776d6d3df607a022c9e8aa2fc73be2a8a17a1cc66031cf6"
+    },
+    "decisions.jsonl": {
+      "bytes": 480445,
+      "sha256": "ef58ad138b8dc5f5cb2bf191cb3284533e5ee7b8914d3f03fe31a52aaa308451"
+    },
+    "groups.jsonl": {
+      "bytes": 43013,
+      "sha256": "721511840bf6f199f0df28da51218155fd085389c04cf5ecaee8fd050ba4d02e"
+    },
+    "metrics.json": {
+      "bytes": 2096,
+      "sha256": "003f84b309fba42537409f382f69c22db95cbd5b4ec2fe6347ac488e7052d362"
+    },
+    "workload.pari": {
+      "bytes": 1307648,
+      "sha256": "b2b5a83ee5128758a56f46accc6ffa44293fbc86d0bc3f1272348687cf5087ef"
+    }
+  },
+  "process_peak_rss_bytes": 143257600,
+  "raw_text_exact_duplicate_pairs": 984,
+  "status": "passed",
+  "threshold": 0.8,
+  "track": "text",
+  "workload_group_parity": true,
+  "workload_metrics": {
+    "config": {
+      "batch_size": 256,
+      "exact": true,
+      "exact_threshold": 0.8,
+      "id_field": "id",
+      "input": "D:\\pari\\dist\\pre013\\data-canonical\\text.jsonl",
+      "limit": null,
+      "num_perm": 64,
+      "seed": 7,
+      "shingle_size": 3,
+      "text_field": "text",
+      "threads": 2,
+      "threshold": 0.8
+    },
+    "engine": "pari",
+    "environment": {
+      "architecture": "AMD64",
+      "git_sha": "d7b55e9287a255aa9b756bf0521f2212d50c8bae",
+      "operating_system": "Windows",
+      "pari_version": "0.1.2",
+      "python_version": "3.13.12"
+    },
+    "generated_unix_seconds": 1793997371,
+    "metrics": {
+      "candidate_group_count": {
+        "direction": "neutral",
+        "unit": "groups",
+        "value": 339
+      },
+      "candidate_rate": {
+        "direction": "neutral",
+        "unit": "ratio",
+        "value": 0.15213491209185503
+      },
+      "duplicate_count": {
+        "direction": "lower",
+        "unit": "items",
+        "value": 493
+      },
+      "duplicate_rate": {
+        "direction": "neutral",
+        "unit": "ratio",
+        "value": 0.08844635809113742
+      },
+      "elapsed_seconds": {
+        "direction": "lower",
+        "unit": "seconds",
+        "value": 0.953027400013525
+      },
+      "exact_pairs_accepted": {
+        "direction": "neutral",
+        "unit": "pairs",
+        "value": 493
+      },
+      "exact_pairs_checked": {
+        "direction": "neutral",
+        "unit": "pairs",
+        "value": 517
+      },
+      "group_count": {
+        "direction": "neutral",
+        "unit": "groups",
+        "value": 330
+      },
+      "index_bytes": {
+        "direction": "lower",
+        "unit": "bytes",
+        "value": 1307648
+      },
+      "input_items": {
+        "direction": "neutral",
+        "unit": "items",
+        "value": 5574
+      },
+      "items_per_second": {
+        "direction": "higher",
+        "unit": "items/second",
+        "value": 5848.730057415868
+      },
+      "output_bytes": {
+        "direction": "lower",
+        "unit": "bytes",
+        "value": 523458
+      },
+      "process_peak_rss_bytes": {
+        "direction": "lower",
+        "unit": "bytes",
+        "value": null
+      }
+    },
+    "schema_version": 1,
+    "workload": "text-deduplication"
+  },
+  "workload_process_peak_rss_bytes": 48156672,
+  "workload_seconds": 1.2942104999965522
+}
