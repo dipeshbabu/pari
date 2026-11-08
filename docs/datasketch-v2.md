@@ -1,5 +1,11 @@
 # Datasketch 2.x interoperability and migration
 
+Import metadata must follow the integer protocol: floats, numeric strings, and
+booleans are rejected instead of being truncated or relabeled. Signature and
+permutation storage must be one-dimensional and preserve the declared unsigned
+width. NumPy integer scalars and non-contiguous one-dimensional vectors are
+accepted when all other compatibility checks pass.
+
 Pari can exchange MinHash state with Datasketch 2.x only when the complete signature semantics match. An equal seed and permutation count are not enough: Datasketch and Pari deliberately use different seed-to-permutation generators.
 
 Install the optional dependency only when migrating:
@@ -8,7 +14,7 @@ Install the optional dependency only when migrating:
 python -m pip install ".[datasketch]"
 ```
 
-For a future published release containing this adapter, the equivalent command is `python -m pip install "pari-similarity[datasketch]"`.
+For published packages, use `python -m pip install "pari-similarity[datasketch]"`.
 
 `import pari` does not import or require Datasketch, NumPy, or SciPy. Adapter functions live in `pari.datasketch` and load the optional dependency on first use.
 

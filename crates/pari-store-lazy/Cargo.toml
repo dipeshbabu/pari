@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+crc32fast = "1.4"
 pari-core = { path = "../pari-core" }
 pari-format = { path = "../pari-format" }
 pari-index = { path = "../pari-index" }

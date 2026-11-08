@@ -13,13 +13,14 @@ use std::{
     ffi::OsString,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process,
     sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
+use crc32fast::Hasher;
 use pari_core::{MinHash32, MinHash64};
 use pari_format::{
     bucket_record_size, decode_bucket_segment, encode_bucket_segment, read_bucket_members,
@@ -29,12 +30,13 @@ use pari_format::{
     BUCKET_SEGMENT_TARGET_BYTES,
 };
 use pari_index::{
-    explain_lsh, explain_lsh64, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams,
-    LshPlan, LshPlanError, LshPlanOptions, QueryMetrics, StorageMode,
+    explain_lsh, explain_lsh64, BucketDistribution, LshError, LshParams, LshPlan, LshPlanError,
+    LshPlanOptions, QueryMetrics, StorageMode,
 };
 use same_file::Handle;
 
 const U64_BYTES: usize = 8;
+const CHECKSUM_BUFFER_BYTES: usize = 64 * 1024;
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 const TEMPORARY_CREATE_ATTEMPTS: usize = 128;
@@ -172,6 +174,7 @@ struct LazyIndexCore {
     layout: FileLayout,
     bucket_sections: Vec<SectionDescriptor>,
     directory: Vec<BucketLocation>,
+    keys: Vec<u64>,
     item_count: usize,
     num_perm: usize,
     seed: u64,
@@ -195,7 +198,8 @@ impl LazyIndexCore {
             });
         }
 
-        let item_count = read_source_count(&layout, &mut file, keys_section)?;
+        let keys = read_source_keys(&layout, &mut file, keys_section)?;
+        let item_count = keys.len();
         let num_perm = usize::try_from(layout.metadata().num_perm())
             .map_err(|_| LazyStoreError::LengthOverflow)?;
         let bands = usize::try_from(layout.metadata().bands())
@@ -223,6 +227,7 @@ impl LazyIndexCore {
             layout,
             bucket_sections,
             directory,
+            keys,
             item_count,
             num_perm,
             seed,
@@ -308,7 +313,7 @@ impl LazyIndexCore {
 
     fn verify(&mut self) -> Result<(), LazyStoreError> {
         for descriptor in &self.bucket_sections {
-            self.layout.read_section(&mut self.file, *descriptor)?;
+            verify_section_checksum(&mut self.file, *descriptor)?;
         }
         Ok(())
     }
@@ -330,7 +335,9 @@ impl LazyIndexCore {
                 for member in
                     read_bucket_members(&self.layout, &mut self.file, self.directory[index])?
                 {
-                    output.insert(member);
+                    if !output.contains(&member) && self.keys.binary_search(&member).is_ok() {
+                        output.insert(member);
+                    }
                 }
             }
         }
@@ -465,6 +472,7 @@ pub fn build_from_snapshot(
     let mut source_file = File::open(source)?;
     let source_layout = FileLayout::read_from(&mut source_file)?;
     validate_metadata(source_layout.metadata(), None)?;
+    reject_required_tombstones(&source_layout)?;
     let keys_descriptor = required_unique_section(&source_layout, SectionKind::Keys)?;
     let hashes_descriptor = required_unique_section(&source_layout, SectionKind::BandHashes)?;
     let keys_payload = source_layout.read_section(&mut source_file, keys_descriptor)?;
@@ -491,6 +499,10 @@ pub fn build_from_snapshot(
                 .or_default()
                 .push(key);
         }
+    }
+
+    for members in buckets.values_mut() {
+        members.sort_unstable();
     }
 
     let metadata = clone_metadata(source_layout.metadata())?;
@@ -588,20 +600,13 @@ fn validate_metadata(
 }
 
 fn validate_lsh_configuration(
-    scheme: SignatureScheme,
+    _scheme: SignatureScheme,
     threshold: f64,
     num_perm: usize,
-    seed: u64,
+    _seed: u64,
     params: LshParams,
 ) -> Result<(), LazyStoreError> {
-    match scheme {
-        SignatureScheme::PariAffine32V1 => {
-            LshIndex32::with_params(threshold, num_perm, seed, params)?;
-        }
-        SignatureScheme::PariAffine64V1 => {
-            LshIndex64::with_params(threshold, num_perm, seed, params)?;
-        }
-    }
+    params.validate(threshold, num_perm)?;
     Ok(())
 }
 
@@ -686,14 +691,93 @@ const fn duplicate_section_reason(kind: SectionKind) -> &'static str {
     }
 }
 
-fn read_source_count(
+fn read_source_keys(
     layout: &FileLayout,
     file: &mut File,
     descriptor: SectionDescriptor,
-) -> Result<usize, LazyStoreError> {
+) -> Result<Vec<u64>, LazyStoreError> {
     let bytes = layout.read_section_range(file, descriptor, 0, U64_BYTES)?;
     let count = read_u64_exact(&bytes)?;
-    usize::try_from(count).map_err(|_| LazyStoreError::LengthOverflow)
+    let expected = count
+        .checked_mul(8)
+        .and_then(|value| value.checked_add(8))
+        .ok_or(LazyStoreError::LengthOverflow)?;
+    if descriptor.payload_length() != expected {
+        return Err(LazyStoreError::InvalidSnapshot {
+            reason: "keys section length does not match its record count",
+        });
+    }
+    let count = usize::try_from(count).map_err(|_| LazyStoreError::LengthOverflow)?;
+    let mut keys = Vec::with_capacity(count);
+    let mut hasher = Hasher::new();
+    hasher.update(&bytes);
+    let mut buffer = vec![0_u8; CHECKSUM_BUFFER_BYTES];
+    let mut remaining = expected - 8;
+    let mut previous = None;
+    let mut unordered = false;
+    while remaining > 0 {
+        let length =
+            usize::try_from(remaining.min(65_536)).map_err(|_| LazyStoreError::LengthOverflow)?;
+        file.read_exact(&mut buffer[..length])?;
+        hasher.update(&buffer[..length]);
+        for raw in buffer[..length].chunks_exact(U64_BYTES) {
+            let key = read_u64_exact(raw)?;
+            if let Some(last) = previous {
+                unordered |= key < last;
+            }
+            previous = Some(key);
+            keys.push(key);
+        }
+        remaining -= u64::try_from(length).map_err(|_| LazyStoreError::LengthOverflow)?;
+    }
+    check_checksum(descriptor.checksum(), hasher.finalize())?;
+    if unordered {
+        keys.sort_unstable();
+    }
+    if keys.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(LazyStoreError::InvalidSnapshot {
+            reason: "duplicate key in persisted keys section",
+        });
+    }
+    Ok(keys)
+}
+
+fn check_checksum(expected: u32, actual: u32) -> Result<(), LazyStoreError> {
+    if expected != actual {
+        return Err(FormatError::SectionChecksumMismatch { expected, actual }.into());
+    }
+    Ok(())
+}
+
+fn verify_section_checksum(
+    file: &mut File,
+    descriptor: SectionDescriptor,
+) -> Result<(), LazyStoreError> {
+    file.seek(SeekFrom::Start(descriptor.payload_offset()))?;
+    let mut remaining = descriptor.payload_length();
+    let mut buffer = vec![0_u8; CHECKSUM_BUFFER_BYTES];
+    let mut hasher = Hasher::new();
+    while remaining > 0 {
+        let length =
+            usize::try_from(remaining.min(65_536)).map_err(|_| LazyStoreError::LengthOverflow)?;
+        file.read_exact(&mut buffer[..length])?;
+        hasher.update(&buffer[..length]);
+        remaining -= u64::try_from(length).map_err(|_| LazyStoreError::LengthOverflow)?;
+    }
+    check_checksum(descriptor.checksum(), hasher.finalize())
+}
+
+fn reject_required_tombstones(layout: &FileLayout) -> Result<(), LazyStoreError> {
+    if layout
+        .sections()
+        .iter()
+        .any(|section| section.kind() == SectionKind::Tombstones && section.required())
+    {
+        return Err(LazyStoreError::InvalidSnapshot {
+            reason: "required tombstone sections are not supported",
+        });
+    }
+    Ok(())
 }
 
 fn decode_phase1_keys(payload: &[u8]) -> Result<Vec<u64>, LazyStoreError> {
@@ -710,10 +794,17 @@ fn decode_phase1_keys(payload: &[u8]) -> Result<Vec<u64>, LazyStoreError> {
             reason: "phase-1 keys payload length is invalid",
         });
     }
-    payload[U64_BYTES..]
+    let keys = payload[U64_BYTES..]
         .chunks_exact(U64_BYTES)
         .map(read_u64_exact)
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut seen = HashSet::new();
+    if keys.iter().any(|key| !seen.insert(*key)) {
+        return Err(LazyStoreError::InvalidSnapshot {
+            reason: "duplicate key in persisted keys section",
+        });
+    }
+    Ok(keys)
 }
 
 fn decode_phase1_band_hashes(

@@ -133,7 +133,7 @@ impl FileLayout {
     /// Scan a seekable Pari container without materializing section payloads.
     ///
     /// Memory use is proportional to the number of understood sections rather
-    /// than the file size. Known payloads are read on demand. Unknown optional
+    /// than the file size. Required known payloads are read on demand. Optional
     /// payloads are streamed to verify their checksums before being skipped;
     /// unknown required sections are rejected.
     pub fn read_from<R: Read + Seek>(reader: &mut R) -> Result<Self, LayoutError> {
@@ -195,6 +195,9 @@ impl FileLayout {
             }
 
             let required = flags & SECTION_FLAG_REQUIRED != 0;
+            if !required {
+                verify_skipped_payload(reader, payload_length, checksum)?;
+            }
             if let Some(kind) = section_kind_from_raw(kind_raw) {
                 sections.push(SectionDescriptor {
                     kind,
@@ -205,8 +208,6 @@ impl FileLayout {
                 });
             } else if required {
                 return Err(FormatError::UnknownRequiredSection { kind: kind_raw }.into());
-            } else {
-                verify_skipped_payload(reader, payload_length, checksum)?;
             }
             cursor = payload_end;
         }

@@ -9,12 +9,19 @@ from __future__ import annotations
 
 from functools import lru_cache
 from importlib import import_module, metadata
+from operator import index as integer_index
 from typing import Any
 
 from ._native import CompatibilityError, MinHash, MinHash64
 
 _MAX_U32 = (1 << 32) - 1
 _MAX_U64 = (1 << 64) - 1
+
+
+def _integer(value: Any, numpy: Any) -> int:
+    if isinstance(value, (bool, numpy.bool_)):
+        raise TypeError("boolean values are not integer sketch metadata")
+    return integer_index(value)
 
 
 def datasketch_version() -> str:
@@ -64,13 +71,23 @@ def from_datasketch(sketch: Any) -> MinHash | MinHash64:
     _datasketch, numpy, _version = _load_dependency()
     try:
         scheme = str(sketch.scheme)
-        seed = int(sketch.seed)
-        num_perm = int(sketch.num_perm)
+        seed = _integer(sketch.seed, numpy)
+        num_perm = _integer(sketch.num_perm, numpy)
         hashfunc = sketch.hashfunc
         multipliers, offsets = sketch.permutations
         hashvalues = sketch.hashvalues
-        signature = [int(value) for value in hashvalues]
     except (AttributeError, OverflowError, TypeError, ValueError) as error:
+        raise TypeError("expected a Datasketch MinHash-like object") from error
+
+    if any(
+        getattr(values, "ndim", 1) != 1 for values in (hashvalues, multipliers, offsets)
+    ):
+        raise CompatibilityError(
+            "Datasketch signature and permutations must be one-dimensional"
+        )
+    try:
+        signature = [_integer(value, numpy) for value in hashvalues]
+    except (OverflowError, TypeError, ValueError) as error:
         raise TypeError("expected a Datasketch MinHash-like object") from error
 
     if scheme not in {"affine32", "affine64"}:
@@ -102,8 +119,8 @@ def from_datasketch(sketch: Any) -> MinHash | MinHash64:
         )
 
     try:
-        actual_multipliers = tuple(int(value) for value in multipliers)
-        actual_offsets = tuple(int(value) for value in offsets)
+        actual_multipliers = tuple(_integer(value, numpy) for value in multipliers)
+        actual_offsets = tuple(_integer(value, numpy) for value in offsets)
     except (OverflowError, TypeError, ValueError) as error:
         raise TypeError("expected numeric Datasketch permutation arrays") from error
     if len(actual_multipliers) != num_perm or len(actual_offsets) != num_perm:

@@ -6,6 +6,22 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Fixed
+
+- Lazy readers validate key-catalog checksums, counts, and uniqueness and filter
+  stale bucket members against live keys in scalar and batch queries.
+- Optional known sections receive the same streamed checksum validation as
+  optional unknown sections before they can be ignored.
+- Snapshot converters reject duplicate keys and unsupported required tombstone
+  semantics while preserving unordered, unique legacy key catalogs.
+- External builds create missing destination directories and reserve spill
+  buffers only for actual input, including empty inputs and large buffer limits.
+- Explicit LSH configuration validation no longer constructs temporary hash
+  tables, and clean persistent indexes allocate mutation tables on first use.
+- Datasketch imports reject fractional, textual, boolean, and multidimensional
+  metadata instead of silently coercing it; NumPy integer scalars and strided
+  vectors retain exact update compatibility.
+
 ## [0.1.3] - 2026-11-06
 
 ### Fixed

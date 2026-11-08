@@ -13,6 +13,7 @@ pari-format = { path = "../pari-format" }
 same-file = "1.0.6"
 
 [dev-dependencies]
+pari-index = { path = "../pari-index" }
 pari-core = { path = "../pari-core" }
 pari-store = { path = "../pari-store" }
 pari-store-lazy = { path = "../pari-store-lazy" }

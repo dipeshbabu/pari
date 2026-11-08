@@ -55,6 +55,13 @@ impl LshParams {
         self.bands.checked_mul(self.rows)
     }
 
+    /// Validate explicit parameters without allocating index hash tables.
+    pub fn validate(self, threshold: f64, num_perm: usize) -> Result<(), LshError> {
+        validate_threshold(threshold)?;
+        validate_num_perm(num_perm)?;
+        validate_params(self, num_perm)
+    }
+
     /// Choose bands and rows with Pari's canonical threshold optimizer.
     ///
     /// This is the same tuning path used by [`LshIndex32::new`],
@@ -532,9 +539,7 @@ macro_rules! impl_lsh_index {
                 seed: u64,
                 params: LshParams,
             ) -> Result<Self, LshError> {
-                validate_threshold(threshold)?;
-                validate_num_perm(num_perm)?;
-                validate_params(params, num_perm)?;
+                params.validate(threshold, num_perm)?;
                 Ok(Self {
                     threshold,
                     num_perm,
