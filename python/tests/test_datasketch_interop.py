@@ -40,6 +40,77 @@ class OptionalDependencyTests(unittest.TestCase):
 
 @unittest.skipUnless(DatasketchMinHash is not None, "Datasketch 2.x is not installed")
 class DatasketchInteropTests(unittest.TestCase):
+    def test_metadata_is_not_lossily_coerced_to_integers(self) -> None:
+        cases = (
+            ("seed", 7.75, 7, 8),
+            ("seed", "7", 7, 8),
+            ("num_perm", 8.75, 7, 8),
+            ("num_perm", "8", 7, 8),
+            ("seed", True, 1, 8),
+            ("seed", np.bool_(False), 0, 8),
+            ("num_perm", True, 7, 1),
+            ("num_perm", np.bool_(True), 7, 1),
+        )
+        for sketch_type in (MinHash, MinHash64):
+            for field, value, seed, count in cases:
+                with self.subTest(width=sketch_type.__name__, field=field, value=value):
+                    baseline = sketch_type.from_values(
+                        VALUES, num_perm=count, seed=seed
+                    )
+                    external = adapter.to_datasketch(baseline)
+                    setattr(external, field, value)
+                    self.assertFalse(adapter.is_compatible(external))
+                    with self.assertRaisesRegex(TypeError, "MinHash-like"):
+                        adapter.from_datasketch(external)
+
+    def test_numpy_integer_metadata_and_strided_vectors_remain_update_compatible(
+        self,
+    ) -> None:
+        for sketch_type in (MinHash, MinHash64):
+            for seed in (0, 7, 2**64 - 1):
+                with self.subTest(width=sketch_type.__name__, seed=seed):
+                    baseline = sketch_type.from_values(VALUES, num_perm=8, seed=seed)
+                    external = adapter.to_datasketch(baseline)
+                    external.seed = np.uint64(seed)
+                    external.num_perm = np.int64(8)
+
+                    def strided(vector):
+                        padded = np.zeros(len(vector) * 2, dtype=vector.dtype)
+                        padded[::2] = vector
+                        return padded[::2]
+
+                    external.hashvalues = strided(external.hashvalues)
+                    external.permutations = tuple(
+                        strided(row) for row in external.permutations
+                    )
+                    imported = adapter.from_datasketch(external)
+                    external.update(b"after import")
+                    imported.update(b"after import")
+                    self.assertEqual(
+                        imported.signature,
+                        [int(value) for value in external.hashvalues],
+                    )
+
+    def test_multidimensional_signature_and_permutation_storage_is_rejected(
+        self,
+    ) -> None:
+        for sketch_type in (MinHash, MinHash64):
+            for field in ("signature", "multipliers", "offsets"):
+                with self.subTest(width=sketch_type.__name__, field=field):
+                    external = adapter.to_datasketch(
+                        sketch_type.from_values(VALUES, num_perm=8, seed=7)
+                    )
+                    if field == "signature":
+                        external.hashvalues = external.hashvalues.reshape(8, 1)
+                    else:
+                        position = 0 if field == "multipliers" else 1
+                        arrays = list(external.permutations)
+                        arrays[position] = arrays[position].reshape(8, 1)
+                        external.permutations = tuple(arrays)
+                    self.assertFalse(adapter.is_compatible(external))
+                    with self.assertRaisesRegex(CompatibilityError, "one-dimensional"):
+                        adapter.from_datasketch(external)
+
     def test_checked_in_fixture_is_reproducible(self) -> None:
         script = ROOT / "scripts" / "generate_datasketch_v2_golden.py"
         spec = importlib.util.spec_from_file_location(

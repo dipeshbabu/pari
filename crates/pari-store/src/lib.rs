@@ -36,8 +36,8 @@ use pari_format::{
     BUCKET_SEGMENT_TARGET_BYTES,
 };
 use pari_index::{
-    explain_lsh, explain_lsh64, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams,
-    LshPlan, LshPlanError, LshPlanOptions, QueryMetrics, StorageMode,
+    explain_lsh, explain_lsh64, BucketDistribution, LshError, LshParams, LshPlan, LshPlanError,
+    LshPlanOptions, QueryMetrics, StorageMode,
 };
 use same_file::Handle;
 
@@ -312,7 +312,7 @@ impl PersistentIndexCore {
                 layout,
                 buckets,
             }),
-            overlay_buckets: empty_bucket_tables(bands),
+            overlay_buckets: Vec::new(),
             overlay_keys: HashSet::new(),
             suppressed_base_keys: HashSet::new(),
             key_hashes,
@@ -479,7 +479,7 @@ impl PersistentIndexCore {
             params,
             scheme,
             base: None,
-            overlay_buckets: empty_bucket_tables(params.bands),
+            overlay_buckets: Vec::new(),
             overlay_keys: HashSet::new(),
             suppressed_base_keys: HashSet::new(),
             key_hashes: BTreeMap::new(),
@@ -521,6 +521,9 @@ impl PersistentIndexCore {
 
     fn insert_overlay(&mut self, key: u64, hashes: Vec<u64>) {
         debug_assert_eq!(hashes.len(), self.params.bands);
+        if self.overlay_buckets.is_empty() {
+            self.overlay_buckets = empty_bucket_tables(self.params.bands);
+        }
         add_overlay_key(&mut self.overlay_buckets, key, &hashes);
         self.overlay_keys.insert(key);
         self.key_hashes.insert(key, hashes);
@@ -540,7 +543,11 @@ impl PersistentIndexCore {
     }
 
     fn rebuild_overlay_all(&mut self) -> Result<(), StoreError> {
-        let mut overlay = empty_bucket_tables(self.params.bands);
+        let mut overlay = if self.key_hashes.is_empty() {
+            Vec::new()
+        } else {
+            empty_bucket_tables(self.params.bands)
+        };
         let mut overlay_keys = HashSet::with_capacity(self.key_hashes.len());
         for (key, hashes) in &self.key_hashes {
             if hashes.len() != self.params.bands {
@@ -670,7 +677,7 @@ pub struct PersistentIndex64 {
 }
 
 macro_rules! impl_persistent_index {
-    ($index:ident, $sketch:ty, $lsh:ty, $scheme:expr, $hash_band:ident) => {
+    ($index:ident, $sketch:ty, $scheme:expr, $hash_band:ident) => {
         impl $index {
             /// Create a new empty index and immediately commit its initial snapshot.
             pub fn create(
@@ -679,8 +686,8 @@ macro_rules! impl_persistent_index {
                 num_perm: usize,
                 seed: u64,
             ) -> Result<Self, StoreError> {
-                let reference = <$lsh>::new(threshold, num_perm, seed)?;
-                Self::create_with_params(path, threshold, num_perm, seed, reference.params())
+                let params = LshParams::tune(threshold, num_perm)?;
+                Self::create_with_params(path, threshold, num_perm, seed, params)
             }
 
             /// Create a new empty index with explicit LSH banding parameters.
@@ -863,14 +870,12 @@ macro_rules! impl_persistent_index {
 impl_persistent_index!(
     PersistentIndex32,
     MinHash32,
-    LshIndex32,
     SignatureScheme::PariAffine32V1,
     hash_band32
 );
 impl_persistent_index!(
     PersistentIndex64,
     MinHash64,
-    LshIndex64,
     SignatureScheme::PariAffine64V1,
     hash_band64
 );
@@ -1194,20 +1199,13 @@ fn validate_store_metadata(
 }
 
 fn validate_lsh_configuration(
-    scheme: SignatureScheme,
+    _scheme: SignatureScheme,
     threshold: f64,
     num_perm: usize,
-    seed: u64,
+    _seed: u64,
     params: LshParams,
 ) -> Result<(), StoreError> {
-    match scheme {
-        SignatureScheme::PariAffine32V1 => {
-            LshIndex32::with_params(threshold, num_perm, seed, params)?;
-        }
-        SignatureScheme::PariAffine64V1 => {
-            LshIndex64::with_params(threshold, num_perm, seed, params)?;
-        }
-    }
+    params.validate(threshold, num_perm)?;
     Ok(())
 }
 

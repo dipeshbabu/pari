@@ -551,6 +551,7 @@ dependencies = [
  "crc32fast",
  "pari-core",
  "pari-format",
+ "pari-index",
  "pari-store",
  "pari-store-lazy",
  "same-file",
@@ -560,6 +561,7 @@ dependencies = [
 name = "pari-store-lazy"
 version = "0.1.3"
 dependencies = [
+ "crc32fast",
  "pari-core",
  "pari-format",
  "pari-index",

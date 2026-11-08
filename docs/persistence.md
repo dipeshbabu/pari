@@ -10,6 +10,17 @@ The current local format uses the versioned `PARIIDX` container from `pari-forma
 
 Bucket membership is split into sorted, independently checksummed segments. Reopening validates metadata and bucket directories but does not reconstruct every bucket membership into hash maps. Candidate member ranges are read and verified only when a query touches them.
 
+Read-only lazy handles retain a sorted, compact `u64` live-key catalog after
+checking its count, checksum, and uniqueness. Unordered unique legacy catalogs
+remain readable. Queries filter stale member IDs through this catalog, matching
+the mutable reader's live-key behavior. Complete bucket verification streams
+checksums with a bounded read buffer.
+
+Configuration validation does not create an in-memory LSH index. A clean
+persistent handle defers its per-band mutation tables until the first insertion;
+opening an empty advanced-parameter index therefore does not allocate those
+tables merely to validate the header.
+
 The stable v1 compatibility fixtures live at:
 
 ```text

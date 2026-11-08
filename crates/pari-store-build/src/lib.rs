@@ -229,7 +229,7 @@ fn build_external_with_hook(
 
     let mut source_file = File::open(source)?;
     let layout = FileLayout::read_from(&mut source_file)?;
-    validate_source_metadata(layout.metadata())?;
+    validate_source_metadata(&layout)?;
     let keys = required_unique_section(&layout, SectionKind::Keys, "missing keys section")?;
     let band_hashes = required_unique_section(
         &layout,
@@ -250,6 +250,30 @@ fn build_external_with_hook(
         usize::try_from(layout.metadata().bands()).map_err(|_| BuildError::LengthOverflow)?;
     validate_source_lengths(keys, band_hashes, item_count, bands)?;
 
+    let ordered = source_keys_are_ordered(&mut source_file, keys, item_count)?;
+    let validation_band = if ordered {
+        None
+    } else {
+        Some(u32::try_from(bands).map_err(|_| BuildError::LengthOverflow)?)
+    };
+    let records = u64::try_from(item_count)
+        .map_err(|_| BuildError::LengthOverflow)?
+        .checked_mul(u64::try_from(bands).map_err(|_| BuildError::LengthOverflow)?)
+        .ok_or(BuildError::LengthOverflow)?;
+    let spill_records = records
+        .checked_add(if ordered {
+            0
+        } else {
+            u64::try_from(item_count).map_err(|_| BuildError::LengthOverflow)?
+        })
+        .ok_or(BuildError::LengthOverflow)?;
+    if let Some(parent) = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+
     let nonce = build_nonce()?;
     let mut temporary = TemporaryFiles::new();
     let run_paths = spill_runs(
@@ -261,19 +285,17 @@ fn build_external_with_hook(
         destination,
         nonce,
         options,
+        validation_band,
+        spill_records,
         &mut temporary,
     )?;
-    let records = u64::try_from(item_count)
-        .map_err(|_| BuildError::LengthOverflow)?
-        .checked_mul(u64::try_from(bands).map_err(|_| BuildError::LengthOverflow)?)
-        .ok_or(BuildError::LengthOverflow)?;
     let peak_buffered_records = options
         .max_buffer_records
-        .min(usize::try_from(records).unwrap_or(usize::MAX));
+        .min(usize::try_from(spill_records).unwrap_or(usize::MAX));
 
     let descriptors = temporary.track(temp_path(destination, nonce, "descriptors"));
     let memberships = temporary.track(temp_path(destination, nonce, "memberships"));
-    let buckets = merge_runs(&run_paths, &descriptors, &memberships)?;
+    let buckets = merge_runs(&run_paths, &descriptors, &memberships, validation_band)?;
     let segments = assemble_segments(
         &descriptors,
         &memberships,
@@ -304,7 +326,17 @@ fn build_external_with_hook(
     })
 }
 
-fn validate_source_metadata(metadata: &IndexMetadata) -> Result<(), BuildError> {
+fn validate_source_metadata(layout: &FileLayout) -> Result<(), BuildError> {
+    let metadata = layout.metadata();
+    if layout
+        .sections()
+        .iter()
+        .any(|section| section.kind() == SectionKind::Tombstones && section.required())
+    {
+        return Err(BuildError::InvalidSource {
+            reason: "required tombstone sections are not supported",
+        });
+    }
     if metadata.algorithm() != Algorithm::MinHashLsh {
         return Err(BuildError::InvalidSource {
             reason: "algorithm is not MinHash LSH",
@@ -428,6 +460,32 @@ fn read_record_count(
     usize::try_from(u64::from_le_bytes(raw)).map_err(|_| BuildError::LengthOverflow)
 }
 
+fn source_keys_are_ordered(
+    source: &mut File,
+    keys: SectionDescriptor,
+    count: usize,
+) -> Result<bool, BuildError> {
+    source.seek(SeekFrom::Start(keys.payload_offset() + U64_BYTES_U64))?;
+    let mut reader = BufReader::with_capacity(COPY_BUFFER_BYTES, source);
+    let mut previous = None;
+    let mut ordered = true;
+    let mut raw = [0; U64_BYTES];
+    for _ in 0..count {
+        reader.read_exact(&mut raw)?;
+        let key = u64::from_le_bytes(raw);
+        if let Some(last) = previous {
+            if key == last {
+                return Err(BuildError::InvalidSource {
+                    reason: "duplicate key in persisted keys section",
+                });
+            }
+            ordered &= key > last;
+        }
+        previous = Some(key);
+    }
+    Ok(ordered)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spill_runs(
     source: &mut File,
@@ -438,14 +496,22 @@ fn spill_runs(
     destination: &Path,
     nonce: u128,
     options: BuildOptions,
+    validation_band: Option<u32>,
+    spill_records: u64,
     temporary: &mut TemporaryFiles,
 ) -> Result<Vec<PathBuf>, BuildError> {
+    if item_count == 0 {
+        return Ok(Vec::new());
+    }
     let row_bytes = bands
         .checked_mul(U64_BYTES)
         .ok_or(BuildError::LengthOverflow)?;
     let mut hash_row = vec![0_u8; row_bytes];
     let mut key_raw = [0_u8; U64_BYTES];
-    let mut buffer = Vec::with_capacity(options.max_buffer_records);
+    let capacity = options
+        .max_buffer_records
+        .min(usize::try_from(spill_records).unwrap_or(usize::MAX));
+    let mut buffer = Vec::with_capacity(capacity);
     let mut runs = Vec::new();
 
     for item in 0..item_count {
@@ -480,6 +546,25 @@ fn spill_runs(
                 band: u32::try_from(band).map_err(|_| BuildError::LengthOverflow)?,
                 hash: u64::from_le_bytes(raw),
                 key,
+            });
+            if buffer.len() == options.max_buffer_records {
+                spill_one_run(
+                    &mut buffer,
+                    destination,
+                    nonce,
+                    runs.len(),
+                    temporary,
+                    &mut runs,
+                )?;
+            }
+        }
+        if let Some(band) = validation_band {
+            // An extra ordered stream checks legacy, unordered catalogs without
+            // retaining a corpus-sized key set or publishing validation records.
+            buffer.push(SpillRecord {
+                band,
+                hash: key,
+                key: 0,
             });
             if buffer.len() == options.max_buffer_records {
                 spill_one_run(
@@ -535,6 +620,7 @@ fn merge_runs(
     run_paths: &[PathBuf],
     descriptor_path: &Path,
     membership_path: &Path,
+    validation_band: Option<u32>,
 ) -> Result<u64, BuildError> {
     let mut readers = run_paths
         .iter()
@@ -562,42 +648,52 @@ fn merge_runs(
     let mut current_offset = 0_u64;
     let mut current_hasher = Hasher::new();
     let mut bucket_count = 0_u64;
+    let mut previous_validation_key = None;
 
     while let Some(Reverse(entry)) = heap.pop() {
-        let group = BucketKey::new(entry.record.band, entry.record.hash);
-        if current_key != Some(group) {
-            if let Some(key) = current_key {
-                finish_descriptor(
-                    &mut descriptors,
-                    DescriptorDraft {
-                        key,
-                        member_count: current_count,
-                        relative_offset: current_offset,
-                        checksum: current_hasher.finalize(),
-                    },
-                )?;
-                bucket_count = bucket_count
-                    .checked_add(1)
-                    .ok_or(BuildError::LengthOverflow)?;
-                current_offset = current_offset
-                    .checked_add(
-                        u64::from(current_count)
-                            .checked_mul(U64_BYTES_U64)
-                            .ok_or(BuildError::LengthOverflow)?,
-                    )
-                    .ok_or(BuildError::LengthOverflow)?;
+        if validation_band == Some(entry.record.band) {
+            if previous_validation_key == Some(entry.record.hash) {
+                return Err(BuildError::InvalidSource {
+                    reason: "duplicate key in persisted keys section",
+                });
             }
-            current_key = Some(group);
-            current_count = 0;
-            current_hasher = Hasher::new();
-        }
+            previous_validation_key = Some(entry.record.hash);
+        } else {
+            let group = BucketKey::new(entry.record.band, entry.record.hash);
+            if current_key != Some(group) {
+                if let Some(key) = current_key {
+                    finish_descriptor(
+                        &mut descriptors,
+                        DescriptorDraft {
+                            key,
+                            member_count: current_count,
+                            relative_offset: current_offset,
+                            checksum: current_hasher.finalize(),
+                        },
+                    )?;
+                    bucket_count = bucket_count
+                        .checked_add(1)
+                        .ok_or(BuildError::LengthOverflow)?;
+                    current_offset = current_offset
+                        .checked_add(
+                            u64::from(current_count)
+                                .checked_mul(U64_BYTES_U64)
+                                .ok_or(BuildError::LengthOverflow)?,
+                        )
+                        .ok_or(BuildError::LengthOverflow)?;
+                }
+                current_key = Some(group);
+                current_count = 0;
+                current_hasher = Hasher::new();
+            }
 
-        let key_bytes = entry.record.key.to_le_bytes();
-        memberships.write_all(&key_bytes)?;
-        current_hasher.update(&key_bytes);
-        current_count = current_count
-            .checked_add(1)
-            .ok_or(BuildError::LengthOverflow)?;
+            let key_bytes = entry.record.key.to_le_bytes();
+            memberships.write_all(&key_bytes)?;
+            current_hasher.update(&key_bytes);
+            current_count = current_count
+                .checked_add(1)
+                .ok_or(BuildError::LengthOverflow)?;
+        }
 
         if let Some(next) = read_spill_record(&mut readers[entry.run])? {
             heap.push(Reverse(HeapEntry {
