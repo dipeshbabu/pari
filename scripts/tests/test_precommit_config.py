@@ -27,7 +27,7 @@ class PreCommitPolicyTests(unittest.TestCase):
                 ),
                 (
                     "https://github.com/astral-sh/ruff-pre-commit",
-                    "25bcf95026b96e2dd3c0aec3090c3d6ef6ca2e6c",
+                    "c0f278f1254ccc8fb09676bcdb8d847e7db493e5",
                 ),
             ],
         )
