@@ -6,6 +6,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-17
+
 ### Added
 
 - Persistent indexes can store full signatures
@@ -32,8 +34,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 - `pari_format::SectionKind` gains a `Signatures` variant, `StoreError` gains
   signature and score-filter variants, and `StoreStats` gains
-  `stores_signatures`. These additions to public enums and structs require the
-  next minor release.
+  `stores_signatures`. These additions to public enums and structs are why this
+  is a minor release.
+- The docs site, README, and release documentation describe the 0.2 line.
 
 ### Fixed
 
@@ -196,7 +199,8 @@ First public alpha of the Pari similarity and deduplication engine.
 
 This is an alpha release. Public 0.x compatibility is governed by `docs/compatibility.md`; interfaces marked experimental or internal may change before 1.0.
 
-[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/dipeshbabu/pari/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/dipeshbabu/pari/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/dipeshbabu/pari/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/dipeshbabu/pari/compare/v0.1.0...v0.1.1
