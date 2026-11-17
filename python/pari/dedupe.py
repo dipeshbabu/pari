@@ -57,6 +57,19 @@ class ProgressEvent:
 ProgressCallback = Callable[[ProgressEvent], bool | None]
 
 
+def _validate_min_similarity(min_similarity: float | None) -> None:
+    if min_similarity is None:
+        return
+    if (
+        isinstance(min_similarity, bool)
+        or not isinstance(min_similarity, (int, float))
+        or not 0.0 <= float(min_similarity) <= 1.0
+    ):
+        raise ConfigurationError(
+            "min_similarity must be a finite number in [0, 1] or None"
+        )
+
+
 def _validate_progress(progress: ProgressCallback | None) -> None:
     if progress is not None and not callable(progress):
         raise ConfigurationError("progress must be callable or None")
@@ -111,6 +124,7 @@ class DedupeIndex(Generic[T]):
         "_records",
         "_representative",
         "backend",
+        "min_similarity",
         "num_perm",
         "seed",
         "threads",
@@ -130,6 +144,7 @@ class DedupeIndex(Generic[T]):
         backend: Backend | None = None,
         exact: ExactVerifier[T] | None = None,
         representative: RepresentativeSelector[T] | None = None,
+        min_similarity: float | None = None,
     ) -> None:
         if feature is not None and not callable(feature):
             raise ConfigurationError("feature must be callable or None")
@@ -147,6 +162,7 @@ class DedupeIndex(Generic[T]):
             raise ConfigurationError("exact must be callable or None")
         if representative is not None and not callable(representative):
             raise ConfigurationError("representative must be callable or None")
+        _validate_min_similarity(min_similarity)
 
         selected_backend: Backend = (
             ("local" if path is not None else "memory") if backend is None else backend
@@ -162,6 +178,7 @@ class DedupeIndex(Generic[T]):
         self.num_perm = num_perm
         self.seed = seed
         self.threads = threads
+        self.min_similarity = min_similarity
         self.backend = selected_backend
         self._batch_size = batch_size
         self._feature = feature
@@ -174,6 +191,7 @@ class DedupeIndex(Generic[T]):
             seed=seed,
             threads=threads,
             path=path,
+            min_similarity=min_similarity,
         )
 
     @property
@@ -311,7 +329,7 @@ class DedupeIndex(Generic[T]):
         """Return unverified LSH candidate groups for measurement or review."""
 
         self._ensure_open()
-        raw_groups = self._engine.groups(verifier=None)
+        raw_groups = self._engine.groups(verifier=None, apply_checks=False)
         return tuple(
             self._convert_group(member_indices) for _, member_indices in raw_groups
         )
@@ -326,7 +344,11 @@ class DedupeIndex(Generic[T]):
         )
 
     def groups(self) -> tuple[DuplicateGroup[T], ...]:
-        """Return deterministic duplicate groups for the current records."""
+        """Return deterministic duplicate groups for the current records.
+
+        Candidate pairs below ``min_similarity`` are rejected natively before
+        the optional ``exact`` verifier runs.
+        """
 
         self._ensure_open()
         raw_groups = self._engine.groups(verifier=self._native_verifier())
@@ -356,6 +378,16 @@ class DedupeIndex(Generic[T]):
             kept_indices=kept_index_tuple,
             dropped_indices=dropped_index_tuple,
         )
+
+    def similarity(self, left: int, right: int) -> float:
+        """Return the estimated Jaccard similarity of two ingested records.
+
+        ``left`` and ``right`` are ingestion indexes. Requires
+        ``min_similarity`` so the native engine retains signatures.
+        """
+
+        self._ensure_open()
+        return float(self._engine.similarity(left, right))
 
     def sync(self) -> None:
         """Commit the optional local persistence mirror."""
@@ -443,6 +475,7 @@ def deduplicate(
     exact: ExactVerifier[T] | None = None,
     representative: RepresentativeSelector[T] | None = None,
     progress: ProgressCallback | None = None,
+    min_similarity: float | None = None,
 ) -> DeduplicationResult[T]:
     """Deduplicate an iterable with a concise, typed batch-first API."""
 
@@ -460,6 +493,7 @@ def deduplicate(
         backend=backend,
         exact=exact,
         representative=representative,
+        min_similarity=min_similarity,
     )
     try:
         index.add_many(records, progress=progress)

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use std::{
+    collections::HashMap,
     error::Error,
     ffi::OsString,
     fmt,
@@ -175,6 +176,10 @@ struct DedupArgs {
     /// Minimum component size when emitting groups.
     #[arg(long, default_value_t = 2)]
     min_size: usize,
+    /// Keep only candidate pairs whose estimated similarity is at least this
+    /// value in `[0, 1]`. Pairs output then includes each pair's similarity.
+    #[arg(long)]
+    min_similarity: Option<f64>,
     /// Emit JSONL instead of tab-separated text.
     #[arg(long)]
     json: bool,
@@ -332,6 +337,63 @@ struct IndexSummary {
 struct PairResult {
     left: u64,
     right: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    similarity: Option<f64>,
+}
+
+/// Signatures kept for `dedup --min-similarity`, keyed by record key.
+#[derive(Default)]
+struct SimilarityCheck {
+    minimum: Option<f64>,
+    signatures: HashMap<u64, Vec<u64>>,
+}
+
+impl SimilarityCheck {
+    fn new(minimum: Option<f64>) -> Self {
+        Self {
+            minimum,
+            signatures: HashMap::new(),
+        }
+    }
+
+    fn remember<T: Copy + Into<u64>>(&mut self, key: u64, signature: &[T]) {
+        if self.minimum.is_some() {
+            self.signatures
+                .insert(key, signature.iter().map(|value| (*value).into()).collect());
+        }
+    }
+
+    fn similarity(&self, left: u64, right: u64) -> f64 {
+        match (self.signatures.get(&left), self.signatures.get(&right)) {
+            (Some(left), Some(right)) if !left.is_empty() && left.len() == right.len() => {
+                let matches = left.iter().zip(right).filter(|(a, b)| a == b).count();
+                u64_to_f64(u64::try_from(matches).unwrap_or(u64::MAX))
+                    / u64_to_f64(u64::try_from(left.len()).unwrap_or(u64::MAX))
+            }
+            _ => 0.0,
+        }
+    }
+
+    fn accepts(&self, left: u64, right: u64) -> bool {
+        self.minimum
+            .map_or(true, |minimum| self.similarity(left, right) >= minimum)
+    }
+
+    fn scored_pairs(
+        &self,
+        pairs: impl IntoIterator<Item = (u64, u64)>,
+    ) -> Vec<(u64, u64, Option<f64>)> {
+        pairs
+            .into_iter()
+            .filter_map(|(left, right)| match self.minimum {
+                None => Some((left, right, None)),
+                Some(minimum) => {
+                    let similarity = self.similarity(left, right);
+                    (similarity >= minimum).then_some((left, right, Some(similarity)))
+                }
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1181,6 +1243,11 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     if args.batch_size == 0 {
         return Err("--batch-size must be positive".into());
     }
+    if let Some(minimum) = args.min_similarity {
+        if !minimum.is_finite() || !(0.0..=1.0).contains(&minimum) {
+            return Err("--min-similarity must be finite and in [0, 1]".into());
+        }
+    }
     ensure_distinct_input_output(&args.input, &args.output)?;
     match args.signature_scheme {
         CliSignatureScheme::PariAffine32V1 => dedup32(args),
@@ -1191,6 +1258,7 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
 fn dedup32(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     let reporter = ProgressReporter::new(&args.progress)?;
     let mut index = LshIndex32::new(args.threshold, args.num_perm, args.seed)?;
+    let mut check = SimilarityCheck::new(args.min_similarity);
     let reader = open_reader(&args.input)?;
     let mut batch = Vec::with_capacity(args.batch_size);
     let mut completed = 0_usize;
@@ -1203,6 +1271,7 @@ fn dedup32(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
             args.num_perm,
             args.seed,
         )?;
+        check.remember(record.key, sketch.signature());
         batch.push((record.key, sketch));
         if batch.len() == args.batch_size {
             let batch_len = batch.len();
@@ -1224,9 +1293,10 @@ fn dedup32(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
         reporter.emit("dedup_index", completed, None, true, None, None)?;
     }
     match args.emit {
-        DedupOutput::Pairs => write_pairs(args, index.candidate_pairs())?,
+        DedupOutput::Pairs => write_pairs(args, check.scored_pairs(index.candidate_pairs()))?,
         DedupOutput::Groups => {
-            let groups = index.duplicate_groups_with(args.min_size, |_, _| true);
+            let groups = index
+                .duplicate_groups_with(args.min_size, |left, right| check.accepts(left, right));
             write_groups(args, &groups)?;
         }
     }
@@ -1239,6 +1309,7 @@ fn dedup32(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
 fn dedup64(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
     let reporter = ProgressReporter::new(&args.progress)?;
     let mut index = LshIndex64::new(args.threshold, args.num_perm, args.seed)?;
+    let mut check = SimilarityCheck::new(args.min_similarity);
     let reader = open_reader(&args.input)?;
     let mut batch = Vec::with_capacity(args.batch_size);
     let mut completed = 0_usize;
@@ -1251,6 +1322,7 @@ fn dedup64(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
             args.num_perm,
             args.seed,
         )?;
+        check.remember(record.key, sketch.signature());
         batch.push((record.key, sketch));
         if batch.len() == args.batch_size {
             let batch_len = batch.len();
@@ -1272,9 +1344,10 @@ fn dedup64(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
         reporter.emit("dedup_index", completed, None, true, None, None)?;
     }
     match args.emit {
-        DedupOutput::Pairs => write_pairs(args, index.candidate_pairs())?,
+        DedupOutput::Pairs => write_pairs(args, check.scored_pairs(index.candidate_pairs()))?,
         DedupOutput::Groups => {
-            let groups = index.duplicate_groups_with(args.min_size, |_, _| true);
+            let groups = index
+                .duplicate_groups_with(args.min_size, |left, right| check.accepts(left, right));
             write_groups(args, &groups)?;
         }
     }
@@ -1286,13 +1359,22 @@ fn dedup64(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
 
 fn write_pairs(
     args: &DedupArgs,
-    pairs: impl IntoIterator<Item = (u64, u64)>,
+    pairs: impl IntoIterator<Item = (u64, u64, Option<f64>)>,
 ) -> Result<(), Box<dyn Error>> {
     let mut writer = open_writer(&args.output, &args.input)?;
-    for (left, right) in pairs {
+    for (left, right, similarity) in pairs {
         if args.json {
-            serde_json::to_writer(&mut writer, &PairResult { left, right })?;
+            serde_json::to_writer(
+                &mut writer,
+                &PairResult {
+                    left,
+                    right,
+                    similarity,
+                },
+            )?;
             writeln!(writer)?;
+        } else if let Some(similarity) = similarity {
+            writeln!(writer, "{left}\t{right}\t{similarity:.4}")?;
         } else {
             writeln!(writer, "{left}\t{right}")?;
         }

@@ -29,7 +29,7 @@ Machine-readable output revision 1 is pinned by compiled CLI integration tests. 
 
 - `index --json`: `items`, `file_bytes`, `bands`, `rows`
 - `search --json`: `query`, optional `id`, `candidates`, and `scores` only with `--scores`, `--min-similarity`, or `--top-k`
-- `dedup --emit pairs --json`: `left`, `right`
+- `dedup --emit pairs --json`: `left`, `right`, and `similarity` only with `--min-similarity`
 - `dedup --emit groups --json`: `representative`, `members`
 - `stats --json`: `items`, `file_bytes`, `dirty`, `bands`, `rows`, `committed_buckets`, `overlay_buckets`, `suppressed_base_keys`, `committed_bucket_distribution`, `overlay_bucket_distribution`, `query_metrics`, `num_perm`, `seed`, `threshold`, `stores_signatures`
 - `verify --json`: `valid`, `sections`, `bucket_sections`, `buckets`, `members_checked`
@@ -200,6 +200,20 @@ Example group:
 
 ```json
 {"representative":1,"members":[1,2]}
+```
+
+Add `--min-similarity X` (in `[0, 1]`) to drop LSH candidate pairs whose
+estimated similarity is below `X`. Groups then join only through pairs that
+pass, and pairs output adds each pair's `similarity` (a third text column, or a
+`similarity` JSON field). The CLI keeps every record's signature in memory
+while this flag is set.
+
+```bash
+pari dedup --input documents.jsonl --emit pairs --min-similarity 0.9 --json
+```
+
+```json
+{"left":1,"right":2,"similarity":0.9453125}
 ```
 
 The CLI streams JSONL records into the selected concrete `LshIndex32` or

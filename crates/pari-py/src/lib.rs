@@ -1481,6 +1481,33 @@ impl PyIndex64 {
 struct DedupeState {
     index: LshIndex32,
     store: Option<PersistentIndex32>,
+    /// Signatures by ingestion key, kept only for `min_similarity` checks.
+    signatures: Option<Vec<Box<[u32]>>>,
+}
+
+impl DedupeState {
+    #[allow(clippy::cast_precision_loss)]
+    fn similarity(&self, left: u64, right: u64) -> f64 {
+        let Some(signatures) = &self.signatures else {
+            return 0.0;
+        };
+        let lookup = |key: u64| {
+            usize::try_from(key)
+                .ok()
+                .and_then(|index| signatures.get(index))
+        };
+        match (lookup(left), lookup(right)) {
+            (Some(left), Some(right)) if !left.is_empty() && left.len() == right.len() => {
+                let matches = left
+                    .iter()
+                    .zip(right.iter())
+                    .filter(|(a, b)| a == b)
+                    .count();
+                matches as f64 / left.len() as f64
+            }
+            _ => 0.0,
+        }
+    }
 }
 
 type SharedDedupe = Arc<Mutex<Option<DedupeState>>>;
@@ -1493,6 +1520,7 @@ struct PyDedupeEngine {
     num_perm: usize,
     seed: u64,
     threads: BatchThreads,
+    min_similarity: Option<f64>,
 }
 
 impl PyDedupeEngine {
@@ -1528,7 +1556,15 @@ impl PyDedupeEngine {
 #[pymethods]
 impl PyDedupeEngine {
     #[new]
-    #[pyo3(signature = (*, threshold = 0.8, num_perm = 128, seed = 1, threads = None, path = None))]
+    #[pyo3(signature = (
+        *,
+        threshold = 0.8,
+        num_perm = 128,
+        seed = 1,
+        threads = None,
+        path = None,
+        min_similarity = None,
+    ))]
     fn new(
         py: Python<'_>,
         threshold: f64,
@@ -1536,8 +1572,16 @@ impl PyDedupeEngine {
         seed: u64,
         threads: Option<usize>,
         path: Option<PathBuf>,
+        min_similarity: Option<f64>,
     ) -> PyResult<Self> {
         let threads = batch_threads(threads)?;
+        if let Some(minimum) = min_similarity {
+            if !minimum.is_finite() || !(0.0..=1.0).contains(&minimum) {
+                return Err(ConfigurationError::new_err(
+                    "min_similarity must be a finite number in [0, 1] or None",
+                ));
+            }
+        }
         let state = py
             .detach(move || {
                 let index =
@@ -1548,7 +1592,11 @@ impl PyDedupeEngine {
                             .map_err(BindingError::from)
                     })
                     .transpose()?;
-                Ok::<_, BindingError>(DedupeState { index, store })
+                Ok::<_, BindingError>(DedupeState {
+                    index,
+                    store,
+                    signatures: min_similarity.map(|_| Vec::new()),
+                })
             })
             .map_err(binding_error)?;
 
@@ -1557,6 +1605,7 @@ impl PyDedupeEngine {
             num_perm,
             seed,
             threads,
+            min_similarity,
         })
     }
 
@@ -1588,6 +1637,13 @@ impl PyDedupeEngine {
             .map_err(binding_error)?;
 
         self.run_write(py, move |state| {
+            if let Some(signatures) = &state.signatures {
+                if u64::try_from(signatures.len()).ok() != Some(start_key) {
+                    return Err(BindingError::Store(StoreError::InvalidSnapshot {
+                        reason: "dedupe keys must be contiguous ingestion indexes",
+                    }));
+                }
+            }
             state
                 .index
                 .insert_many(
@@ -1609,19 +1665,43 @@ impl PyDedupeEngine {
                     return Err(BindingError::from(error));
                 }
             }
+            if let Some(signatures) = &mut state.signatures {
+                signatures.extend(
+                    sketches
+                        .iter()
+                        .map(|sketch| sketch.signature().to_vec().into_boxed_slice()),
+                );
+            }
             Ok(())
         })
     }
 
     /// Run direct native grouping, optionally invoking a Python pair verifier.
-    #[pyo3(signature = (*, verifier = None))]
+    ///
+    /// With `apply_checks=True`, pairs below the engine's `min_similarity` are
+    /// rejected natively before the Python verifier is consulted.
+    #[pyo3(signature = (*, verifier = None, apply_checks = true))]
     fn groups(
         &self,
         py: Python<'_>,
         verifier: Option<Py<PyAny>>,
+        apply_checks: bool,
     ) -> PyResult<Vec<(u64, Vec<u64>)>> {
+        let minimum = if apply_checks {
+            self.min_similarity
+        } else {
+            None
+        };
+        let verifier = if apply_checks { verifier } else { None };
         let Some(verifier) = verifier else {
-            return self.run_read(py, |state| Ok(owned_groups(state.index.duplicate_groups())));
+            return self.run_read(py, move |state| {
+                Ok(owned_groups(match minimum {
+                    None => state.index.duplicate_groups(),
+                    Some(minimum) => state.index.duplicate_groups_with(2, |left, right| {
+                        state.similarity(left, right) >= minimum
+                    }),
+                }))
+            });
         };
 
         let inner = Arc::clone(&self.inner);
@@ -1636,6 +1716,9 @@ impl PyDedupeEngine {
             let mut callback_error = None;
             let groups = state.index.duplicate_groups_with(2, |left, right| {
                 if callback_error.is_some() {
+                    return false;
+                }
+                if minimum.is_some_and(|minimum| state.similarity(left, right) < minimum) {
                     return false;
                 }
                 match Python::attach(|py| verifier.bind(py).call1((left, right))?.extract::<bool>())
@@ -1657,6 +1740,19 @@ impl PyDedupeEngine {
     /// Return unique normalized candidate pairs from LSH bucket collisions.
     fn pairs(&self, py: Python<'_>) -> PyResult<Vec<(u64, u64)>> {
         self.run_read(py, |state| Ok(state.index.candidate_pairs().collect()))
+    }
+
+    /// Estimated Jaccard similarity of two ingested records.
+    ///
+    /// Requires an engine created with `min_similarity`; otherwise the
+    /// signatures are not retained.
+    fn similarity(&self, py: Python<'_>, left: u64, right: u64) -> PyResult<f64> {
+        self.run_read(py, move |state| {
+            if state.signatures.is_none() {
+                return Err(BindingError::Store(StoreError::SignaturesUnavailable));
+            }
+            Ok(state.similarity(left, right))
+        })
     }
 
     fn sync(&self, py: Python<'_>) -> PyResult<()> {
