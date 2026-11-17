@@ -25,6 +25,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   similarity natively before any `exact` verifier runs.
 - `pari dedup --min-similarity` filters pairs and groups the same way and adds
   each pair's `similarity` to pairs output.
+- Experimental `pari.shingles(text, size=3, unit="word" | "char")` returns
+  normalized word or character n-grams as bytes for use as a feature.
 
 ### Changed
 

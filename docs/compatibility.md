@@ -67,6 +67,7 @@ Experimental interfaces are usable, tested, and documented, but may change at a 
 - custom backend extension points
 - optional `pari.datasketch` interoperability adapters
 - optional `pari.integrations` PyArrow, Polars, and Hugging Face adapters
+- the `pari.shingles` text feature helper
 - Redis namespace layout and descriptor bytes
 - advanced low-level LSH parameter APIs
 - `pari_index` planner types, `pari.LshPlan`, `pari.plan_lsh`, and `Index.explain`

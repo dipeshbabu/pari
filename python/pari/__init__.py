@@ -30,6 +30,7 @@ from .dedupe import (
     ProgressEvent,
     deduplicate,
 )
+from .features import shingles
 
 __all__ = [
     "ClosedIndexError",
@@ -54,4 +55,5 @@ __all__ = [
     "__version__",
     "deduplicate",
     "plan_lsh",
+    "shingles",
 ]

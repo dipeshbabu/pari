@@ -421,3 +421,11 @@ def plan_lsh(
 ) -> LshPlan: ...
 
 __version__: str
+
+def shingles(
+    text: str,
+    size: int = 3,
+    *,
+    unit: Literal["word", "char"] = "word",
+    normalize: bool = True,
+) -> list[bytes]: ...

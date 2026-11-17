@@ -28,6 +28,7 @@ PUBLIC_EXPORTS = {
     "__version__",
     "deduplicate",
     "plan_lsh",
+    "shingles",
 }
 
 
