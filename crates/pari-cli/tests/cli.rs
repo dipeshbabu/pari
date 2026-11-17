@@ -1065,3 +1065,50 @@ fn closed_stdout_pipe_exits_cleanly_without_panicking() {
     }
     let _ = fs::remove_file(index);
 }
+
+#[test]
+fn dedup_creates_missing_output_directories() {
+    let input = temp_path("dedup-nested-input", "jsonl");
+    fs::write(
+        &input,
+        b"{\"key\":1,\"values\":[\"same\"]}\n{\"key\":2,\"values\":[\"same\"]}\n",
+    )
+    .expect("source records");
+    let root = temp_path("dedup-nested-output", "dir");
+    let output = root.join("nested").join("groups.tsv");
+    let result = pari()
+        .arg("dedup")
+        .arg("--input")
+        .arg(&input)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .expect("dedup command");
+    assert_success(&result);
+    assert_eq!(
+        fs::read_to_string(&output).expect("dedup output"),
+        "1\t1,2\n"
+    );
+
+    let blocked = temp_path("dedup-blocked-parent", "txt");
+    fs::write(&blocked, b"not a directory").expect("blocking file");
+    let target = blocked.join("groups.tsv");
+    let failed = pari()
+        .arg("dedup")
+        .arg("--input")
+        .arg(&input)
+        .arg("--output")
+        .arg(&target)
+        .output()
+        .expect("dedup command");
+    assert_eq!(failed.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        stderr.contains(&target.display().to_string()),
+        "error should name the output path: {stderr}"
+    );
+
+    fs::remove_dir_all(root).expect("cleanup output");
+    fs::remove_file(blocked).expect("cleanup blocker");
+    fs::remove_file(input).expect("cleanup input");
+}
