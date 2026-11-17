@@ -37,6 +37,7 @@ PAGE_ICONS = {
     "public-corpus-evidence.md": "material/file-check-outline",
     "similarity-family-evaluation.md": "material/compare",
     "sharding-evaluation.md": "material/call-split",
+    "dedicated-scale-run.md": "material/server-network",
     "compatibility.md": "material/handshake-outline",
     "platforms.md": "material/laptop",
     "releasing.md": "material/rocket-launch",
