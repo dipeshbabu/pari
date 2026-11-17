@@ -92,6 +92,24 @@ for profile in $PROFILES; do
     --output "$OUT/$profile/report.md"
 done
 
+# --- High-level DedupeIndex memory model (issue #96) ------------------------
+# One process per backend so each peak RSS belongs to a single measurement.
+DEDUPE_ITEMS="${PARI_SCALE_DEDUPE_ITEMS:-10000000}"
+if (( overall == 0 && DEDUPE_ITEMS > 0 )); then
+  for backend in memory local; do
+    echo "running dedupe-memory $backend $DEDUPE_ITEMS"
+    status=0
+    python benchmarks/dedupe_memory.py --items "$DEDUPE_ITEMS" --backend "$backend" \
+      --scratch "$TMPDIR" --output "$OUT/dedupe-$backend.json" \
+      > >(tee "$OUT/dedupe-$backend.log") 2>&1 || status=$?
+    if (( status != 0 )); then
+      echo "dedupe-memory $backend failed with status $status" | tee -a "$OUT/dedupe-$backend.log"
+      overall=$status
+      break
+    fi
+  done
+fi
+
 # --- Hand-back archive -----------------------------------------------------
 kill "${telemetry[@]}" 2>/dev/null || true
 archive="$SCRATCH/pari-scale-evidence-$SHA.tar.gz"
