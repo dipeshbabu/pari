@@ -78,10 +78,13 @@
   letter-spacing: -0.01em;
 }
 
-.md-header__button.md-logo img,
-.md-header__button.md-logo svg {
-  height: 1.5rem;
-  width: 1.5rem;
+/* Text-only header: no logo mark. */
+.md-header__button.md-logo {
+  display: none;
+}
+
+.md-header__title {
+  margin-left: 1rem;
 }
 
 /* Search field reads as an inset control on the dark header. */
@@ -272,4 +275,86 @@
 /* Footer stays quiet. */
 .md-footer-meta {
   border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+
+/* Section headings: small uppercase labels with an icon. */
+.md-nav--primary .md-nav__item--section > .md-nav__link {
+  align-items: center;
+  display: flex;
+  font-size: 0.62rem;
+  gap: 0.4rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.md-nav--primary .md-nav__item--section > .md-nav__link::before {
+  background-color: currentcolor;
+  content: "";
+  flex: none;
+  height: 0.8rem;
+  mask-image: var(--pari-section-icon);
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-image: var(--pari-section-icon);
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  width: 0.8rem;
+}
+
+/* The home page is item 1; sections follow in mkdocs.yml nav order. */
+/* Getting started: material/flag-outline */
+.md-nav--primary > .md-nav__list > .md-nav__item--section:nth-child(2) {
+  --pari-section-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='m12.36 6 .4 2H18v6h-3.36l-.4-2H7V6zM14 4H5v17h2v-7h5.6l.4 2h7V6h-5.6'/></svg>");
+}
+
+/* Workloads: material/briefcase-outline */
+.md-nav--primary > .md-nav__list > .md-nav__item--section:nth-child(3) {
+  --pari-section-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M20 6c.58 0 1.05.2 1.42.59.38.41.58.86.58 1.41v11c0 .55-.2 1-.58 1.41-.37.39-.84.59-1.42.59H4c-.58 0-1.05-.2-1.42-.59C2.2 20 2 19.55 2 19V8c0-.55.2-1 .58-1.41C2.95 6.2 3.42 6 4 6h4V4c0-.58.2-1.05.58-1.42C8.95 2.2 9.42 2 10 2h4c.58 0 1.05.2 1.42.58.38.37.58.84.58 1.42v2zM4 8v11h16V8zm10-2V4h-4v2z'/></svg>");
+}
+
+/* Concepts: material/lightbulb-outline */
+.md-nav--primary > .md-nav__list > .md-nav__item--section:nth-child(4) {
+  --pari-section-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7M9 21v-1h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1m3-17a5 5 0 0 0-5 5c0 2.05 1.23 3.81 3 4.58V16h4v-2.42c1.77-.77 3-2.53 3-4.58a5 5 0 0 0-5-5'/></svg>");
+}
+
+/* Storage: material/database */
+.md-nav--primary > .md-nav__list > .md-nav__item--section:nth-child(5) {
+  --pari-section-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 3C7.58 3 4 4.79 4 7s3.58 4 8 4 8-1.79 8-4-3.58-4-8-4M4 9v3c0 2.21 3.58 4 8 4s8-1.79 8-4V9c0 2.21-3.58 4-8 4s-8-1.79-8-4m0 5v3c0 2.21 3.58 4 8 4s8-1.79 8-4v-3c0 2.21-3.58 4-8 4s-8-1.79-8-4'/></svg>");
+}
+
+/* Interoperability: material/puzzle-outline */
+.md-nav--primary > .md-nav__list > .md-nav__item--section:nth-child(6) {
+  --pari-section-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M22 13.5c0 1.76-1.3 3.22-3 3.46V20a2 2 0 0 1-2 2h-3.8v-.3a2.7 2.7 0 0 0-2.7-2.7c-1.5 0-2.7 1.21-2.7 2.7v.3H4a2 2 0 0 1-2-2v-3.8h.3C3.79 16.2 5 15 5 13.5s-1.21-2.7-2.7-2.7H2V7a2 2 0 0 1 2-2h3.04c.24-1.7 1.7-3 3.46-3s3.22 1.3 3.46 3H17a2 2 0 0 1 2 2v3.04c1.7.24 3 1.7 3 3.46M17 15h1.5a1.5 1.5 0 0 0 1.5-1.5 1.5 1.5 0 0 0-1.5-1.5H17V7h-5V5.5A1.5 1.5 0 0 0 10.5 4 1.5 1.5 0 0 0 9 5.5V7H4v2.12c1.76.68 3 2.38 3 4.38s-1.25 3.7-3 4.38V20h2.12a4.7 4.7 0 0 1 4.38-3c2 0 3.7 1.25 4.38 3H17z'/></svg>");
+}
+
+/* Benchmarks: material/chart-box-outline */
+.md-nav--primary > .md-nav__list > .md-nav__item--section:nth-child(7) {
+  --pari-section-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M9 17H7v-7h2zm4 0h-2V7h2zm4 0h-2v-4h2zm2 2H5V5h14v14.1M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2'/></svg>");
+}
+
+/* Project: material/cog-outline */
+.md-nav--primary > .md-nav__list > .md-nav__item--section:nth-child(8) {
+  --pari-section-icon: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 8a4 4 0 0 1 4 4 4 4 0 0 1-4 4 4 4 0 0 1-4-4 4 4 0 0 1 4-4m0 2a2 2 0 0 0-2 2 2 2 0 0 0 2 2 2 2 0 0 0 2-2 2 2 0 0 0-2-2m-2 12c-.25 0-.46-.18-.5-.42l-.37-2.65c-.63-.25-1.17-.59-1.69-.99l-2.49 1.01c-.22.08-.49 0-.61-.22l-2-3.46a.493.493 0 0 1 .12-.64l2.11-1.66L4.5 12l.07-1-2.11-1.63a.493.493 0 0 1-.12-.64l2-3.46c.12-.22.39-.31.61-.22l2.49 1c.52-.39 1.06-.73 1.69-.98l.37-2.65c.04-.24.25-.42.5-.42h4c.25 0 .46.18.5.42l.37 2.65c.63.25 1.17.59 1.69.98l2.49-1c.22-.09.49 0 .61.22l2 3.46c.13.22.07.49-.12.64L19.43 11l.07 1-.07 1 2.11 1.63c.19.15.25.42.12.64l-2 3.46c-.12.22-.39.31-.61.22l-2.49-1c-.52.39-1.06.73-1.69.98l-.37 2.65c-.04.24-.25.42-.5.42zm1.25-18-.37 2.61c-1.2.25-2.26.89-3.03 1.78L5.44 7.35l-.75 1.3L6.8 10.2a5.55 5.55 0 0 0 0 3.6l-2.12 1.56.75 1.3 2.43-1.04c.77.88 1.82 1.52 3.01 1.76l.37 2.62h1.52l.37-2.61c1.19-.25 2.24-.89 3.01-1.77l2.43 1.04.75-1.3-2.12-1.55c.4-1.17.4-2.44 0-3.61l2.11-1.55-.75-1.3-2.41 1.04a5.42 5.42 0 0 0-3.03-1.77L12.75 4z'/></svg>");
+}
+
+/* Page icons sit beside the label; the current page gets a soft pill. */
+.md-nav--primary .md-nav__link > svg {
+  flex: none;
+  height: 0.85rem;
+  margin-right: 0.45rem;
+  opacity: 0.85;
+  width: 0.85rem;
+}
+
+.md-nav--primary .md-nav__link--active {
+  background-color: var(--md-accent-fg-color--transparent);
+  border-radius: 6px;
+  color: var(--md-accent-fg-color);
+  font-weight: 600;
+}
+
+.md-nav--primary .md-nav__item > .md-nav__link {
+  padding: 0.15rem 0.4rem;
 }
