@@ -739,3 +739,83 @@ fn split_key_metadata_builds_and_opens_in_every_reader() {
         assert_eq!(&lazy.query(sketch).expect("lazy query"), candidates);
     }
 }
+
+#[test]
+fn lazy_scored_queries_match_the_persistent_index() {
+    use pari_core::MinHash32;
+    use pari_index::ScoreFilter;
+    use pari_store::{PersistentIndex32, PersistentIndexOptions};
+    use pari_store_lazy::LazyStoreError;
+
+    let fixture = Fixture::new();
+    let source = fixture.path("scored-source");
+    let sketches: Vec<_> = (0..30_u64)
+        .map(|item| {
+            let mut sketch = MinHash32::new(64, 3).expect("sketch");
+            for value in (item / 3) * 100..(item / 3) * 100 + 40 + item % 3 {
+                sketch.update(&value.to_le_bytes());
+            }
+            sketch
+        })
+        .collect();
+    let mut index = PersistentIndex32::create_with_options(
+        &source,
+        0.6,
+        64,
+        3,
+        PersistentIndexOptions::new().store_signatures(true),
+    )
+    .expect("create");
+    index
+        .insert_many(
+            sketches
+                .iter()
+                .zip(0_u64..)
+                .map(|(sketch, key)| (key, sketch)),
+        )
+        .expect("insert");
+    index.sync().expect("sync");
+    let expected: Vec<_> = sketches
+        .iter()
+        .map(|sketch| {
+            index
+                .query_scored(sketch, ScoreFilter::new())
+                .expect("scored")
+        })
+        .collect();
+    drop(index);
+
+    let built = fixture.path("scored-built");
+    build_external(&source, &built, BuildOptions::default()).expect("build");
+    for path in [&source, &built] {
+        let mut lazy = LazyIndex32::open(path).expect("lazy");
+        assert!(lazy.stores_signatures());
+        for (sketch, scored) in sketches.iter().zip(&expected) {
+            assert_eq!(
+                &lazy
+                    .query_scored(sketch, ScoreFilter::new())
+                    .expect("lazy scored"),
+                scored
+            );
+        }
+        let batch = lazy
+            .query_scored_many(sketches.iter().take(2), ScoreFilter::new().top_k(1))
+            .expect("batch");
+        assert_eq!(batch[0], expected[0][..1].to_vec());
+        assert!(matches!(
+            lazy.query_scored(&sketches[0], ScoreFilter::new().top_k(0)),
+            Err(LazyStoreError::InvalidScoreFilter { .. })
+        ));
+    }
+
+    let plain = fixture.path("plain-source");
+    let mut index = PersistentIndex32::create(&plain, 0.6, 64, 3).expect("create");
+    index.insert(1, &sketches[0]).expect("insert");
+    index.close().expect("close");
+    let mut lazy = LazyIndex32::open(&plain).expect("lazy");
+    assert!(!lazy.stores_signatures());
+    assert!(matches!(
+        lazy.query_scored(&sketches[0], ScoreFilter::new()),
+        Err(LazyStoreError::SignaturesUnavailable)
+    ));
+}
