@@ -1,0 +1,244 @@
+{
+  "schema_version": 1,
+  "engine": "pari-storage",
+  "generated_unix_seconds": 1794951605,
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "logical_cpus": 12,
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "git_sha": "4d9782209601244ba2cdb280b5a98aa7f7ad8672"
+  },
+  "config": {
+    "items": 10000000,
+    "queries": 100,
+    "set_size": 32,
+    "overlap": 29,
+    "threshold": 0.8,
+    "num_perm": 128,
+    "seed": 7,
+    "dataset": null
+  },
+  "metrics": {
+    "storage.builder.buckets": {
+      "value": 90000000.0,
+      "unit": "buckets",
+      "direction": "neutral"
+    },
+    "storage.builder.build_elapsed_ms": {
+      "value": 70389.937936,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "storage.builder.build_items_per_second": {
+      "value": 142065.75958473227,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "storage.builder.output_bytes": {
+      "value": 4400006648.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.builder.peak_buffered_records": {
+      "value": 262144.0,
+      "unit": "records",
+      "direction": "lower"
+    },
+    "storage.builder.peak_rss_bytes": {
+      "value": 24194097152.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.builder.records": {
+      "value": 90000000.0,
+      "unit": "records",
+      "direction": "neutral"
+    },
+    "storage.builder.rss_delta_bytes": {
+      "value": 0.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.builder.rss_delta_bytes_per_item": {
+      "value": 0.0,
+      "unit": "bytes/item",
+      "direction": "lower"
+    },
+    "storage.builder.spill_runs": {
+      "value": 344.0,
+      "unit": "runs",
+      "direction": "neutral"
+    },
+    "storage.candidate_parity": {
+      "value": 1.0,
+      "unit": "ratio",
+      "direction": "neutral"
+    },
+    "storage.lazy.batch_elapsed_ms": {
+      "value": 1.931117,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "storage.lazy.batch_queries_per_second": {
+      "value": 51783.501465732006,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "storage.lazy.bytes_per_item": {
+      "value": 440.0006648,
+      "unit": "bytes/item",
+      "direction": "lower"
+    },
+    "storage.lazy.directory_buckets": {
+      "value": 90000000.0,
+      "unit": "buckets",
+      "direction": "neutral"
+    },
+    "storage.lazy.file_bytes": {
+      "value": 4400006648.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.lazy.query.peak_rss_bytes": {
+      "value": 29234098176.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.lazy.query.rss_delta_bytes": {
+      "value": 0.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.lazy.query.rss_delta_bytes_per_item": {
+      "value": 0.0,
+      "unit": "bytes/item",
+      "direction": "lower"
+    },
+    "storage.lazy.reopen.peak_rss_bytes": {
+      "value": 29234098176.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.lazy.reopen.rss_delta_bytes": {
+      "value": 5040001024.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.lazy.reopen.rss_delta_bytes_per_item": {
+      "value": 504.0001024,
+      "unit": "bytes/item",
+      "direction": "lower"
+    },
+    "storage.lazy.reopen_ms": {
+      "value": 6426.555575,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "storage.lazy.reopen_rss_to_file_ratio": {
+      "value": 1.1454530475063955,
+      "unit": "ratio",
+      "direction": "lower"
+    },
+    "storage.lazy.scalar.p50_ms": {
+      "value": 0.023592000000000002,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "storage.lazy.scalar.p95_ms": {
+      "value": 0.038987,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "storage.lazy.scalar.p99_ms": {
+      "value": 0.046734,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "storage.lazy.scalar_elapsed_ms": {
+      "value": 2.500521,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "storage.lazy.scalar_queries_per_second": {
+      "value": 39991.66573686044,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "storage.persistent.build.peak_rss_bytes": {
+      "value": 38830362624.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.persistent.build.rss_delta_bytes": {
+      "value": 26106236928.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.persistent.build.rss_delta_bytes_per_item": {
+      "value": 2610.6236928,
+      "unit": "bytes/item",
+      "direction": "lower"
+    },
+    "storage.persistent.build_elapsed_ms": {
+      "value": 345969.956288,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "storage.persistent.build_items_per_second": {
+      "value": 28904.24390398679,
+      "unit": "items/s",
+      "direction": "higher"
+    },
+    "storage.persistent.bytes_per_item": {
+      "value": 440.0006648,
+      "unit": "bytes/item",
+      "direction": "lower"
+    },
+    "storage.persistent.committed_buckets": {
+      "value": 90000000.0,
+      "unit": "buckets",
+      "direction": "neutral"
+    },
+    "storage.persistent.file_bytes": {
+      "value": 4400006648.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.persistent.mutation_operations_per_second": {
+      "value": 554978.0556040319,
+      "unit": "ops/s",
+      "direction": "higher"
+    },
+    "storage.persistent.mutation_parity": {
+      "value": 1.0,
+      "unit": "ratio",
+      "direction": "neutral"
+    },
+    "storage.persistent.reopen.peak_rss_bytes": {
+      "value": 29234098176.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.persistent.reopen.rss_delta_bytes": {
+      "value": 5040001024.0,
+      "unit": "bytes",
+      "direction": "lower"
+    },
+    "storage.persistent.reopen.rss_delta_bytes_per_item": {
+      "value": 504.0001024,
+      "unit": "bytes/item",
+      "direction": "lower"
+    },
+    "storage.persistent.reopen_ms": {
+      "value": 9202.512724,
+      "unit": "ms",
+      "direction": "lower"
+    },
+    "storage.persistent.sync_ms": {
+      "value": 13.943626,
+      "unit": "ms",
+      "direction": "lower"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+   Compiling serde_core v1.0.229
+   Compiling quote v1.0.47
+   Compiling serde v1.0.229
+   Compiling syn v3.0.4
+   Compiling serde_derive v1.0.229
+   Compiling serde_json v1.0.154
+   Compiling pari-format v0.2.1 (/mnt/nvme/pari/crates/pari-format)
+   Compiling pari-store-build v0.2.1 (/mnt/nvme/pari/crates/pari-store-build)
+   Compiling pari-store-lazy v0.2.1 (/mnt/nvme/pari/crates/pari-store-lazy)
+   Compiling pari-store v0.2.1 (/mnt/nvme/pari/crates/pari-store)
+   Compiling pari-bench v0.2.1 (/mnt/nvme/pari/crates/pari-bench)
+    Finished `release` profile [optimized] target(s) in 6.30s
+     Running `target/release/pari-bench run --items 1000000 --queries 100 --set-size 32 --overlap 29 --threshold 0.8 --num-perm 128 --seed 7 --output /mnt/nvme/scale-run/evidence-4d9782209601244ba2cdb280b5a98aa7f7ad8672/.scale-1m.partial-slvaxs66/synthetic.json`

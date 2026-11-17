@@ -1,0 +1,101 @@
+{
+  "config": {
+    "batch_size": 2048,
+    "exact": true,
+    "exact_threshold": 0.8,
+    "id_field": "id",
+    "input": "/mnt/nvme/scale-run/tmp/pari-text-campaign-wwkxp8oo/query.jsonl",
+    "limit": null,
+    "num_perm": 128,
+    "reference_items": 1000000,
+    "reference_manifest": "/mnt/nvme/scale-run/tmp/pari-text-campaign-wwkxp8oo/reference.json",
+    "seed": 7,
+    "shingle_size": 3,
+    "text_field": "text",
+    "threads": null,
+    "threshold": 0.8
+  },
+  "engine": "pari",
+  "environment": {
+    "architecture": "x86_64",
+    "git_sha": "4d9782209601244ba2cdb280b5a98aa7f7ad8672",
+    "operating_system": "Linux",
+    "pari_version": "0.2.1",
+    "python_version": "3.12.3"
+  },
+  "generated_unix_seconds": 1794952218,
+  "metrics": {
+    "candidate_count": {
+      "direction": "lower",
+      "unit": "pairs",
+      "value": 50000
+    },
+    "candidate_rate": {
+      "direction": "lower",
+      "unit": "ratio",
+      "value": 5e-07
+    },
+    "candidate_reduction": {
+      "direction": "higher",
+      "unit": "ratio",
+      "value": 0.9999995
+    },
+    "elapsed_seconds": {
+      "direction": "lower",
+      "unit": "seconds",
+      "value": 8.864122943999973
+    },
+    "exact_match_count": {
+      "direction": "neutral",
+      "unit": "pairs",
+      "value": 50000
+    },
+    "matched_query_count": {
+      "direction": "neutral",
+      "unit": "queries",
+      "value": 50000
+    },
+    "output_bytes": {
+      "direction": "lower",
+      "unit": "bytes",
+      "value": 12905560
+    },
+    "overlap_rate": {
+      "direction": "neutral",
+      "unit": "ratio",
+      "value": 0.5
+    },
+    "process_peak_rss_bytes": {
+      "direction": "lower",
+      "unit": "bytes",
+      "value": 807288832
+    },
+    "queries_per_second": {
+      "direction": "higher",
+      "unit": "queries/second",
+      "value": 11281.431973784715
+    },
+    "query_count": {
+      "direction": "neutral",
+      "unit": "queries",
+      "value": 100000
+    },
+    "reference_index_bytes": {
+      "direction": "lower",
+      "unit": "bytes",
+      "value": 440000784
+    },
+    "reopen_seconds": {
+      "direction": "lower",
+      "unit": "seconds",
+      "value": 1.188354401999959
+    },
+    "unmatched_query_count": {
+      "direction": "neutral",
+      "unit": "queries",
+      "value": 50000
+    }
+  },
+  "schema_version": 1,
+  "workload": "text-cross-corpus-audit"
+}

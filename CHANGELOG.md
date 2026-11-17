@@ -11,6 +11,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - `benchmarks/dedupe_memory.py` measures the high-level `DedupeIndex` resident
   memory, throughput, and grouping cost for the in-memory and local backends,
   and the dedicated scale runner records it at 10M records for issue #96.
+- Validated 10M scale evidence from a dedicated Linux host, with a same-host
+  1M comparison, `DedupeIndex` memory measurements, and decisions for issues
+  #95 and #96 in `docs/scale-10m-evidence.md`.
 
 ### Changed
 
