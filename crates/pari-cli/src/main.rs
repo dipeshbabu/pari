@@ -1589,7 +1589,22 @@ fn open_writer(path: &str, input: &str) -> Result<Box<dyn Write>, Box<dyn Error>
     if path == "-" {
         Ok(Box::new(BufWriter::new(io::stdout())))
     } else {
-        Ok(Box::new(BufWriter::new(File::create(path)?)))
+        let path = Path::new(path);
+        let context = |error: io::Error| {
+            io::Error::new(
+                error.kind(),
+                format!("failed to create output {}: {error}", path.display()),
+            )
+        };
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent).map_err(context)?;
+        }
+        Ok(Box::new(BufWriter::new(
+            File::create(path).map_err(context)?,
+        )))
     }
 }
 
