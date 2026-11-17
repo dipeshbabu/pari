@@ -14,6 +14,7 @@ RELATIVE_LINK = re.compile(r"(\]\()(?!https?:|mailto:|#|/)([^)\s]+)(\))")
 # (which GitHub would otherwise render as a table above each guide).
 PAGE_ICONS = {
     "index.md": "material/home",
+    "tutorial.md": "material/school-outline",
     "python.md": "material/language-python",
     "cli.md": "material/console",
     "dataset-integrations.md": "material/database-import",

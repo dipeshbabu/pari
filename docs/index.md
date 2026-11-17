@@ -11,6 +11,10 @@ Start in memory, save an index to a versioned `.pari` file, or process bounded
 batches from larger datasets through the same native code path.
 
 <div class="pari-cards">
+<a class="pari-card" href="tutorial/">
+  <strong>Tutorial</strong>
+  <span>Deduplicate a CSV and search it by similarity in five minutes.</span>
+</a>
 <a class="pari-card" href="python/">
   <strong>Python API</strong>
   <span>Deduplicate records, build signatures, and query persistent indexes.</span>

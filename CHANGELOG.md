@@ -12,6 +12,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   (`with_signature_storage`) and answer `query_scored`/`query_scored_many`;
   read-only `LazyIndex32`/`LazyIndex64` answer the same scored queries from
   files with stored signatures.
+- A getting-started tutorial (`docs/tutorial.md`) backed by the runnable
+  `examples/quickstart.py`, which deduplicates a CSV with `shingles` and
+  `min_similarity` and searches the kept rows with scored queries.
 
 ### Changed
 
