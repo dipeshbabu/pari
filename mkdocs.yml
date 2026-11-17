@@ -102,6 +102,7 @@ validation:
 nav:
   - Introduction: index.md
   - Getting started:
+      - Tutorial: tutorial.md
       - Python API: python.md
       - Command line: cli.md
       - Dataset integrations: dataset-integrations.md

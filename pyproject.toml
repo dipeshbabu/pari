@@ -125,6 +125,8 @@ include = [
   { path = "docs/parallelism.md", format = "sdist" },
   { path = "docs/platforms.md", format = "sdist" },
   { path = "docs/text-workloads.md", format = "sdist" },
+  { path = "examples/quickstart.py", format = "sdist" },
+  { path = "docs/tutorial.md", format = "sdist" },
   { path = "examples/text_workload.py", format = "sdist" },
   { path = "examples/code_workload.py", format = "sdist" },
   { path = "examples/code_corpus_fixture/repo-alpha/src/checksum.py", format = "sdist" },
