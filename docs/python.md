@@ -104,6 +104,14 @@ result = deduplicate(
 
 The verifier runs before native components are joined; it does not post-filter already connected groups or alter LSH internals. Exceptions raised by feature, verifier, or representative callbacks propagate to the caller.
 
+For a similarity floor without writing a verifier, pass `min_similarity`:
+
+```python
+result = deduplicate(records, feature=features, threshold=0.8, min_similarity=0.9)
+```
+
+Candidate pairs whose estimated Jaccard similarity is below `min_similarity` are rejected natively before components are joined and before any `exact` verifier runs, so the callback sees fewer pairs. The engine keeps each record's signature (`num_perm × 4` bytes) only when `min_similarity` is set. `DedupeIndex.similarity(left, right)` returns the estimate for two ingestion indexes. `candidate_groups()` and `candidate_pairs()` remain unverified LSH views. Values outside `[0, 1]` raise `ConfigurationError`.
+
 ### Incremental and persistent ingestion
 
 `DedupeIndex` exposes the same operation incrementally. `add_many` consumes any iterable in bounded batches, and `add` has the same ingestion-order semantics:

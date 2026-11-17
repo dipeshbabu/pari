@@ -1112,3 +1112,51 @@ fn dedup_creates_missing_output_directories() {
     fs::remove_file(blocked).expect("cleanup blocker");
     fs::remove_file(input).expect("cleanup input");
 }
+
+#[test]
+fn dedup_min_similarity_filters_pairs_and_groups() {
+    let input = temp_path("dedup-min-similarity", "jsonl");
+    fs::write(
+        &input,
+        concat!(
+            "{\"key\":1,\"values\":[\"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\",\"h\",\"i\",\"j\"]}\n",
+            "{\"key\":2,\"values\":[\"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\",\"h\",\"i\",\"k\"]}\n",
+            "{\"key\":3,\"values\":[\"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\",\"h\",\"i\",\"j\"]}\n",
+        ),
+    )
+    .expect("records");
+    let run = |extra: &[&str]| {
+        let output = pari()
+            .arg("dedup")
+            .arg("--input")
+            .arg(&input)
+            .args(["--threshold", "0.5"])
+            .args(extra)
+            .output()
+            .expect("dedup");
+        assert_success(&output);
+        String::from_utf8(output.stdout).expect("utf8")
+    };
+
+    assert_eq!(run(&["--emit", "pairs"]).lines().count(), 3);
+    assert_eq!(
+        run(&["--emit", "pairs", "--min-similarity", "0.95", "--json"]),
+        "{\"left\":1,\"right\":3,\"similarity\":1.0}\n"
+    );
+    assert_eq!(
+        run(&["--emit", "pairs", "--min-similarity", "0.95"]),
+        "1\t3\t1.0000\n"
+    );
+    assert_eq!(run(&["--min-similarity", "0.95"]), "1\t1,3\n");
+
+    let invalid = pari()
+        .arg("dedup")
+        .arg("--input")
+        .arg(&input)
+        .args(["--min-similarity", "1.5"])
+        .output()
+        .expect("dedup");
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("--min-similarity"));
+    let _ = fs::remove_file(input);
+}

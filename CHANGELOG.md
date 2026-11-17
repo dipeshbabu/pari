@@ -20,6 +20,11 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - `pari index --store-signatures` and `pari search --scores`,
   `--min-similarity`, and `--top-k` return aligned `scores` in JSONL output and
   `key:score` pairs in text output. `stats --json` adds `stores_signatures`.
+- `deduplicate(..., min_similarity=...)`, `DedupeIndex(min_similarity=...)`,
+  and `DedupeIndex.similarity` reject candidate pairs below an estimated
+  similarity natively before any `exact` verifier runs.
+- `pari dedup --min-similarity` filters pairs and groups the same way and adds
+  each pair's `similarity` to pairs output.
 
 ### Changed
 
