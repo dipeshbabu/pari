@@ -6,6 +6,12 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Changed
+
+- The MIT license copyright line in the repository and every packaged public
+  crate names Dipesh Tharu Mahato as the sole copyright holder. Third-party
+  notices for datasketch and redis-rs are unchanged.
+
 ### Fixed
 
 - The release workflow's PyPI recovery accepts a `recover_version` input
