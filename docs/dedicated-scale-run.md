@@ -37,7 +37,10 @@ Point the argument at the local NVMe mount, outside the checkout. The script:
 3. records host details plus `vmstat` and, when installed, `iostat` telemetry;
 4. runs the `scale-1m` preflight, then `scale-10m`, both with the text stage and
    with failure evidence preserved;
-5. writes `pari-scale-evidence-<sha>.tar.gz` and its SHA-256, and exits non-zero
+5. measures the high-level `DedupeIndex` memory model with
+   `benchmarks/dedupe_memory.py` for the in-memory and local backends at 10M
+   records, one process each (issue #96);
+6. writes `pari-scale-evidence-<sha>.tar.gz` and its SHA-256, and exits non-zero
    if a profile failed.
 
 Run it inside `tmux` or `screen` so an SSH disconnect does not stop it. Install

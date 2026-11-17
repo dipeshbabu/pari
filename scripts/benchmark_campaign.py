@@ -1581,6 +1581,12 @@ def render_report(
         ground_truth_ms = optional_metric(
             synthetic, "candidate.ground_truth_elapsed_ms"
         )
+        product_parts = [signature_ms, index_ms, grouping_ms, query_ms]
+        product_ms = (
+            None
+            if all(value is None for value in product_parts)
+            else sum(value or 0.0 for value in product_parts)
+        )
         synthetic_peak = maximum_available(
             optional_metric(synthetic, "memory.signature_peak_rss_bytes"),
             optional_metric(synthetic, "memory.index_build_peak_rss_bytes"),
@@ -1617,8 +1623,13 @@ def render_report(
                 f"Persistent construction took {format_duration_ms(optional_metric(storage, 'storage.persistent.build_elapsed_ms'))}; bounded external construction took {format_duration_ms(optional_metric(storage, 'storage.builder.build_elapsed_ms'))}; lazy reopen took {format_duration_ms(optional_metric(storage, 'storage.lazy.reopen_ms'))}. Peak RSS was {format_gib(synthetic_peak)} for the synthetic process, {format_gib(persistent_peak)} during persistent construction, and {format_gib(builder_peak)} during external construction. The external builder held at most {format_number(optional_metric(storage, 'storage.builder.peak_buffered_records'), digits=0)} records and produced {format_number(optional_metric(storage, 'storage.lazy.bytes_per_item'))} bytes/item.",
                 "",
                 f"- **CPU parallelism: keep the bounded signature policy.** The largest profile used {format_number(signature_threads, digits=0)} effective threads under {thread_policy}, with parallel execution {parallel_state}. Query phases remain too small in this workload to justify broader parallel scheduling.",
-                f"- **Issue #69: keep sharding deferred.** The `{profile['name']}` profile fits one process. Run `scale-10m` on dedicated local scratch before choosing a shard crossover point from scale evidence.",
-                "- **GPU work: defer.** The measured end-to-end storage path is I/O-bound, and no profile yet shows a GPU-suitable kernel dominating the real text workload.",
+                f"- **Issue #69: keep sharding deferred.** The `{profile['name']}` profile fits one process with a {format_gib(synthetic_peak)} synthetic peak RSS."
+                + (
+                    ""
+                    if profile["items"] >= 10_000_000
+                    else " Run `scale-10m` on dedicated local scratch before choosing a shard crossover point from scale evidence."
+                ),
+                f"- **GPU work: defer.** Signature construction, the only phase suited to a GPU, took {format_duration_ms(signature_ms)} of {format_duration_ms(product_ms)} in the in-memory product phases, while persistent construction took {format_duration_ms(optional_metric(storage, 'storage.persistent.build_elapsed_ms'))}. Bundles do not record whether storage phases are CPU- or I/O-bound; use host telemetry before attributing them.",
                 "",
             ]
         )

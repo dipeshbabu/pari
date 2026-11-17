@@ -6,8 +6,17 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Added
+
+- `benchmarks/dedupe_memory.py` measures the high-level `DedupeIndex` resident
+  memory, throughput, and grouping cost for the in-memory and local backends,
+  and the dedicated scale runner records it at 10M records for issue #96.
+
 ### Changed
 
+- Generated benchmark reports derive the sharding and GPU decision bullets from
+  bundle measurements instead of stating that storage is I/O-bound, which the
+  bundles do not measure.
 - The MIT license copyright line in the repository and every packaged public
   crate names Dipesh Tharu Mahato as the sole copyright holder. Third-party
   notices for datasketch and redis-rs are unchanged.

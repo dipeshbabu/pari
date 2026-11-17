@@ -163,6 +163,7 @@ jobs:
           PARI_SCALE_PROFILES: smoke
           PARI_SCALE_MIN_MEMORY_GIB: "1"
           PARI_SCALE_MIN_FREE_DISK_GIB: "5"
+          PARI_SCALE_DEDUPE_ITEMS: "2000"
         run: bash scripts/run_dedicated_scale.sh "$RUNNER_TEMP/scale-run"
       - name: Check the hand-back archive
         run: |
@@ -170,6 +171,9 @@ jobs:
           sha256sum -c pari-scale-evidence-*.tar.gz.sha256
           tar -tzf pari-scale-evidence-*.tar.gz | grep -E '/smoke/bundle.json$'
           tar -tzf pari-scale-evidence-*.tar.gz | grep -E '/host.txt$'
+          for backend in memory local; do
+            tar -xzOf pari-scale-evidence-*.tar.gz --wildcards "*/dedupe-$backend.json"               | python3 -c 'import json, sys; r = json.load(sys.stdin)["result"]; assert r["items"] == 2000 and 0 < r["groups"] <= 1000 and r["grouped_members"] == 2 * r["groups"] and r["peak_rss_bytes"] > 0, r; print(r)'
+          done
 
   windows-storage-smoke:
     name: Windows tests
