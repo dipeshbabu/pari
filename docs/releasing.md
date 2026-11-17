@@ -146,9 +146,17 @@ PyPI never accepts a filename that was uploaded before, even after the file or
 release is deleted. Before choosing a version, check that it was never
 published to PyPI, including abandoned attempts. If a tag's Python upload is
 rejected for a reused filename, do not move the tag; publish the next patch
-version for every package so Rust and Python versions stay aligned. Pari
-0.2.0 reached crates.io only for this reason, and 0.2.1 is the complete
-release.
+version for every package so Rust and Python versions stay aligned.
+
+The rejected version's wheels can still reach PyPI under a wheel build tag. Make
+sure the version's GitHub Release holds the attested bundle from its tag run,
+then dispatch `release.yml` from `main` with `recover_pypi_baseline` enabled and
+`recover_version` set to that version. The workflow downloads the
+checksum-verified wheels, rewrites only their `WHEEL` metadata to `Build: 1`,
+install-tests the Linux wheel, and publishes the renamed files (for example
+`pari_similarity-0.2.0-1-cp310-abi3-win_amd64.whl`) through the `pypi`
+environment. Source distributions have no build tag and cannot be recovered.
+Pari 0.2.0 was restored this way; 0.2.1 is the complete release with an sdist.
 
 ## Yank and rollback policy
 

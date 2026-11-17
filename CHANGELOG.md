@@ -6,6 +6,12 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Fixed
+
+- The release workflow's PyPI recovery accepts a `recover_version` input
+  instead of only restoring 0.1.0, so any release whose wheel filenames PyPI
+  blocked can publish its archived, checksum-verified wheels with build tag 1.
+
 ## [0.2.1] - 2026-11-17
 
 ### Fixed

@@ -73,3 +73,56 @@ class BaselineRecoveryTests(unittest.TestCase):
                     "pari_similarity-0.1.0-cp310-abi3-linux_x86_64.whl",
                     Path(temporary),
                 )
+
+
+class VersionedRecoveryTests(unittest.TestCase):
+    def wheel(self, version: str) -> bytes:
+        root = f"pari_similarity-{version}.dist-info"
+        members = {
+            "pari/_native.pyd": b"native",
+            f"{root}/METADATA": f"Name: pari-similarity\nVersion: {version}\n".encode(),
+            f"{root}/WHEEL": b"Wheel-Version: 1.0\nTag: cp310-abi3-win_amd64\n",
+        }
+        buffer = io.StringIO(newline="")
+        writer = csv.writer(buffer, lineterminator="\n")
+        for name, data in members.items():
+            writer.writerow([name, record_digest(data), len(data)])
+        writer.writerow([f"{root}/RECORD", "", ""])
+        members[f"{root}/RECORD"] = buffer.getvalue().encode()
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as wheel:
+            for name, data in members.items():
+                wheel.writestr(name, data)
+        return archive.getvalue()
+
+    def test_other_versions_get_build_tag_one(self) -> None:
+        name = "pari_similarity-0.2.0-cp310-abi3-win_amd64.whl"
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = rebuild_wheel(
+                self.wheel("0.2.0"), name, Path(temporary), "0.2.0"
+            )
+            self.assertEqual(
+                destination.name, "pari_similarity-0.2.0-1-cp310-abi3-win_amd64.whl"
+            )
+            with zipfile.ZipFile(destination) as wheel:
+                self.assertIn(
+                    b"Build: 1",
+                    wheel.read("pari_similarity-0.2.0.dist-info/WHEEL"),
+                )
+
+    def test_versions_must_match_and_be_well_formed(self) -> None:
+        name = "pari_similarity-0.2.0-cp310-abi3-win_amd64.whl"
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValueError, "original Pari release wheel"):
+                rebuild_wheel(self.wheel("0.2.0"), name, Path(temporary), "0.1.0")
+            with self.assertRaisesRegex(ValueError, "MAJOR.MINOR.PATCH"):
+                rebuild_wheel(self.wheel("0.2.0"), name, Path(temporary), "0.2")
+
+    def test_downloads_are_restricted_to_the_requested_release(self) -> None:
+        from scripts.recover_pypi_baseline import fetch
+
+        with self.assertRaisesRegex(ValueError, "only the archived release"):
+            fetch(
+                "https://github.com/dipeshbabu/pari/releases/download/v0.1.0/x.whl",
+                "0.2.0",
+            )

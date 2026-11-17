@@ -42,9 +42,13 @@ on:
   workflow_dispatch:
     inputs:
       recover_pypi_baseline:
-        description: Restore checksum-verified archived baseline wheels as build 1
+        description: Restore checksum-verified archived release wheels as build 1
         type: boolean
         default: false
+      recover_version:
+        description: Release version whose archived wheels are restored
+        type: string
+        default: "0.1.0"
   push:
     tags:
       - "v*"
@@ -155,11 +159,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest scripts.tests.test_baseline_recovery -v
-      - run: python scripts/recover_pypi_baseline.py --output baseline-dist
+      - name: Rebuild archived release wheels with build tag 1
+        env:
+          RECOVER_VERSION: ${{ inputs.recover_version }}
+        run: python scripts/recover_pypi_baseline.py --output baseline-dist --version "$RECOVER_VERSION"
       - name: Install and test the archived Linux baseline
+        env:
+          RECOVER_VERSION: ${{ inputs.recover_version }}
         run: |
           python -m pip install baseline-dist/*manylinux*x86_64.whl
-          python -I -c 'import pari; assert pari.__version__ == "0.1.0"; m = pari.MinHash.from_values([b"baseline"]); assert m.jaccard(m) == 1.0'
+          python -I -c 'import os, pari; assert pari.__version__ == os.environ["RECOVER_VERSION"]; m = pari.MinHash.from_values([b"baseline"]); assert m.jaccard(m) == 1.0'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: validated-baseline-wheels
