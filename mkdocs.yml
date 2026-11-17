@@ -6,7 +6,7 @@ site_url: https://dipeshbabu.github.io/pari/
 repo_url: https://github.com/dipeshbabu/pari
 repo_name: dipeshbabu/pari
 edit_uri: edit/main/docs/
-copyright: Copyright &copy; Pari contributors. Released under the MIT license.
+copyright: Copyright &copy; Dipesh Tharu Mahato. Released under the MIT license.
 
 docs_dir: docs
 site_dir: site
@@ -49,6 +49,9 @@ theme:
 
 extra_css:
   - assets/stylesheets/pari.css
+
+extra_javascript:
+  - assets/javascripts/repo-version.js
 
 extra:
   generator: false
