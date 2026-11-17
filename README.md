@@ -22,6 +22,12 @@ file, or process bounded batches from larger datasets through the same Rust engi
 The project is pre-1.0; see the [compatibility policy](https://github.com/dipeshbabu/pari/blob/v0.1.3/docs/compatibility.md).
 The Python extension requires Rust 1.83 when built from source.
 
+On a recorded 1M-item run against Datasketch 2.0 on the same 4-vCPU Linux VM,
+Pari built signatures about 70× faster, inserted into the index about 8× faster,
+and answered single queries with about 10× lower p99 latency. See the
+[benchmark evidence](https://github.com/dipeshbabu/pari/blob/v0.1.3/docs/benchmark-evidence.md)
+for the environment, workload, and validated result bundles.
+
 ## Installation
 
 ### Python

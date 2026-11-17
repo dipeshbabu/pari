@@ -29,6 +29,23 @@ batches from larger datasets through the same native code path.
 </a>
 </div>
 
+## Performance
+
+Recorded on a 4-vCPU GitHub-hosted Linux VM with 1,000,000 synthetic items,
+compared with Datasketch 2.0 on the same sets, threshold, and permutation count:
+
+| Phase | Pari | Datasketch 2.0 | Difference |
+| --- | ---: | ---: | ---: |
+| Signatures per second | 322K | 4.6K | about 70× faster |
+| Index inserts per second | 269K | 33.5K | about 8× faster |
+| Single-query p99 latency | 0.0031 ms | 0.0322 ms | about 10× lower |
+| Candidate recall at the threshold | 0.57 | 0.49 | higher |
+
+Throughput depends on hardware and workload, so compare numbers only within the
+recorded environment. The [benchmark evidence](benchmark-evidence.md) report
+links each figure to its validated bundle, and the
+[methodology](benchmarks.md) explains how to reproduce it.
+
 ## Getting started
 
 Pari 0.1.3 is an alpha release. It targets Python 3.10+ and Rust 1.81+ for the
