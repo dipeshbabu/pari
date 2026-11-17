@@ -26,6 +26,14 @@ use pari_store::{PersistentIndex32, PersistentIndex64, StoreStats};
 use same_file::{is_same_file, Handle};
 use serde::{Deserialize, Serialize};
 
+/// Write one line to stdout, propagating write failures such as a closed pipe
+/// instead of panicking like `println!`.
+macro_rules! outln {
+    ($($arg:tt)*) => {
+        writeln!(io::stdout().lock(), $($arg)*)?
+    };
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "pari",
@@ -627,6 +635,9 @@ impl ProgressReporter {
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
+        // A downstream reader such as `head` closing the pipe is a normal way
+        // to stop consuming output, not a failure worth reporting.
+        Err(error) if is_broken_pipe(error.as_ref()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("pari: {error}");
             ExitCode::from(2)
@@ -647,7 +658,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         Commands::Completion(args) => {
             let mut command = Cli::command();
             let name = command.get_name().to_owned();
-            generate(args.shell, &mut command, name, &mut io::stdout());
+            let mut script = Vec::new();
+            generate(args.shell, &mut command, name, &mut script);
+            let mut stdout = io::stdout().lock();
+            stdout.write_all(&script)?;
+            stdout.flush()?;
             Ok(())
         }
     }
@@ -662,8 +677,7 @@ fn plan(args: &PlanArgs) -> Result<(), Box<dyn Error>> {
             .ok_or("--memory-budget-mib is too large")?;
         options = options.memory_budget_bytes(bytes);
     }
-    print_plan(plan_lsh(options)?, args.json);
-    Ok(())
+    print_plan(plan_lsh(options)?, args.json)
 }
 
 fn explain(args: &ExplainArgs) -> Result<(), Box<dyn Error>> {
@@ -671,81 +685,82 @@ fn explain(args: &ExplainArgs) -> Result<(), Box<dyn Error>> {
         SignatureScheme::PariAffine32V1 => PersistentIndex32::open(&args.index)?.explain()?,
         SignatureScheme::PariAffine64V1 => PersistentIndex64::open(&args.index)?.explain()?,
     };
-    print_plan(explanation, args.json);
-    Ok(())
+    print_plan(explanation, args.json)
 }
 
-fn print_plan(plan: LshPlan, json: bool) {
+fn print_plan(plan: LshPlan, json: bool) -> Result<(), Box<dyn Error>> {
     if json {
-        println!("{}", lsh_plan_json(plan));
-        return;
+        outln!("{}", lsh_plan_json(plan));
+        return Ok(());
     }
 
-    println!(
+    outln!(
         "model: {} (analytical/model-based, not a measured guarantee)",
         plan.model
     );
-    println!("items: {}", plan.expected_items);
-    println!("threshold: {}", plan.threshold);
-    println!("num perm: {}", plan.num_perm);
-    println!(
+    outln!("items: {}", plan.expected_items);
+    outln!("threshold: {}", plan.threshold);
+    outln!("num perm: {}", plan.num_perm);
+    outln!(
         "parameters: {} bands x {} rows ({})",
         plan.params.bands,
         plan.params.rows,
         plan.parameter_source.as_str()
     );
-    println!(
+    outln!(
         "permutations: {} used, {} unused",
-        plan.used_permutations, plan.unused_permutations
+        plan.used_permutations,
+        plan.unused_permutations
     );
-    println!(
+    outln!(
         "candidate probability at threshold: {:.6}",
         plan.candidate_probability_at_threshold
     );
-    println!(
+    outln!(
         "50% candidate similarity: {:.6}",
         plan.similarity_at_50_percent_candidates
     );
-    println!("false-positive area: {:.6}", plan.false_positive_area);
-    println!("false-negative area: {:.6}", plan.false_negative_area);
-    println!(
+    outln!("false-positive area: {:.6}", plan.false_positive_area);
+    outln!("false-negative area: {:.6}", plan.false_negative_area);
+    outln!(
         "signature bytes/item: {}",
         plan.sizes.signature_bytes_per_item
     );
-    println!(
+    outln!(
         "bucket memberships/item: {}",
         plan.bucket_memberships_per_item
     );
-    println!(
+    outln!(
         "modeled index metadata bytes: {}",
         plan.sizes.index_metadata_bytes
     );
-    println!(
+    outln!(
         "modeled in-memory index bytes: {}",
         plan.sizes.in_memory_index_bytes
     );
-    println!(
+    outln!(
         "modeled persistent index bytes: {}",
         plan.sizes.persistent_index_bytes
     );
-    println!(
+    outln!(
         "modeled lazy resident bytes: {}",
         plan.sizes.lazy_resident_bytes
     );
     if let Some(budget) = plan.memory_budget_bytes {
-        println!("memory budget bytes: {budget}");
-        println!(
+        outln!("memory budget bytes: {budget}");
+        outln!(
             "in-memory fits with 50% headroom: {}",
             plan.in_memory_fits_budget.unwrap_or(false)
         );
-        println!(
+        outln!(
             "persistent/lazy fits with 50% headroom: {}",
             plan.persistent_fits_budget.unwrap_or(false)
         );
     }
-    println!("requested storage: {}", plan.requested_storage);
-    println!("recommended storage: {}", plan.recommended_storage);
-    println!("recommendation: {}", plan.recommendation_guidance());
+    outln!("requested storage: {}", plan.requested_storage);
+    outln!("recommended storage: {}", plan.recommended_storage);
+    outln!("recommendation: {}", plan.recommendation_guidance());
+    Ok(())
 }
 
 fn lsh_plan_json(plan: LshPlan) -> serde_json::Value {
@@ -800,9 +815,9 @@ fn index(args: &IndexArgs) -> Result<(), Box<dyn Error>> {
     };
     transaction.publish()?;
     if args.json {
-        println!("{}", serde_json::to_string(&summary)?);
+        outln!("{}", serde_json::to_string(&summary)?);
     } else {
-        println!(
+        outln!(
             "indexed {} items into {} ({} bytes, {} bands x {} rows)",
             summary.items,
             args.output.display(),
@@ -1221,7 +1236,7 @@ fn stats(args: &StatsArgs) -> Result<(), Box<dyn Error>> {
                 store.seed(),
                 store.threshold(),
                 args.json,
-            );
+            )?;
         }
         SignatureScheme::PariAffine64V1 => {
             let store = PersistentIndex64::open(&args.index)?;
@@ -1231,15 +1246,21 @@ fn stats(args: &StatsArgs) -> Result<(), Box<dyn Error>> {
                 store.seed(),
                 store.threshold(),
                 args.json,
-            );
+            )?;
         }
     }
     Ok(())
 }
 
-fn print_stats(current: StoreStats, num_perm: usize, seed: u64, threshold: f64, json: bool) {
+fn print_stats(
+    current: StoreStats,
+    num_perm: usize,
+    seed: u64,
+    threshold: f64,
+    json: bool,
+) -> Result<(), Box<dyn Error>> {
     if json {
-        println!(
+        outln!(
             "{}",
             serde_json::json!({
                 "items": current.items,
@@ -1259,17 +1280,17 @@ fn print_stats(current: StoreStats, num_perm: usize, seed: u64, threshold: f64, 
             })
         );
     } else {
-        println!("items: {}", current.items);
-        println!("file bytes: {}", current.file_bytes);
-        println!("threshold: {threshold}");
-        println!("num perm: {num_perm}");
-        println!("seed: {seed}");
-        println!("bands: {}", current.bands);
-        println!("rows: {}", current.rows);
-        println!("committed buckets: {}", current.committed_buckets);
-        println!("overlay buckets: {}", current.overlay_buckets);
-        println!("suppressed base keys: {}", current.suppressed_base_keys);
-        println!(
+        outln!("items: {}", current.items);
+        outln!("file bytes: {}", current.file_bytes);
+        outln!("threshold: {threshold}");
+        outln!("num perm: {num_perm}");
+        outln!("seed: {seed}");
+        outln!("bands: {}", current.bands);
+        outln!("rows: {}", current.rows);
+        outln!("committed buckets: {}", current.committed_buckets);
+        outln!("overlay buckets: {}", current.overlay_buckets);
+        outln!("suppressed base keys: {}", current.suppressed_base_keys);
+        outln!(
             "committed bucket members: {} total, min {}, p50 {}, p95 {}, p99 {}, max {}, average {:.3}",
             current.committed_distribution.memberships,
             current.committed_distribution.minimum,
@@ -1279,7 +1300,7 @@ fn print_stats(current: StoreStats, num_perm: usize, seed: u64, threshold: f64, 
             current.committed_distribution.maximum,
             current.committed_distribution.average_members(),
         );
-        println!(
+        outln!(
             "overlay bucket members: {} total, min {}, p50 {}, p95 {}, p99 {}, max {}, average {:.3}",
             current.overlay_distribution.memberships,
             current.overlay_distribution.minimum,
@@ -1289,8 +1310,9 @@ fn print_stats(current: StoreStats, num_perm: usize, seed: u64, threshold: f64, 
             current.overlay_distribution.maximum,
             current.overlay_distribution.average_members(),
         );
-        println!("dirty: {}", current.dirty);
+        outln!("dirty: {}", current.dirty);
     }
+    Ok(())
 }
 
 fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
@@ -1356,11 +1378,14 @@ fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
         members_checked,
     };
     if args.json {
-        println!("{}", serde_json::to_string(&result)?);
+        outln!("{}", serde_json::to_string(&result)?);
     } else {
-        println!(
+        outln!(
             "valid: {} sections, {} bucket sections, {} buckets, {} members checked",
-            result.sections, result.bucket_sections, result.buckets, result.members_checked
+            result.sections,
+            result.bucket_sections,
+            result.buckets,
+            result.members_checked
         );
     }
     Ok(())
@@ -1514,9 +1539,29 @@ where
         }
         let value = serde_json::from_str::<T>(trimmed)
             .map_err(|error| format!("invalid JSON on line {line_number}: {error}"))?;
-        operation(line_number, value).map_err(|error| format!("line {line_number}: {error}"))?;
+        operation(line_number, value).map_err(|error| -> Box<dyn Error> {
+            if is_broken_pipe(error.as_ref()) {
+                error
+            } else {
+                format!("line {line_number}: {error}").into()
+            }
+        })?;
     }
     Ok(())
+}
+
+fn is_broken_pipe(error: &(dyn Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() == io::ErrorKind::BrokenPipe)
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 fn open_reader(path: &str) -> Result<Box<dyn BufRead>, Box<dyn Error>> {

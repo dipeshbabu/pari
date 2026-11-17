@@ -999,3 +999,69 @@ fn completion_is_generated_from_command_definition() {
         assert!(text.contains(AFFINE64_SCHEME));
     }
 }
+
+#[test]
+fn closed_stdout_pipe_exits_cleanly_without_panicking() {
+    use std::fmt::Write as _;
+
+    let mut records = String::new();
+    let mut queries = String::new();
+    for key in 0..5_000 {
+        let group = key % 10;
+        writeln!(
+            records,
+            "{{\"key\":{key},\"values\":[\"shared\",\"group-{group}\"]}}"
+        )
+        .expect("format record");
+        writeln!(queries, "{{\"values\":[\"shared\",\"group-{group}\"]}}").expect("format query");
+    }
+    let index = temp_path("closed-pipe", "pari");
+    let mut build = pari()
+        .args(["index", "--output"])
+        .arg(&index)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn index");
+    build
+        .stdin
+        .take()
+        .expect("index stdin")
+        .write_all(records.as_bytes())
+        .expect("write index input");
+    assert_success(&build.wait_with_output().expect("index output"));
+
+    let index_arg = index.to_string_lossy().into_owned();
+    let commands: [(&[&str], &str); 4] = [
+        (&["dedup", "--emit", "pairs"], &records),
+        (&["search", "--index", &index_arg], &queries),
+        (&["stats", "--index", &index_arg], ""),
+        (&["completion", "bash"], ""),
+    ];
+    for (args, input) in commands {
+        let mut child = pari()
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn command");
+        // Close the read end before the command writes anything.
+        drop(child.stdout.take());
+        let mut stdin = child.stdin.take().expect("command stdin");
+        let input = input.to_owned();
+        let writer = thread::spawn(move || {
+            let _ = stdin.write_all(input.as_bytes());
+        });
+        let output = child.wait_with_output().expect("command output");
+        writer.join().expect("stdin writer");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "{args:?} failed on a closed stdout pipe: {stderr}"
+        );
+        assert!(!stderr.contains("panicked"), "{args:?} panicked: {stderr}");
+    }
+    let _ = fs::remove_file(index);
+}
