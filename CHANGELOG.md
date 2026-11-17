@@ -8,6 +8,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- CLI commands exit successfully instead of panicking or reporting an error
+  when a downstream reader such as `head` closes stdout early.
 - Lazy readers validate key-catalog checksums, counts, and uniqueness and filter
   stale bucket members against live keys in scalar and batch queries.
 - Optional known sections receive the same streamed checksum validation as
