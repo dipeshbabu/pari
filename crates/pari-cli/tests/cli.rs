@@ -1064,6 +1064,9 @@ fn closed_stdout_pipe_exits_cleanly_without_panicking() {
         assert!(!stderr.contains("panicked"), "{args:?} panicked: {stderr}");
     }
     let _ = fs::remove_file(index);
+}
+
+#[test]
 fn dedup_creates_missing_output_directories() {
     let input = temp_path("dedup-nested-input", "jsonl");
     fs::write(
