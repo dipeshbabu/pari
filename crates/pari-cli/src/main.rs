@@ -22,7 +22,10 @@ use pari_index::{
     plan_lsh, BucketDistribution, DuplicateGroup, LshIndex32, LshIndex64, LshPlan, LshPlanOptions,
     QueryMetrics, StorageMode,
 };
-use pari_store::{PersistentIndex32, PersistentIndex64, StoreStats};
+use pari_store::{
+    PersistentIndex32, PersistentIndex64, PersistentIndexOptions, ScoreFilter, ScoredCandidate,
+    StoreStats,
+};
 use same_file::{is_same_file, Handle};
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +88,9 @@ struct IndexArgs {
     /// Records committed per batch. Smaller values reduce uncommitted overlay memory.
     #[arg(long, default_value_t = 10_000)]
     batch_size: usize,
+    /// Store full signatures so `search --scores` can report similarity.
+    #[arg(long)]
+    store_signatures: bool,
     /// Print the final summary as JSON.
     #[arg(long)]
     json: bool,
@@ -103,8 +109,34 @@ struct SearchArgs {
     /// Emit JSONL results instead of tab-separated text.
     #[arg(long)]
     json: bool,
+    /// Report estimated similarity per candidate, most similar first. Requires
+    /// an index built with `--store-signatures`.
+    #[arg(long)]
+    scores: bool,
+    /// Keep candidates with estimated similarity at least this value. Implies `--scores`.
+    #[arg(long)]
+    min_similarity: Option<f64>,
+    /// Keep at most this many candidates per query. Implies `--scores`.
+    #[arg(long)]
+    top_k: Option<usize>,
     #[command(flatten)]
     progress: ProgressArgs,
+}
+
+impl SearchArgs {
+    fn score_filter(&self) -> Option<ScoreFilter> {
+        if !self.scores && self.min_similarity.is_none() && self.top_k.is_none() {
+            return None;
+        }
+        let mut filter = ScoreFilter::new();
+        if let Some(threshold) = self.min_similarity {
+            filter = filter.min_similarity(threshold);
+        }
+        if let Some(count) = self.top_k {
+            filter = filter.top_k(count);
+        }
+        Some(filter)
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -260,6 +292,32 @@ struct SearchResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     id: &'a Option<String>,
     candidates: Vec<u64>,
+    /// Estimated similarities aligned with `candidates`, present only in scored mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scores: Option<Vec<f64>>,
+}
+
+/// Candidate keys plus optional aligned similarity scores.
+type SearchRow = (Vec<u64>, Option<Vec<f64>>);
+
+fn split_scored(ranked: Vec<ScoredCandidate>) -> SearchRow {
+    let (keys, scores) = ranked
+        .into_iter()
+        .map(|candidate| (candidate.key, candidate.similarity))
+        .unzip();
+    (keys, Some(scores))
+}
+
+fn format_candidates(candidates: &[u64], scores: Option<&[f64]>) -> String {
+    match scores {
+        None => join_u64(candidates),
+        Some(scores) => candidates
+            .iter()
+            .zip(scores)
+            .map(|(key, score)| format!("{key}:{score:.4}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -837,7 +895,13 @@ fn build_index(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn 
 }
 
 fn build_index32(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn Error>> {
-    let mut store = PersistentIndex32::create(output, args.threshold, args.num_perm, args.seed)?;
+    let mut store = PersistentIndex32::create_with_options(
+        output,
+        args.threshold,
+        args.num_perm,
+        args.seed,
+        PersistentIndexOptions::new().store_signatures(args.store_signatures),
+    )?;
     let reporter = ProgressReporter::new(&args.progress)?;
     let reader = open_reader(&args.input)?;
     let mut batch = Vec::with_capacity(args.batch_size);
@@ -882,7 +946,13 @@ fn build_index32(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dy
 }
 
 fn build_index64(args: &IndexArgs, output: &Path) -> Result<IndexSummary, Box<dyn Error>> {
-    let mut store = PersistentIndex64::create(output, args.threshold, args.num_perm, args.seed)?;
+    let mut store = PersistentIndex64::create_with_options(
+        output,
+        args.threshold,
+        args.num_perm,
+        args.seed,
+        PersistentIndexOptions::new().store_signatures(args.store_signatures),
+    )?;
     let reporter = ProgressReporter::new(&args.progress)?;
     let reader = open_reader(&args.input)?;
     let mut batch = Vec::with_capacity(args.batch_size);
@@ -946,6 +1016,16 @@ fn search32(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
     let reporter = ProgressReporter::new(&args.progress)?;
     let mut store = PersistentIndex32::open(&args.index)?;
     store.set_observability(reporter.is_some());
+    let filter = args.score_filter();
+    if let Some(filter) = filter {
+        filter.validate()?;
+        if !store.stores_signatures() {
+            return Err(
+                "--scores, --min-similarity, and --top-k need an index built with --store-signatures"
+                    .into(),
+            );
+        }
+    }
     let reader = open_reader(&args.input)?;
     let mut writer = BufWriter::new(io::stdout().lock());
     let mut query_index = 0_usize;
@@ -959,7 +1039,10 @@ fn search32(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
             store.num_perm(),
             store.seed(),
         )?;
-        let candidates = store.query(&sketch)?;
+        let (candidates, scores) = match filter {
+            Some(filter) => split_scored(store.query_scored(&sketch, filter)?),
+            None => (store.query(&sketch)?, None),
+        };
         if reporter.is_some() {
             candidate_count = candidate_count.saturating_add(u64::try_from(candidates.len())?);
         }
@@ -970,12 +1053,14 @@ fn search32(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
                     query: query_index,
                     id: &query.id,
                     candidates,
+                    scores,
                 },
             )?;
             writeln!(writer)?;
         } else {
             let id = query.id.as_deref().unwrap_or("-").escape_debug();
-            writeln!(writer, "{query_index}\t{id}\t{}", join_u64(&candidates))?;
+            let candidates = format_candidates(&candidates, scores.as_deref());
+            writeln!(writer, "{query_index}\t{id}\t{candidates}")?;
         }
         query_index += 1;
         if let Some(reporter) = &reporter {
@@ -1012,6 +1097,16 @@ fn search64(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
     let reporter = ProgressReporter::new(&args.progress)?;
     let mut store = PersistentIndex64::open(&args.index)?;
     store.set_observability(reporter.is_some());
+    let filter = args.score_filter();
+    if let Some(filter) = filter {
+        filter.validate()?;
+        if !store.stores_signatures() {
+            return Err(
+                "--scores, --min-similarity, and --top-k need an index built with --store-signatures"
+                    .into(),
+            );
+        }
+    }
     let reader = open_reader(&args.input)?;
     let mut writer = BufWriter::new(io::stdout().lock());
     let mut query_index = 0_usize;
@@ -1025,7 +1120,10 @@ fn search64(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
             store.num_perm(),
             store.seed(),
         )?;
-        let candidates = store.query(&sketch)?;
+        let (candidates, scores) = match filter {
+            Some(filter) => split_scored(store.query_scored(&sketch, filter)?),
+            None => (store.query(&sketch)?, None),
+        };
         if reporter.is_some() {
             candidate_count = candidate_count.saturating_add(u64::try_from(candidates.len())?);
         }
@@ -1036,12 +1134,14 @@ fn search64(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
                     query: query_index,
                     id: &query.id,
                     candidates,
+                    scores,
                 },
             )?;
             writeln!(writer)?;
         } else {
             let id = query.id.as_deref().unwrap_or("-").escape_debug();
-            writeln!(writer, "{query_index}\t{id}\t{}", join_u64(&candidates))?;
+            let candidates = format_candidates(&candidates, scores.as_deref());
+            writeln!(writer, "{query_index}\t{id}\t{candidates}")?;
         }
         query_index += 1;
         if let Some(reporter) = &reporter {
@@ -1277,6 +1377,7 @@ fn print_stats(
                 "num_perm": num_perm,
                 "seed": seed,
                 "threshold": threshold,
+                "stores_signatures": current.stores_signatures,
             })
         );
     } else {
@@ -1311,6 +1412,7 @@ fn print_stats(
             current.overlay_distribution.average_members(),
         );
         outln!("dirty: {}", current.dirty);
+        outln!("stores signatures: {}", current.stores_signatures);
     }
     Ok(())
 }
