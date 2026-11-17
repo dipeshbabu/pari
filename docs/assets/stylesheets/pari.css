@@ -1,0 +1,275 @@
+/* Pari documentation theme for MkDocs Material. */
+
+:root {
+  --pari-blue: #7aa2ff;
+  --pari-blue-strong: #5488e8;
+  --pari-radius: 8px;
+}
+
+/* Dark (default) palette: near-black surfaces with a cool blue accent. */
+[data-md-color-scheme="slate"] {
+  --md-hue: 225;
+  --md-primary-fg-color: var(--pari-blue);
+  --md-primary-fg-color--light: #a3bfff;
+  --md-primary-fg-color--dark: var(--pari-blue-strong);
+  --md-primary-bg-color: #111318;
+  --md-primary-bg-color--light: #111318b3;
+  --md-accent-fg-color: var(--pari-blue);
+  --md-accent-fg-color--transparent: #7aa2ff1a;
+  --md-default-bg-color: #111318;
+  --md-default-bg-color--light: #111318b3;
+  --md-default-fg-color: #e9eaee;
+  --md-default-fg-color--light: #a9adb8;
+  --md-default-fg-color--lighter: #666b75;
+  --md-default-fg-color--lightest: #2a2e37;
+  --md-typeset-color: #e9eaee;
+  --md-typeset-a-color: var(--pari-blue-strong);
+  --md-code-bg-color: #16181e;
+  --md-code-fg-color: #e9eaee;
+  --md-code-hl-color: #7aa2ff;
+  --md-code-hl-color--light: #7aa2ff1a;
+  --md-footer-bg-color: #0c0e12;
+  --md-footer-bg-color--dark: #0a0b0f;
+  --md-typeset-table-color: #2a2e37;
+  --md-shadow-z2: 0 4px 16px #0006;
+}
+
+/* Light palette keeps the same accent on a clean white surface. */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--pari-blue-strong);
+  --md-primary-fg-color--light: var(--pari-blue);
+  --md-primary-fg-color--dark: #3a6ad0;
+  --md-primary-bg-color: #ffffff;
+  --md-primary-bg-color--light: #ffffffb3;
+  --md-accent-fg-color: #3a6ad0;
+  --md-accent-fg-color--transparent: #5488e81a;
+  --md-default-fg-color: #16181e;
+  --md-default-fg-color--light: #4b505b;
+  --md-default-fg-color--lighter: #8a8f99;
+  --md-default-fg-color--lightest: #e4e6eb;
+  --md-typeset-a-color: #3a6ad0;
+  --md-code-bg-color: #f4f6fa;
+  --md-code-fg-color: #16181e;
+  --md-footer-bg-color: #f4f6fa;
+  --md-footer-bg-color--dark: #eceff4;
+  --md-footer-fg-color: #16181e;
+  --md-footer-fg-color--light: #4b505b;
+  --md-footer-fg-color--lighter: #8a8f99;
+}
+
+/* Header and tabs blend into the page instead of a colored bar. */
+.md-header,
+.md-tabs {
+  background-color: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+}
+
+.md-header {
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  box-shadow: none;
+}
+
+.md-header--shadow {
+  box-shadow: none;
+}
+
+.md-header__title {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 1.5rem;
+  width: 1.5rem;
+}
+
+/* Search field reads as an inset control on the dark header. */
+.md-search__form {
+  background-color: var(--md-code-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: var(--pari-radius);
+}
+
+.md-search__form:hover {
+  background-color: var(--md-code-bg-color);
+  border-color: var(--md-default-fg-color--lighter);
+}
+
+.md-search__input,
+.md-search__input::placeholder,
+.md-search__icon {
+  color: var(--md-default-fg-color--light);
+}
+
+/* Typography: heavy, tight headings and comfortable body copy. */
+.md-typeset {
+  font-size: 0.8rem;
+  line-height: 1.7;
+}
+
+.md-typeset h1 {
+  color: var(--md-default-fg-color);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  margin-bottom: 1rem;
+}
+
+.md-typeset h2 {
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin-top: 2.2em;
+}
+
+.md-typeset h3 {
+  font-weight: 700;
+}
+
+.md-typeset h4,
+.md-typeset h5,
+.md-typeset h6 {
+  font-weight: 600;
+}
+
+.md-typeset a {
+  text-decoration: none;
+}
+
+.md-typeset a:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/* Code: soft panels with a hairline border. */
+.md-typeset code {
+  border-radius: 4px;
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+}
+
+.md-typeset pre > code {
+  padding: 1em 1.2em;
+}
+
+.md-typeset .highlight,
+.md-typeset pre {
+  border-radius: var(--pari-radius);
+}
+
+.md-typeset .highlight pre,
+.md-typeset pre {
+  border: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset .highlight pre {
+  margin: 0;
+}
+
+.md-clipboard {
+  color: var(--md-default-fg-color--lighter);
+}
+
+/* Tables and admonitions follow the same surfaces. */
+.md-typeset table:not([class]) {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: var(--pari-radius);
+  font-size: 0.75rem;
+  overflow: hidden;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--md-code-bg-color);
+  font-weight: 600;
+}
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: var(--pari-radius);
+  border-width: 1px;
+  box-shadow: none;
+  font-size: 0.78rem;
+}
+
+/* Navigation: muted labels with an accent for the current page. */
+.md-nav {
+  font-size: 0.72rem;
+}
+
+.md-nav__title {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.md-nav__item--section > .md-nav__link {
+  color: var(--md-default-fg-color);
+  font-weight: 700;
+}
+
+.md-nav__link {
+  color: var(--md-default-fg-color--light);
+}
+
+.md-nav__link--active,
+.md-nav__link:is(:focus, :hover) {
+  color: var(--md-accent-fg-color);
+}
+
+.md-nav--secondary .md-nav__title {
+  color: var(--md-default-fg-color--lighter);
+  font-size: 0.62rem;
+}
+
+/* Landing page cards. */
+.md-typeset .pari-cards {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 1.2rem 0 2rem;
+}
+
+@media screen and (max-width: 30em) {
+  .md-typeset .pari-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.md-typeset .pari-card {
+  background-color: var(--md-code-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: var(--pari-radius);
+  color: var(--md-default-fg-color);
+  display: block;
+  padding: 0.9rem 1rem;
+  transition: border-color 125ms, transform 125ms;
+}
+
+.md-typeset .pari-card:hover {
+  border-color: var(--md-accent-fg-color);
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+.md-typeset .pari-card strong {
+  color: var(--md-default-fg-color);
+  display: block;
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+}
+
+.md-typeset .pari-card span {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.md-typeset .pari-lead {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+/* Footer stays quiet. */
+.md-footer-meta {
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}

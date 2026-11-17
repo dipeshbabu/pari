@@ -1,0 +1,3 @@
+# Documentation site toolchain. Pin exact versions so site builds are reproducible.
+mkdocs==1.6.1
+mkdocs-material==9.8.1

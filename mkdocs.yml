@@ -1,0 +1,143 @@
+site_name: Pari Documentation
+site_description: >-
+  Find similar records and deduplicate datasets with MinHash and LSH from Rust,
+  Python, or the command line.
+site_url: https://dipeshbabu.github.io/pari/
+repo_url: https://github.com/dipeshbabu/pari
+repo_name: dipeshbabu/pari
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; Pari contributors. Released under the MIT license.
+
+docs_dir: docs
+site_dir: site
+strict: true
+
+theme:
+  name: material
+  language: en
+  logo: assets/pari-mark.svg
+  favicon: assets/pari-mark.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - search.highlight
+    - search.suggest
+    - toc.follow
+
+extra_css:
+  - assets/stylesheets/pari.css
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/dipeshbabu/pari
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/pari-similarity/
+    - icon: fontawesome/brands/rust
+      link: https://crates.io/crates/pari-core
+
+hooks:
+  - docs-site/hooks.py
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: info
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: info
+    unrecognized_links: info
+
+nav:
+  - Introduction: index.md
+  - Getting started:
+      - Python API: python.md
+      - Command line: cli.md
+      - Dataset integrations: dataset-integrations.md
+  - Workloads:
+      - Text deduplication: text-workloads.md
+      - Code corpora: code-workloads.md
+      - Entity matching: entity-matching.md
+  - Concepts:
+      - Architecture: architecture.md
+      - MinHash: minhash.md
+      - LSH index: lsh.md
+      - Duplicate grouping: grouping.md
+      - LSH planning: planning.md
+      - CPU parallelism: parallelism.md
+      - Observability: observability.md
+  - Storage:
+      - Persistent indexes: persistence.md
+      - Storage backends: storage-backends.md
+      - Index format: index-format.md
+  - Interoperability:
+      - Datasketch 2.x: datasketch-v2.md
+  - Benchmarks:
+      - Methodology: benchmarks.md
+      - Recorded evidence: benchmark-evidence.md
+      - Public corpora: public-corpora.md
+      - Public-corpus evidence: public-corpus-evidence.md
+      - Similarity families: similarity-family-evaluation.md
+      - Sharding evaluation: sharding-evaluation.md
+  - Project:
+      - Compatibility: compatibility.md
+      - Platforms: platforms.md
+      - Releasing: releasing.md
+      - Maintenance: maintenance.md
+      - Dependency policy: dependency-policy.md
+      - CI supply chain: ci-supply-chain.md
+      - Release notes:
+          - "0.1.3": releases/0.1.3.md
+          - "0.1.2": releases/0.1.2.md
+          - "0.1.1": releases/0.1.1.md
+          - "0.1.0": releases/0.1.0.md
