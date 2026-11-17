@@ -509,3 +509,97 @@ fn lazy_queries_filter_stale_members_against_the_live_key_catalog() {
         }
     }
 }
+
+#[test]
+fn external_builder_carries_stored_signatures() {
+    use pari_core::MinHash32;
+    use pari_store::{PersistentIndex32, PersistentIndexOptions, ScoreFilter};
+
+    let fixture = Fixture::new();
+    let source = fixture.path("signed-source");
+    let sketches: Vec<_> = (0..20_u64)
+        .map(|item| {
+            let mut sketch = MinHash32::new(64, 3).expect("sketch");
+            for value in item * 100..item * 100 + 40 {
+                sketch.update(&value.to_le_bytes());
+            }
+            sketch
+        })
+        .collect();
+    let mut index = PersistentIndex32::create_with_options(
+        &source,
+        0.6,
+        64,
+        3,
+        PersistentIndexOptions::new().store_signatures(true),
+    )
+    .expect("create");
+    index
+        .insert_many(
+            sketches
+                .iter()
+                .zip(0_u64..)
+                .map(|(sketch, key)| (key, sketch)),
+        )
+        .expect("insert");
+    index.close().expect("close");
+
+    let output = fixture.path("signed-output");
+    build_external(
+        &source,
+        &output,
+        BuildOptions {
+            max_buffer_records: 7,
+        },
+    )
+    .expect("build");
+    let built = PersistentIndex32::open(&output).expect("open built");
+    assert!(built.stores_signatures());
+    for (key, sketch) in (0_u64..).zip(&sketches) {
+        assert_eq!(
+            built.signature(key).expect("signature").as_ref(),
+            Some(sketch)
+        );
+    }
+    let scored = built
+        .query_scored(&sketches[5], ScoreFilter::new().top_k(1))
+        .expect("scored");
+    assert_eq!(scored[0].key, 5);
+
+    // A signature table that no longer matches the key count is rejected.
+    let mut file = IndexFile::decode(&fs::read(&source).expect("source bytes")).expect("decode");
+    let truncated = pari_format::encode_signature_segment(
+        SignatureScheme::PariAffine32V1,
+        64,
+        0,
+        std::iter::once(
+            sketches[0]
+                .signature()
+                .iter()
+                .map(|v| u64::from(*v))
+                .collect::<Vec<_>>(),
+        )
+        .collect::<Vec<_>>()
+        .iter()
+        .map(Vec::as_slice),
+    )
+    .expect("segment");
+    let sections = file
+        .sections()
+        .iter()
+        .filter(|section| section.kind() != SectionKind::Signatures)
+        .cloned()
+        .chain(std::iter::once(
+            Section::new(SectionKind::Signatures, false, truncated).expect("section"),
+        ))
+        .collect();
+    file = IndexFile::new(file.metadata().clone(), sections).expect("file");
+    let mismatched = fixture.path("mismatched-source");
+    fs::write(&mismatched, file.encode().expect("encode")).expect("write");
+    assert!(build_external(
+        &mismatched,
+        fixture.path("rejected"),
+        BuildOptions::default()
+    )
+    .is_err());
+}

@@ -446,6 +446,7 @@ const fn section_kind_from_raw(value: u16) -> Option<SectionKind> {
         2 => Some(SectionKind::BandHashes),
         3 => Some(SectionKind::Buckets),
         4 => Some(SectionKind::Tombstones),
+        5 => Some(SectionKind::Signatures),
         _ => None,
     }
 }

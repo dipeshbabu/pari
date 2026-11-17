@@ -10,6 +10,7 @@ mod buckets;
 mod codec;
 mod format;
 mod layout;
+mod signatures;
 
 pub use bucket_stream::{write_bucket_segment, BucketWriteRecord, StreamedBucketSegment};
 pub use buckets::{
@@ -24,3 +25,9 @@ pub use format::{
     Algorithm, FormatError, IndexFile, IndexMetadata, Section, SectionKind, SignatureScheme,
 };
 pub use layout::{FileLayout, LayoutError, SectionDescriptor};
+pub use signatures::{
+    decode_signature_segment, encode_signature_segment, read_signature_row,
+    read_signature_segment_values, signature_row_bytes, validate_signature_coverage,
+    SignatureError, SignatureSegment, SIGNATURE_SEGMENT_HEADER_BYTES,
+    SIGNATURE_SEGMENT_TARGET_BYTES,
+};
