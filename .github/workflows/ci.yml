@@ -149,6 +149,28 @@ jobs:
             --bin storage_layout \
             -- --items 256 --queries 32 --output storage-layout-smoke.json
 
+  dedicated-scale-script-smoke:
+    name: Dedicated scale script smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Run the dedicated-host script with the smoke profile
+        env:
+          PARI_SCALE_PROFILES: smoke
+          PARI_SCALE_MIN_MEMORY_GIB: "1"
+          PARI_SCALE_MIN_FREE_DISK_GIB: "5"
+        run: bash scripts/run_dedicated_scale.sh "$RUNNER_TEMP/scale-run"
+      - name: Check the hand-back archive
+        run: |
+          cd "$RUNNER_TEMP/scale-run"
+          sha256sum -c pari-scale-evidence-*.tar.gz.sha256
+          tar -tzf pari-scale-evidence-*.tar.gz | grep -E '/smoke/bundle.json$'
+          tar -tzf pari-scale-evidence-*.tar.gz | grep -E '/host.txt$'
+
   windows-storage-smoke:
     name: Windows tests
     runs-on: windows-latest
