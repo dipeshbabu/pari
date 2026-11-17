@@ -148,10 +148,21 @@ The local file contains signatures and bucket membership, not the original Pytho
 
 ### Feature callback patterns
 
-Pari deliberately leaves domain tokenization to the application:
+For plain text, `shingles` returns overlapping word or character n-grams as bytes, ready to use as a feature:
 
 ```python
-# Text: normalized word shingles.
+from pari import deduplicate, shingles
+
+result = deduplicate(documents, feature=lambda text: shingles(text, 3))
+typo_tolerant = deduplicate(names, feature=lambda name: shingles(name, 3, unit="char"))
+```
+
+`shingles(text, size=3, *, unit="word", normalize=True)` NFKC-normalizes and case-folds the text, splits words on Unicode word characters (ignoring punctuation), and returns each run of `size` consecutive words, without duplicates and in first-seen order. `unit="char"` uses runs of `size` characters with whitespace collapsed, which tolerates typos and suits text without spaces. Text shorter than one shingle yields a single shingle and empty text yields none. Larger sizes are stricter: 1–2 for short titles, 3–5 for paragraphs and documents. `normalize=False` keeps the original text and splits words on whitespace.
+
+Other domains still choose their own tokenization:
+
+```python
+# Text: custom word tokens.
 text_features = lambda text: (word.encode() for word in text.casefold().split())
 
 # Code: normalized non-empty source lines.
