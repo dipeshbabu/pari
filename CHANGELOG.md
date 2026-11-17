@@ -14,6 +14,12 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Fixed
 
+- Persistent indexes larger than about 3.7 million items failed to commit with
+  `SectionTooLarge` because all band hashes were written as one section above
+  the 256 MiB container limit (found by the 10M scale run, issue #95). Key
+  metadata is now written as row-aligned `Keys`/`BandHashes` section pairs of
+  about 64 MiB, and the persistent, lazy, and external-builder readers accept
+  them. Indexes that fit in one pair keep the same bytes as before.
 - The release workflow's PyPI recovery accepts a `recover_version` input
   instead of only restoring 0.1.0, so any release whose wheel filenames PyPI
   blocked can publish its archived, checksum-verified wheels with build tag 1.

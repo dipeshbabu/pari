@@ -52,6 +52,10 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
 const COUNT_BYTES: usize = 8;
 const U64_BYTES: usize = 8;
 const TEMPORARY_ALLOCATION_ATTEMPTS: u64 = 1_024;
+/// Target payload size for one `Keys` or `BandHashes` section. Larger key
+/// catalogs are written as several row-aligned `Keys`/`BandHashes` pairs so no
+/// section approaches the container's 256 MiB per-section limit.
+const METADATA_SECTION_TARGET_BYTES: usize = 64 * 1024 * 1024;
 static NEXT_TEMPORARY_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// Errors returned by the persistent local index.
@@ -1055,12 +1059,13 @@ impl PersistentIndexCore {
             u32::try_from(self.params.rows).map_err(|_| StoreError::LengthOverflow)?,
             0,
         )?;
-        let keys = encode_keys(self.key_hashes.keys().copied())?;
-        let hashes = encode_band_hashes(self.key_hashes.values(), self.params.bands)?;
-        let mut sections = vec![
-            Section::new(SectionKind::Keys, true, keys)?,
-            Section::new(SectionKind::BandHashes, true, hashes)?,
-        ];
+        let mut sections = Vec::new();
+        append_key_metadata_sections(
+            &mut sections,
+            &self.key_hashes,
+            self.params.bands,
+            METADATA_SECTION_TARGET_BYTES,
+        )?;
         if let Some(signatures) = signatures {
             append_signature_sections(&mut sections, signatures, self.scheme, self.num_perm)?;
         }
@@ -1727,16 +1732,18 @@ fn read_key_metadata(
     file: &mut File,
     bands: usize,
 ) -> Result<KeyMetadata, StoreError> {
-    let keys_descriptor = required_unique_section(layout, SectionKind::Keys)?;
-    let hashes_descriptor = required_unique_section(layout, SectionKind::BandHashes)?;
-    let keys_payload = layout.read_section(file, keys_descriptor)?;
-    let hashes_payload = layout.read_section(file, hashes_descriptor)?;
-    let keys = decode_keys(&keys_payload)?;
-    let rows_by_key = decode_band_hashes(&hashes_payload, bands)?;
-    if keys.len() != rows_by_key.len() {
-        return Err(StoreError::InvalidSnapshot {
-            reason: "key and band-hash record counts differ",
-        });
+    let mut keys = Vec::new();
+    let mut rows_by_key = Vec::new();
+    for (keys_descriptor, hashes_descriptor) in key_metadata_pairs(layout)? {
+        let chunk_keys = decode_keys(&layout.read_section(file, keys_descriptor)?)?;
+        let chunk_rows = decode_band_hashes(&layout.read_section(file, hashes_descriptor)?, bands)?;
+        if chunk_keys.len() != chunk_rows.len() {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "key and band-hash record counts differ",
+            });
+        }
+        keys.extend(chunk_keys);
+        rows_by_key.extend(chunk_rows);
     }
 
     let mut key_hashes = BTreeMap::new();
@@ -1748,6 +1755,73 @@ fn read_key_metadata(
         }
     }
     Ok((keys, key_hashes))
+}
+
+/// Return the row-aligned `Keys`/`BandHashes` section pairs in file order.
+///
+/// Small catalogs use one pair. Larger ones are split into several pairs whose
+/// `n`-th `Keys` section and `n`-th `BandHashes` section hold the same rows.
+fn key_metadata_pairs(
+    layout: &FileLayout,
+) -> Result<Vec<(SectionDescriptor, SectionDescriptor)>, StoreError> {
+    let of_kind = |kind| -> Result<Vec<SectionDescriptor>, StoreError> {
+        let sections: Vec<_> = layout
+            .sections()
+            .iter()
+            .copied()
+            .filter(|descriptor| descriptor.kind() == kind)
+            .collect();
+        if sections.is_empty() {
+            return Err(StoreError::InvalidSnapshot {
+                reason: missing_section_reason(kind),
+            });
+        }
+        if sections.iter().any(|descriptor| !descriptor.required()) {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "required metadata section is marked optional",
+            });
+        }
+        Ok(sections)
+    };
+    let keys = of_kind(SectionKind::Keys)?;
+    let hashes = of_kind(SectionKind::BandHashes)?;
+    if keys.len() != hashes.len() {
+        return Err(StoreError::InvalidSnapshot {
+            reason: "keys and band-hash sections are not paired",
+        });
+    }
+    Ok(keys.into_iter().zip(hashes).collect())
+}
+
+/// Write keys and band hashes as one or more row-aligned section pairs.
+///
+/// Every `Keys` section is written before the `BandHashes` sections, so a
+/// catalog that fits one pair keeps the original single-pair byte layout.
+fn append_key_metadata_sections(
+    sections: &mut Vec<Section>,
+    key_hashes: &BTreeMap<u64, Vec<u64>>,
+    bands: usize,
+    target_bytes: usize,
+) -> Result<(), StoreError> {
+    let row_bytes = bands
+        .max(1)
+        .checked_mul(U64_BYTES)
+        .ok_or(StoreError::LengthOverflow)?;
+    let rows_per_section = (target_bytes.saturating_sub(COUNT_BYTES) / row_bytes).max(1);
+    let entries: Vec<_> = key_hashes.iter().collect();
+    let mut chunks: Vec<&[(&u64, &Vec<u64>)]> = entries.chunks(rows_per_section).collect();
+    if chunks.is_empty() {
+        chunks.push(&[]);
+    }
+    for chunk in &chunks {
+        let keys = encode_keys(chunk.iter().map(|(key, _)| **key))?;
+        sections.push(Section::new(SectionKind::Keys, true, keys)?);
+    }
+    for chunk in &chunks {
+        let hashes = encode_band_hashes(chunk.iter().map(|(_, hashes)| *hashes), bands)?;
+        sections.push(Section::new(SectionKind::BandHashes, true, hashes)?);
+    }
+    Ok(())
 }
 
 /// Validate optional signature sections, returning `None` when absent.
@@ -1887,31 +1961,6 @@ fn collect_bucket_descriptors(layout: &FileLayout) -> Result<Vec<SectionDescript
     Ok(descriptors)
 }
 
-fn required_unique_section(
-    layout: &FileLayout,
-    kind: SectionKind,
-) -> Result<SectionDescriptor, StoreError> {
-    let mut matches = layout
-        .sections()
-        .iter()
-        .copied()
-        .filter(|descriptor| descriptor.kind() == kind);
-    let descriptor = matches.next().ok_or(StoreError::InvalidSnapshot {
-        reason: missing_section_reason(kind),
-    })?;
-    if matches.next().is_some() {
-        return Err(StoreError::InvalidSnapshot {
-            reason: duplicate_section_reason(kind),
-        });
-    }
-    if !descriptor.required() {
-        return Err(StoreError::InvalidSnapshot {
-            reason: "required metadata section is marked optional",
-        });
-    }
-    Ok(descriptor)
-}
-
 const fn missing_section_reason(kind: SectionKind) -> &'static str {
     match kind {
         SectionKind::Keys => "missing required keys section",
@@ -1919,16 +1968,6 @@ const fn missing_section_reason(kind: SectionKind) -> &'static str {
         SectionKind::Buckets => "missing required bucket section",
         SectionKind::Tombstones => "missing required tombstone section",
         SectionKind::Signatures => "missing required signature section",
-    }
-}
-
-const fn duplicate_section_reason(kind: SectionKind) -> &'static str {
-    match kind {
-        SectionKind::Keys => "duplicate keys section",
-        SectionKind::BandHashes => "duplicate band-hash section",
-        SectionKind::Buckets => "duplicate singleton bucket section",
-        SectionKind::Tombstones => "duplicate tombstone section",
-        SectionKind::Signatures => "duplicate signature section",
     }
 }
 
@@ -2225,9 +2264,230 @@ mod tests {
     use pari_index::{LshIndex32, LshIndex64, LshParams};
 
     use super::{
-        encode_band_hashes, encode_keys, OwnedTemporaryFile, PersistentIndex32, PersistentIndex64,
-        PersistentIndexCore, StoreError,
+        append_key_metadata_sections, encode_band_hashes, encode_keys, OwnedTemporaryFile,
+        PersistentIndex32, PersistentIndex64, PersistentIndexCore, StoreError,
     };
+
+    /// Rewrite a committed snapshot with its key metadata split into pairs of
+    /// at most `rows_per_section` rows, keeping every other section.
+    fn split_key_metadata(path: &Path, output: &Path, rows_per_section: usize) -> usize {
+        let file = IndexFile::decode(&fs::read(path).expect("snapshot")).expect("decode");
+        let bands = usize::try_from(file.metadata().bands()).expect("bands");
+        let keys = super::decode_keys(
+            file.sections()
+                .iter()
+                .find(|section| section.kind() == SectionKind::Keys)
+                .expect("keys")
+                .payload(),
+        )
+        .expect("keys payload");
+        let rows = super::decode_band_hashes(
+            file.sections()
+                .iter()
+                .find(|section| section.kind() == SectionKind::BandHashes)
+                .expect("hashes")
+                .payload(),
+            bands,
+        )
+        .expect("hash payload");
+        let key_hashes: BTreeMap<u64, Vec<u64>> = keys.into_iter().zip(rows).collect();
+        let mut sections = Vec::new();
+        append_key_metadata_sections(
+            &mut sections,
+            &key_hashes,
+            bands,
+            8 + rows_per_section * bands * 8,
+        )
+        .expect("split metadata");
+        let pairs = sections.len() / 2;
+        sections.extend(
+            file.sections()
+                .iter()
+                .filter(|section| {
+                    !matches!(section.kind(), SectionKind::Keys | SectionKind::BandHashes)
+                })
+                .cloned(),
+        );
+        let encoded = IndexFile::new(file.metadata().clone(), sections)
+            .expect("file")
+            .encode()
+            .expect("encode");
+        fs::write(output, encoded).expect("write split snapshot");
+        pairs
+    }
+
+    #[test]
+    fn key_metadata_split_across_section_pairs_round_trips() {
+        let path = test_path("split-source");
+        let split = test_path("split-output");
+        let items: Vec<_> = (0..50_u64)
+            .map(|item| sketch(item * 7..item * 7 + 40))
+            .collect();
+        let mut index = PersistentIndex32::create(&path, 0.8, 128, 7).expect("create");
+        index
+            .insert_many(items.iter().zip(0_u64..).map(|(sketch, key)| (key, sketch)))
+            .expect("insert");
+        index.sync().expect("sync");
+        let expected: Vec<_> = items
+            .iter()
+            .map(|item| index.query(item).expect("query"))
+            .collect();
+        drop(index);
+
+        assert_eq!(split_key_metadata(&path, &split, 3), 17);
+        let mut reopened = PersistentIndex32::open(&split).expect("open split snapshot");
+        assert_eq!(reopened.len(), 50);
+        for (item, candidates) in items.iter().zip(&expected) {
+            assert_eq!(&reopened.query(item).expect("query"), candidates);
+        }
+        // A rewrite of the split snapshot stays readable and keeps every key.
+        assert!(reopened.remove(0));
+        reopened.sync().expect("rewrite");
+        drop(reopened);
+        let rewritten = PersistentIndex32::open(&split).expect("reopen rewrite");
+        assert_eq!(rewritten.len(), 49);
+        let without_removed: Vec<u64> = expected[1]
+            .iter()
+            .copied()
+            .filter(|key| *key != 0)
+            .collect();
+        assert_eq!(rewritten.query(&items[1]).expect("query"), without_removed);
+        cleanup(&path);
+        cleanup(&split);
+    }
+
+    #[test]
+    fn default_target_keeps_large_catalogs_under_the_section_limit() {
+        // 1M rows x 40 bands is 320 MB of band hashes, which a single section
+        // cannot hold (the container limit is 256 MiB).
+        let bands = 40;
+        let key_hashes: BTreeMap<u64, Vec<u64>> = (0..1_000_000_u64)
+            .map(|key| (key, vec![key; bands]))
+            .collect();
+        let mut sections = Vec::new();
+        append_key_metadata_sections(
+            &mut sections,
+            &key_hashes,
+            bands,
+            super::METADATA_SECTION_TARGET_BYTES,
+        )
+        .expect("metadata");
+        assert_eq!(sections.len(), 10);
+        assert!(sections
+            .iter()
+            .all(|section| section.payload().len() <= super::METADATA_SECTION_TARGET_BYTES));
+        let metadata = IndexMetadata::new(
+            Algorithm::MinHashLsh,
+            SignatureScheme::PariAffine32V1,
+            CodecId::U64,
+            128,
+            7,
+            0.8,
+            u32::try_from(bands).expect("bands"),
+            1,
+            0,
+        )
+        .expect("metadata");
+        IndexFile::new(metadata, sections)
+            .expect("file")
+            .encode()
+            .expect("split metadata fits the container limits");
+    }
+
+    #[test]
+    fn small_catalogs_keep_the_single_pair_layout() {
+        let key_hashes: BTreeMap<u64, Vec<u64>> =
+            (0..10_u64).map(|key| (key, vec![key; 4])).collect();
+        let mut sections = Vec::new();
+        append_key_metadata_sections(
+            &mut sections,
+            &key_hashes,
+            4,
+            super::METADATA_SECTION_TARGET_BYTES,
+        )
+        .expect("metadata");
+        assert_eq!(
+            sections.iter().map(Section::kind).collect::<Vec<_>>(),
+            vec![SectionKind::Keys, SectionKind::BandHashes]
+        );
+        assert_eq!(
+            sections[0].payload(),
+            encode_keys(key_hashes.keys().copied()).expect("keys")
+        );
+        assert_eq!(
+            sections[1].payload(),
+            encode_band_hashes(key_hashes.values(), 4).expect("hashes")
+        );
+        let mut empty = Vec::new();
+        append_key_metadata_sections(&mut empty, &BTreeMap::new(), 4, 64).expect("empty");
+        assert_eq!(empty.len(), 2);
+    }
+
+    #[test]
+    fn unpaired_or_misaligned_key_metadata_is_rejected() {
+        let path = test_path("unpaired-source");
+        let mut index = PersistentIndex32::create(&path, 0.8, 128, 7).expect("create");
+        index.insert(1, &sketch(0..40)).expect("insert");
+        index.insert(2, &sketch(40..80)).expect("insert");
+        index.sync().expect("sync");
+        drop(index);
+        let file = IndexFile::decode(&fs::read(&path).expect("snapshot")).expect("decode");
+        let bands = usize::try_from(file.metadata().bands()).expect("bands");
+        let others: Vec<_> = file
+            .sections()
+            .iter()
+            .filter(|section| {
+                !matches!(section.kind(), SectionKind::Keys | SectionKind::BandHashes)
+            })
+            .cloned()
+            .collect();
+        let keys = |values: &[u64]| {
+            Section::new(
+                SectionKind::Keys,
+                true,
+                encode_keys(values.iter().copied()).expect("keys"),
+            )
+            .expect("section")
+        };
+        let hashes = |rows: usize| {
+            let rows = vec![vec![0_u64; bands]; rows];
+            Section::new(
+                SectionKind::BandHashes,
+                true,
+                encode_band_hashes(rows.iter(), bands).expect("hashes"),
+            )
+            .expect("section")
+        };
+        let open_with = |mut sections: Vec<Section>, name: &str| {
+            sections.extend(others.iter().cloned());
+            let output = test_path(name);
+            let encoded = IndexFile::new(file.metadata().clone(), sections)
+                .expect("file")
+                .encode()
+                .expect("encode");
+            fs::write(&output, encoded).expect("write");
+            let result = PersistentIndex32::open(&output).map(|_| ());
+            cleanup(&output);
+            result
+        };
+
+        assert!(matches!(
+            open_with(vec![keys(&[1]), keys(&[2]), hashes(2)], "unpaired"),
+            Err(StoreError::InvalidSnapshot {
+                reason: "keys and band-hash sections are not paired"
+            })
+        ));
+        assert!(matches!(
+            open_with(
+                vec![keys(&[1, 2]), keys(&[]), hashes(1), hashes(1)],
+                "misaligned"
+            ),
+            Err(StoreError::InvalidSnapshot {
+                reason: "key and band-hash record counts differ"
+            })
+        ));
+        cleanup(&path);
+    }
 
     fn sketch(values: impl IntoIterator<Item = u64>) -> MinHash32 {
         let mut sketch = MinHash32::new(128, 7).expect("valid test sketch");

@@ -603,3 +603,139 @@ fn external_builder_carries_stored_signatures() {
     )
     .is_err());
 }
+
+/// Re-encode a snapshot with its `Keys`/`BandHashes` metadata split into pairs
+/// of at most `rows` rows, as large catalogs are written.
+fn split_metadata(source: &Path, output: &Path, rows: usize) -> usize {
+    let file = IndexFile::decode(&fs::read(source).expect("source bytes")).expect("decode");
+    let bands = usize::try_from(file.metadata().bands()).expect("bands");
+    let payload = |kind| {
+        file.sections()
+            .iter()
+            .find(|section| section.kind() == kind)
+            .expect("metadata section")
+            .payload()
+            .to_vec()
+    };
+    let keys = payload(SectionKind::Keys);
+    let hashes = payload(SectionKind::BandHashes);
+    let count = usize::try_from(u64::from_le_bytes(keys[..8].try_into().expect("count")))
+        .expect("count fits");
+    let encode = |body: &[u8], rows: usize| {
+        let mut bytes = u64::try_from(rows).expect("rows").to_le_bytes().to_vec();
+        bytes.extend_from_slice(body);
+        bytes
+    };
+    let mut key_sections = Vec::new();
+    let mut hash_sections = Vec::new();
+    for start in (0..count).step_by(rows) {
+        let end = (start + rows).min(count);
+        key_sections.push(
+            Section::new(
+                SectionKind::Keys,
+                true,
+                encode(&keys[8 + start * 8..8 + end * 8], end - start),
+            )
+            .expect("keys"),
+        );
+        let row = bands * 8;
+        hash_sections.push(
+            Section::new(
+                SectionKind::BandHashes,
+                true,
+                encode(&hashes[8 + start * row..8 + end * row], end - start),
+            )
+            .expect("hashes"),
+        );
+    }
+    let pairs = key_sections.len();
+    let mut sections = key_sections;
+    sections.extend(hash_sections);
+    sections.extend(
+        file.sections()
+            .iter()
+            .filter(|section| {
+                !matches!(section.kind(), SectionKind::Keys | SectionKind::BandHashes)
+            })
+            .cloned(),
+    );
+    fs::write(
+        output,
+        IndexFile::new(file.metadata().clone(), sections)
+            .expect("file")
+            .encode()
+            .expect("encode"),
+    )
+    .expect("write split");
+    pairs
+}
+
+#[test]
+fn split_key_metadata_builds_and_opens_in_every_reader() {
+    use pari_core::MinHash32;
+    use pari_store::PersistentIndex32;
+
+    let fixture = Fixture::new();
+    let source = fixture.path("split-source");
+    let sketches: Vec<_> = (0..40_u64)
+        .map(|item| {
+            let mut sketch = MinHash32::new(64, 3).expect("sketch");
+            for value in (item / 2) * 100..(item / 2) * 100 + 40 {
+                sketch.update(&value.to_le_bytes());
+            }
+            sketch
+        })
+        .collect();
+    let mut index = PersistentIndex32::create(&source, 0.6, 64, 3).expect("create");
+    index
+        .insert_many(
+            sketches
+                .iter()
+                .zip(0_u64..)
+                .map(|(sketch, key)| (key, sketch)),
+        )
+        .expect("insert");
+    index.sync().expect("sync");
+    let expected: Vec<_> = sketches
+        .iter()
+        .map(|sketch| index.query(sketch).expect("query"))
+        .collect();
+    drop(index);
+
+    let split = fixture.path("split-snapshot");
+    assert_eq!(split_metadata(&source, &split, 7), 6);
+    let reopened = PersistentIndex32::open(&split).expect("persistent reader opens split metadata");
+    assert_eq!(reopened.len(), 40);
+
+    let built = fixture.path("split-built");
+    build_external(
+        &split,
+        &built,
+        BuildOptions {
+            max_buffer_records: 13,
+        },
+    )
+    .expect("build split");
+    let layout =
+        FileLayout::read_from(&mut fs::File::open(&built).expect("built")).expect("layout");
+    let count = |kind| {
+        layout
+            .sections()
+            .iter()
+            .filter(|section| section.kind() == kind)
+            .count()
+    };
+    assert_eq!(
+        (count(SectionKind::Keys), count(SectionKind::BandHashes)),
+        (6, 6)
+    );
+
+    let persistent = PersistentIndex32::open(&built).expect("persistent opens built");
+    let mut lazy = LazyIndex32::open(&built).expect("lazy opens built");
+    assert_eq!(lazy.stats().items, 40);
+    for (sketch, candidates) in sketches.iter().zip(&expected) {
+        assert_eq!(&reopened.query(sketch).expect("split query"), candidates);
+        assert_eq!(&persistent.query(sketch).expect("built query"), candidates);
+        assert_eq!(&lazy.query(sketch).expect("lazy query"), candidates);
+    }
+}

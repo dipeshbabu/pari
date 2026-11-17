@@ -232,28 +232,32 @@ fn build_external_with_hook(
     let mut source_file = File::open(source)?;
     let layout = FileLayout::read_from(&mut source_file)?;
     validate_source_metadata(&layout)?;
-    let keys = required_unique_section(&layout, SectionKind::Keys, "missing keys section")?;
-    let band_hashes = required_unique_section(
-        &layout,
-        SectionKind::BandHashes,
-        "missing band-hash section",
-    )?;
-    verify_section_streaming(&mut source_file, keys)?;
-    verify_section_streaming(&mut source_file, band_hashes)?;
-
-    let item_count = read_record_count(&mut source_file, keys)?;
-    let hash_count = read_record_count(&mut source_file, band_hashes)?;
-    if item_count != hash_count {
-        return Err(BuildError::InvalidSource {
-            reason: "key and band-hash record counts differ",
-        });
-    }
     let bands =
         usize::try_from(layout.metadata().bands()).map_err(|_| BuildError::LengthOverflow)?;
-    validate_source_lengths(keys, band_hashes, item_count, bands)?;
+    let mut chunks = Vec::new();
+    let mut item_count = 0_usize;
+    for (keys, band_hashes) in key_metadata_pairs(&layout)? {
+        verify_section_streaming(&mut source_file, keys)?;
+        verify_section_streaming(&mut source_file, band_hashes)?;
+        let count = read_record_count(&mut source_file, keys)?;
+        if count != read_record_count(&mut source_file, band_hashes)? {
+            return Err(BuildError::InvalidSource {
+                reason: "key and band-hash record counts differ",
+            });
+        }
+        validate_source_lengths(keys, band_hashes, count, bands)?;
+        item_count = item_count
+            .checked_add(count)
+            .ok_or(BuildError::LengthOverflow)?;
+        chunks.push(MetadataChunk {
+            keys,
+            hashes: band_hashes,
+            count,
+        });
+    }
     let signature_sections = source_signature_sections(&layout, &mut source_file, item_count)?;
 
-    let ordered = source_keys_are_ordered(&mut source_file, keys, item_count)?;
+    let ordered = source_keys_are_ordered(&mut source_file, &chunks)?;
     let validation_band = if ordered {
         None
     } else {
@@ -281,9 +285,7 @@ fn build_external_with_hook(
     let mut temporary = TemporaryFiles::new();
     let run_paths = spill_runs(
         &mut source_file,
-        keys,
-        band_hashes,
-        item_count,
+        &chunks,
         bands,
         destination,
         nonce,
@@ -311,8 +313,7 @@ fn build_external_with_hook(
     write_final_container(
         &mut source_file,
         &layout,
-        keys,
-        band_hashes,
+        &chunks,
         &signature_sections,
         &segments,
         &destination_temp,
@@ -395,30 +396,48 @@ fn validate_source_metadata(layout: &FileLayout) -> Result<(), BuildError> {
     Ok(())
 }
 
-fn required_unique_section(
+/// One row-aligned `Keys`/`BandHashes` section pair from the source snapshot.
+#[derive(Debug, Clone, Copy)]
+struct MetadataChunk {
+    keys: SectionDescriptor,
+    hashes: SectionDescriptor,
+    count: usize,
+}
+
+/// Return the source's `Keys`/`BandHashes` pairs in file order.
+///
+/// Large catalogs are split into several pairs whose `n`-th `Keys` and `n`-th
+/// `BandHashes` sections hold the same rows; small ones use a single pair.
+fn key_metadata_pairs(
     layout: &FileLayout,
-    kind: SectionKind,
-    missing_reason: &'static str,
-) -> Result<SectionDescriptor, BuildError> {
-    let mut matches = layout
-        .sections()
-        .iter()
-        .copied()
-        .filter(|descriptor| descriptor.kind() == kind);
-    let descriptor = matches.next().ok_or(BuildError::InvalidSource {
-        reason: missing_reason,
-    })?;
-    if matches.next().is_some() {
+) -> Result<Vec<(SectionDescriptor, SectionDescriptor)>, BuildError> {
+    let of_kind = |kind, missing_reason| -> Result<Vec<SectionDescriptor>, BuildError> {
+        let sections: Vec<_> = layout
+            .sections()
+            .iter()
+            .copied()
+            .filter(|descriptor| descriptor.kind() == kind)
+            .collect();
+        if sections.is_empty() {
+            return Err(BuildError::InvalidSource {
+                reason: missing_reason,
+            });
+        }
+        if sections.iter().any(|descriptor| !descriptor.required()) {
+            return Err(BuildError::InvalidSource {
+                reason: "source metadata section is marked optional",
+            });
+        }
+        Ok(sections)
+    };
+    let keys = of_kind(SectionKind::Keys, "missing keys section")?;
+    let hashes = of_kind(SectionKind::BandHashes, "missing band-hash section")?;
+    if keys.len() != hashes.len() {
         return Err(BuildError::InvalidSource {
-            reason: "duplicate source metadata section",
+            reason: "keys and band-hash sections are not paired",
         });
     }
-    if !descriptor.required() {
-        return Err(BuildError::InvalidSource {
-            reason: "source metadata section is marked optional",
-        });
-    }
-    Ok(descriptor)
+    Ok(keys.into_iter().zip(hashes).collect())
 }
 
 fn validate_source_lengths(
@@ -499,26 +518,27 @@ fn read_record_count(
 
 fn source_keys_are_ordered(
     source: &mut File,
-    keys: SectionDescriptor,
-    count: usize,
+    chunks: &[MetadataChunk],
 ) -> Result<bool, BuildError> {
-    source.seek(SeekFrom::Start(keys.payload_offset() + U64_BYTES_U64))?;
-    let mut reader = BufReader::with_capacity(COPY_BUFFER_BYTES, source);
     let mut previous = None;
     let mut ordered = true;
     let mut raw = [0; U64_BYTES];
-    for _ in 0..count {
-        reader.read_exact(&mut raw)?;
-        let key = u64::from_le_bytes(raw);
-        if let Some(last) = previous {
-            if key == last {
-                return Err(BuildError::InvalidSource {
-                    reason: "duplicate key in persisted keys section",
-                });
+    for chunk in chunks {
+        source.seek(SeekFrom::Start(chunk.keys.payload_offset() + U64_BYTES_U64))?;
+        let mut reader = BufReader::with_capacity(COPY_BUFFER_BYTES, &mut *source);
+        for _ in 0..chunk.count {
+            reader.read_exact(&mut raw)?;
+            let key = u64::from_le_bytes(raw);
+            if let Some(last) = previous {
+                if key == last {
+                    return Err(BuildError::InvalidSource {
+                        reason: "duplicate key in persisted keys section",
+                    });
+                }
+                ordered &= key > last;
             }
-            ordered &= key > last;
+            previous = Some(key);
         }
-        previous = Some(key);
     }
     Ok(ordered)
 }
@@ -526,9 +546,7 @@ fn source_keys_are_ordered(
 #[allow(clippy::too_many_arguments)]
 fn spill_runs(
     source: &mut File,
-    keys: SectionDescriptor,
-    hashes: SectionDescriptor,
-    item_count: usize,
+    chunks: &[MetadataChunk],
     bands: usize,
     destination: &Path,
     nonce: u128,
@@ -537,7 +555,7 @@ fn spill_runs(
     spill_records: u64,
     temporary: &mut TemporaryFiles,
 ) -> Result<Vec<PathBuf>, BuildError> {
-    if item_count == 0 {
+    if chunks.iter().all(|chunk| chunk.count == 0) {
         return Ok(Vec::new());
     }
     let row_bytes = bands
@@ -551,67 +569,77 @@ fn spill_runs(
     let mut buffer = Vec::with_capacity(capacity);
     let mut runs = Vec::new();
 
-    for item in 0..item_count {
-        let item_offset = item
-            .checked_mul(U64_BYTES)
-            .and_then(|value| value.checked_add(U64_BYTES))
-            .ok_or(BuildError::LengthOverflow)?;
-        source.seek(SeekFrom::Start(
-            keys.payload_offset()
-                .checked_add(u64::try_from(item_offset).map_err(|_| BuildError::LengthOverflow)?)
-                .ok_or(BuildError::LengthOverflow)?,
-        ))?;
-        source.read_exact(&mut key_raw)?;
-        let key = u64::from_le_bytes(key_raw);
+    for MetadataChunk {
+        keys,
+        hashes,
+        count,
+    } in chunks.iter().copied()
+    {
+        for item in 0..count {
+            let item_offset = item
+                .checked_mul(U64_BYTES)
+                .and_then(|value| value.checked_add(U64_BYTES))
+                .ok_or(BuildError::LengthOverflow)?;
+            source.seek(SeekFrom::Start(
+                keys.payload_offset()
+                    .checked_add(
+                        u64::try_from(item_offset).map_err(|_| BuildError::LengthOverflow)?,
+                    )
+                    .ok_or(BuildError::LengthOverflow)?,
+            ))?;
+            source.read_exact(&mut key_raw)?;
+            let key = u64::from_le_bytes(key_raw);
 
-        let row_offset = item
-            .checked_mul(row_bytes)
-            .and_then(|value| value.checked_add(U64_BYTES))
-            .ok_or(BuildError::LengthOverflow)?;
-        source.seek(SeekFrom::Start(
-            hashes
-                .payload_offset()
-                .checked_add(u64::try_from(row_offset).map_err(|_| BuildError::LengthOverflow)?)
-                .ok_or(BuildError::LengthOverflow)?,
-        ))?;
-        source.read_exact(&mut hash_row)?;
-        for (band, chunk) in hash_row.chunks_exact(U64_BYTES).enumerate() {
-            let raw: [u8; U64_BYTES] = chunk.try_into().map_err(|_| BuildError::InvalidSource {
-                reason: "truncated fixed-width band hash",
-            })?;
-            buffer.push(SpillRecord {
-                band: u32::try_from(band).map_err(|_| BuildError::LengthOverflow)?,
-                hash: u64::from_le_bytes(raw),
-                key,
-            });
-            if buffer.len() == options.max_buffer_records {
-                spill_one_run(
-                    &mut buffer,
-                    destination,
-                    nonce,
-                    runs.len(),
-                    temporary,
-                    &mut runs,
-                )?;
+            let row_offset = item
+                .checked_mul(row_bytes)
+                .and_then(|value| value.checked_add(U64_BYTES))
+                .ok_or(BuildError::LengthOverflow)?;
+            source.seek(SeekFrom::Start(
+                hashes
+                    .payload_offset()
+                    .checked_add(u64::try_from(row_offset).map_err(|_| BuildError::LengthOverflow)?)
+                    .ok_or(BuildError::LengthOverflow)?,
+            ))?;
+            source.read_exact(&mut hash_row)?;
+            for (band, chunk) in hash_row.chunks_exact(U64_BYTES).enumerate() {
+                let raw: [u8; U64_BYTES] =
+                    chunk.try_into().map_err(|_| BuildError::InvalidSource {
+                        reason: "truncated fixed-width band hash",
+                    })?;
+                buffer.push(SpillRecord {
+                    band: u32::try_from(band).map_err(|_| BuildError::LengthOverflow)?,
+                    hash: u64::from_le_bytes(raw),
+                    key,
+                });
+                if buffer.len() == options.max_buffer_records {
+                    spill_one_run(
+                        &mut buffer,
+                        destination,
+                        nonce,
+                        runs.len(),
+                        temporary,
+                        &mut runs,
+                    )?;
+                }
             }
-        }
-        if let Some(band) = validation_band {
-            // An extra ordered stream checks legacy, unordered catalogs without
-            // retaining a corpus-sized key set or publishing validation records.
-            buffer.push(SpillRecord {
-                band,
-                hash: key,
-                key: 0,
-            });
-            if buffer.len() == options.max_buffer_records {
-                spill_one_run(
-                    &mut buffer,
-                    destination,
-                    nonce,
-                    runs.len(),
-                    temporary,
-                    &mut runs,
-                )?;
+            if let Some(band) = validation_band {
+                // An extra ordered stream checks legacy, unordered catalogs without
+                // retaining a corpus-sized key set or publishing validation records.
+                buffer.push(SpillRecord {
+                    band,
+                    hash: key,
+                    key: 0,
+                });
+                if buffer.len() == options.max_buffer_records {
+                    spill_one_run(
+                        &mut buffer,
+                        destination,
+                        nonce,
+                        runs.len(),
+                        temporary,
+                        &mut runs,
+                    )?;
+                }
             }
         }
     }
@@ -858,14 +886,15 @@ fn write_one_segment(
 fn write_final_container(
     source: &mut File,
     layout: &FileLayout,
-    keys: SectionDescriptor,
-    band_hashes: SectionDescriptor,
+    chunks: &[MetadataChunk],
     signatures: &[SectionDescriptor],
     segments: &[SegmentFile],
     destination_temp: &Path,
 ) -> Result<(), BuildError> {
-    let section_count = 2_usize
-        .checked_add(signatures.len())
+    let section_count = chunks
+        .len()
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(signatures.len()))
         .and_then(|count| count.checked_add(segments.len()))
         .ok_or(BuildError::LengthOverflow)?;
     let section_count = u32::try_from(section_count).map_err(|_| BuildError::LengthOverflow)?;
@@ -876,8 +905,13 @@ fn write_final_container(
     let mut output = BufWriter::new(file);
     output.write_all(&encode_header(layout.metadata(), section_count))?;
 
-    copy_framed_source_section(source, &mut output, SectionKind::Keys, keys)?;
-    copy_framed_source_section(source, &mut output, SectionKind::BandHashes, band_hashes)?;
+    // Copy every key chunk, then every band-hash chunk, preserving row pairing.
+    for chunk in chunks {
+        copy_framed_source_section(source, &mut output, SectionKind::Keys, chunk.keys)?;
+    }
+    for chunk in chunks {
+        copy_framed_source_section(source, &mut output, SectionKind::BandHashes, chunk.hashes)?;
+    }
     // Signature rows follow key order, which the copied keys section preserves.
     for descriptor in signatures {
         copy_framed_source_section(source, &mut output, SectionKind::Signatures, *descriptor)?;

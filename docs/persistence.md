@@ -6,7 +6,7 @@ The local backend is intended to cover the space between an in-memory index and 
 
 ## Stable format
 
-The current local format uses the versioned `PARIIDX` container from `pari-format` with required `Keys`, `BandHashes`, and one or more canonical `Buckets` sections.
+The current local format uses the versioned `PARIIDX` container from `pari-format` with required `Keys`, `BandHashes`, and one or more canonical `Buckets` sections. Large key catalogs split `Keys` and `BandHashes` into several row-aligned pairs of about 64 MiB each, so persistent indexes are not limited by the 256 MiB per-section cap; see the [index format](index-format.md).
 
 Bucket membership is split into sorted, independently checksummed segments. Reopening validates metadata and bucket directories but does not reconstruct every bucket membership into hash maps. Candidate member ranges are read and verified only when a query touches them.
 
