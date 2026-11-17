@@ -23,6 +23,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - Datasketch imports reject fractional, textual, boolean, and multidimensional
   metadata instead of silently coercing it; NumPy integer scalars and strided
   vectors retain exact update compatibility.
+- `pari dedup --output` creates missing parent directories, matching
+  `pari index`, and names the output path when it cannot be created.
 
 ## [0.1.3] - 2026-11-06
 
