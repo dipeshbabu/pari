@@ -190,7 +190,7 @@ impl LazyIndexCore {
         let mut file = File::open(path)?;
         let layout = FileLayout::read_from(&mut file)?;
         validate_metadata(layout.metadata(), Some(expected_scheme))?;
-        let keys_section = required_unique_section(&layout, SectionKind::Keys)?;
+        let keys_sections = key_sections(&layout)?;
         let bucket_sections = collect_bucket_sections(&layout)?;
         if bucket_sections.is_empty() {
             return Err(LazyStoreError::InvalidSnapshot {
@@ -198,7 +198,16 @@ impl LazyIndexCore {
             });
         }
 
-        let keys = read_source_keys(&layout, &mut file, keys_section)?;
+        let mut keys = Vec::new();
+        for descriptor in keys_sections {
+            keys.extend(read_source_keys(&layout, &mut file, descriptor)?);
+        }
+        keys.sort_unstable();
+        if keys.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(LazyStoreError::InvalidSnapshot {
+                reason: "duplicate key in persisted keys section",
+            });
+        }
         let item_count = keys.len();
         let num_perm = usize::try_from(layout.metadata().num_perm())
             .map_err(|_| LazyStoreError::LengthOverflow)?;
@@ -623,6 +632,43 @@ fn clone_metadata(metadata: &IndexMetadata) -> Result<IndexMetadata, LazyStoreEr
         metadata.feature_flags(),
     )
     .map_err(LazyStoreError::Format)
+}
+
+/// Return the required `Keys` sections in file order.
+///
+/// Large catalogs are split into row-aligned `Keys`/`BandHashes` pairs, so the
+/// number of `Keys` sections must match the number of `BandHashes` sections.
+fn key_sections(layout: &FileLayout) -> Result<Vec<SectionDescriptor>, LazyStoreError> {
+    let of_kind = |kind| -> Vec<SectionDescriptor> {
+        layout
+            .sections()
+            .iter()
+            .copied()
+            .filter(|descriptor| descriptor.kind() == kind)
+            .collect()
+    };
+    let keys = of_kind(SectionKind::Keys);
+    let hashes = of_kind(SectionKind::BandHashes);
+    if keys.is_empty() {
+        return Err(LazyStoreError::InvalidSnapshot {
+            reason: missing_section_reason(SectionKind::Keys),
+        });
+    }
+    if keys
+        .iter()
+        .chain(&hashes)
+        .any(|descriptor| !descriptor.required())
+    {
+        return Err(LazyStoreError::InvalidSnapshot {
+            reason: "required metadata section is marked optional",
+        });
+    }
+    if keys.len() != hashes.len() {
+        return Err(LazyStoreError::InvalidSnapshot {
+            reason: "keys and band-hash sections are not paired",
+        });
+    }
+    Ok(keys)
 }
 
 fn required_unique_section(
