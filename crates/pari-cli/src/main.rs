@@ -1580,7 +1580,14 @@ fn ensure_distinct_input_output(input: &str, output: &str) -> Result<(), Box<dyn
         Ok(true) => Err("dedup input and output must refer to different files".into()),
         Ok(false) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+        // An output path that cannot be resolved (for example, one beneath a
+        // regular file) cannot alias the input; creating it reports the error.
+        Err(_) if fs::metadata(output).is_err() => Ok(()),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("failed to compare dedup input {input} with output {output}: {error}"),
+        )
+        .into()),
     }
 }
 
