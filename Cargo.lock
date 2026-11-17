@@ -541,6 +541,7 @@ dependencies = [
  "pari-core",
  "pari-format",
  "pari-index",
+ "rayon",
  "same-file",
 ]
 

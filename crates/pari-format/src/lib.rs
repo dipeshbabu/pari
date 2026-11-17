@@ -11,6 +11,7 @@ mod codec;
 mod format;
 mod layout;
 mod signatures;
+mod writer;
 
 pub use bucket_stream::{write_bucket_segment, BucketWriteRecord, StreamedBucketSegment};
 pub use buckets::{
@@ -31,3 +32,4 @@ pub use signatures::{
     SignatureError, SignatureSegment, SIGNATURE_SEGMENT_HEADER_BYTES,
     SIGNATURE_SEGMENT_TARGET_BYTES,
 };
+pub use writer::{ContainerWriteError, ContainerWriter};

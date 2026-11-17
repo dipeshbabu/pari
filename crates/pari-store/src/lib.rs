@@ -18,7 +18,7 @@ use std::{
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -28,12 +28,13 @@ use std::{
 };
 
 use pari_core::{MinHash32, MinHash64};
+#[cfg(test)]
+use pari_format::IndexFile;
 use pari_format::{
     bucket_record_size, decode_bucket_segment, encode_bucket_segment, read_bucket_members,
     validate_global_bucket_order, Algorithm, BucketError, BucketKey, BucketLocation, BucketRecord,
-    CodecId, FileLayout, FormatError, IndexFile, IndexMetadata, LayoutError, Section,
-    SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
-    BUCKET_SEGMENT_TARGET_BYTES,
+    CodecId, FileLayout, FormatError, IndexMetadata, LayoutError, Section, SectionDescriptor,
+    SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES, BUCKET_SEGMENT_TARGET_BYTES,
 };
 use pari_format::{
     decode_signature_segment, encode_signature_segment, read_signature_row,
@@ -41,11 +42,13 @@ use pari_format::{
     SignatureError, SignatureSegment, SIGNATURE_SEGMENT_HEADER_BYTES,
     SIGNATURE_SEGMENT_TARGET_BYTES,
 };
+use pari_format::{ContainerWriteError, ContainerWriter};
 use pari_index::{
     explain_lsh, explain_lsh64, signature_similarity, BucketDistribution, LshError, LshParams,
     LshPlan, LshPlanError, LshPlanOptions, QueryMetrics, ScoreFilterError, StorageMode,
 };
 pub use pari_index::{ScoreFilter, ScoredCandidate};
+use rayon::slice::ParallelSliceMut;
 use same_file::Handle;
 
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
@@ -943,11 +946,12 @@ impl PersistentIndexCore {
         &self,
         signatures: Option<&[(u64, Vec<u64>)]>,
     ) -> Result<OwnedTemporaryFile, StoreError> {
-        let snapshot = self.encode_snapshot(signatures)?;
         create_parent_if_needed(&self.path)?;
         let mut temporary = OwnedTemporaryFile::allocate(&self.path)?;
-        if let Err(error) = temporary.write_synced(&snapshot) {
-            return Err(temporary.cleanup_after(error));
+        if let Err(error) =
+            temporary.write_streamed(|output| self.write_snapshot(output, signatures))
+        {
+            return Err(temporary.cleanup_after_store(error));
         }
         Ok(temporary)
     }
@@ -979,6 +983,83 @@ impl PersistentIndexCore {
         Ok(())
     }
 
+    fn snapshot_metadata(&self) -> Result<IndexMetadata, StoreError> {
+        Ok(IndexMetadata::new(
+            Algorithm::MinHashLsh,
+            self.scheme,
+            CodecId::U64,
+            u32::try_from(self.num_perm).map_err(|_| StoreError::LengthOverflow)?,
+            self.seed,
+            self.threshold,
+            u32::try_from(self.params.bands).map_err(|_| StoreError::LengthOverflow)?,
+            u32::try_from(self.params.rows).map_err(|_| StoreError::LengthOverflow)?,
+            0,
+        )?)
+    }
+
+    /// Stream the committed snapshot to `output` without materializing it.
+    ///
+    /// Bucket memberships are collected into one flat `(bucket, key)` list,
+    /// sorted in parallel, and encoded one bucket segment at a time, so peak
+    /// memory is the key metadata plus that list and a single segment. The
+    /// bytes are identical to encoding the whole container in memory.
+    fn write_snapshot<W: Write>(
+        &self,
+        output: W,
+        signatures: Option<&[(u64, Vec<u64>)]>,
+    ) -> Result<(), StoreError> {
+        self.write_snapshot_with(output, signatures, BUCKET_SEGMENT_TARGET_BYTES)
+    }
+
+    fn write_snapshot_with<W: Write>(
+        &self,
+        output: W,
+        signatures: Option<&[(u64, Vec<u64>)]>,
+        bucket_target_bytes: usize,
+    ) -> Result<(), StoreError> {
+        let metadata = self.snapshot_metadata()?;
+        let mut leading = Vec::new();
+        append_key_metadata_sections(
+            &mut leading,
+            &self.key_hashes,
+            self.params.bands,
+            METADATA_SECTION_TARGET_BYTES,
+        )?;
+        if let Some(signatures) = signatures {
+            append_signature_sections(&mut leading, signatures, self.scheme, self.num_perm)?;
+        }
+        let memberships = sorted_bucket_memberships(&self.key_hashes, self.params.bands)?;
+        let segment_starts = plan_bucket_segments(&memberships, bucket_target_bytes)?;
+        let bucket_sections = segment_starts.len().max(1);
+
+        let mut writer = ContainerWriter::new(output, &metadata, leading.len() + bucket_sections)
+            .map_err(container_error)?;
+        for section in &leading {
+            writer
+                .write_section(section.kind(), section.required(), section.payload())
+                .map_err(container_error)?;
+        }
+        drop(leading);
+        if segment_starts.is_empty() {
+            writer
+                .write_section(SectionKind::Buckets, true, &encode_bucket_segment(&[])?)
+                .map_err(container_error)?;
+        }
+        for (index, start) in segment_starts.iter().copied().enumerate() {
+            let end = segment_starts
+                .get(index + 1)
+                .copied()
+                .unwrap_or(memberships.len());
+            let payload = encode_membership_segment(&memberships[start..end])?;
+            writer
+                .write_section(SectionKind::Buckets, true, &payload)
+                .map_err(container_error)?;
+        }
+        writer.finish().map_err(container_error)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn encode_snapshot(
         &self,
         signatures: Option<&[(u64, Vec<u64>)]>,
@@ -1401,6 +1482,36 @@ impl OwnedTemporaryFile {
         )))
     }
 
+    /// Stream content through a buffered writer, then flush and sync it.
+    fn write_streamed<F>(&mut self, write: F) -> Result<(), StoreError>
+    where
+        F: FnOnce(&mut BufWriter<&mut File>) -> Result<(), StoreError>,
+    {
+        let file = self.file.as_mut().ok_or_else(|| {
+            StoreError::Io(io::Error::other(
+                "persistent-index temporary file is already closed",
+            ))
+        })?;
+        let mut writer = BufWriter::with_capacity(1024 * 1024, &mut *file);
+        write(&mut writer)?;
+        writer.flush()?;
+        drop(writer);
+        file.sync_all()?;
+        Ok(())
+    }
+
+    /// Remove the owned temporary path after a failed snapshot write.
+    fn cleanup_after_store(mut self, error: StoreError) -> StoreError {
+        match self.remove_owned_path() {
+            Ok(()) => error,
+            Err(cleanup_error) => StoreError::Io(io::Error::other(format!(
+                "{error}; additionally failed to remove transaction-owned {}: {cleanup_error}",
+                self.path.display()
+            ))),
+        }
+    }
+
+    #[cfg(test)]
     fn write_synced(&mut self, bytes: &[u8]) -> io::Result<()> {
         let file = self
             .file
@@ -1850,6 +1961,94 @@ fn append_signature_sections(
     Ok(())
 }
 
+/// Every `(bucket, key)` membership, sorted by bucket and then key.
+///
+/// Within a bucket keys are ascending, exactly as committed buckets store them.
+fn sorted_bucket_memberships(
+    key_hashes: &BTreeMap<u64, Vec<u64>>,
+    bands: usize,
+) -> Result<Vec<(BucketKey, u64)>, StoreError> {
+    let total = key_hashes
+        .len()
+        .checked_mul(bands)
+        .ok_or(StoreError::LengthOverflow)?;
+    let mut memberships = Vec::with_capacity(total);
+    for (key, hashes) in key_hashes {
+        if hashes.len() != bands {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "in-memory band-hash row has the wrong width",
+            });
+        }
+        for (band, hash) in hashes.iter().copied().enumerate() {
+            let band = u32::try_from(band).map_err(|_| StoreError::LengthOverflow)?;
+            memberships.push((BucketKey::new(band, hash), *key));
+        }
+    }
+    memberships.par_sort_unstable();
+    Ok(memberships)
+}
+
+/// Return the membership index where each bucket segment starts.
+///
+/// Segments close before the bucket that would push them past `target_bytes`,
+/// matching the canonical in-memory segmentation.
+fn plan_bucket_segments(
+    memberships: &[(BucketKey, u64)],
+    target_bytes: usize,
+) -> Result<Vec<usize>, StoreError> {
+    let mut starts = Vec::new();
+    let mut estimated = BUCKET_SEGMENT_HEADER_BYTES;
+    let mut index = 0;
+    while index < memberships.len() {
+        let bucket = memberships[index].0;
+        let mut end = index + 1;
+        while end < memberships.len() && memberships[end].0 == bucket {
+            end += 1;
+        }
+        let contribution = bucket_record_size(end - index)?;
+        let grown = estimated
+            .checked_add(contribution)
+            .ok_or(StoreError::LengthOverflow)?;
+        if starts.is_empty() || grown > target_bytes {
+            starts.push(index);
+            estimated = BUCKET_SEGMENT_HEADER_BYTES
+                .checked_add(contribution)
+                .ok_or(StoreError::LengthOverflow)?;
+        } else {
+            estimated = grown;
+        }
+        index = end;
+    }
+    Ok(starts)
+}
+
+/// Encode one bucket segment from a sorted membership slice.
+fn encode_membership_segment(memberships: &[(BucketKey, u64)]) -> Result<Vec<u8>, StoreError> {
+    let members: Vec<u64> = memberships.iter().map(|(_, key)| *key).collect();
+    let mut records = Vec::new();
+    let mut start = 0;
+    while start < memberships.len() {
+        let bucket = memberships[start].0;
+        let mut end = start + 1;
+        while end < memberships.len() && memberships[end].0 == bucket {
+            end += 1;
+        }
+        records.push(BucketRecord::new(bucket, &members[start..end]));
+        start = end;
+    }
+    Ok(encode_bucket_segment(&records)?)
+}
+
+fn container_error(error: ContainerWriteError) -> StoreError {
+    match error {
+        ContainerWriteError::Io(error) => StoreError::Io(error),
+        ContainerWriteError::Format(error) => StoreError::Format(error),
+        ContainerWriteError::SectionCountMismatch { .. } => StoreError::InvalidSnapshot {
+            reason: "snapshot writer section count mismatch",
+        },
+    }
+}
+
 /// One validated insertion: key, band hashes, and the signature to store.
 struct PreparedItem {
     key: u64,
@@ -1929,6 +2128,7 @@ fn collect_overlay_candidates(
     }
 }
 
+#[cfg(test)]
 fn append_bucket_sections(
     sections: &mut Vec<Section>,
     key_hashes: &BTreeMap<u64, Vec<u64>>,
@@ -1969,6 +2169,7 @@ fn append_bucket_sections(
     Ok(())
 }
 
+#[cfg(test)]
 fn push_bucket_section(
     sections: &mut Vec<Section>,
     records: &[(BucketKey, &[u64])],
@@ -1985,6 +2186,7 @@ fn push_bucket_section(
     Ok(())
 }
 
+#[cfg(test)]
 fn materialize_sorted_buckets(
     key_hashes: &BTreeMap<u64, Vec<u64>>,
     bands: usize,
@@ -2276,6 +2478,93 @@ mod tests {
         assert_eq!(rewritten.query(&items[1]).expect("query"), without_removed);
         cleanup(&path);
         cleanup(&split);
+    }
+
+    #[test]
+    fn streamed_snapshot_bytes_match_in_memory_encoding() {
+        for (name, signatures) in [("plain", false), ("signed", true)] {
+            let path = test_path(&format!("stream-equal-{name}"));
+            let options = super::PersistentIndexOptions::new().store_signatures(signatures);
+            let mut index = PersistentIndex32::create_with_options(&path, 0.8, 128, 7, options)
+                .expect("create");
+            let items: Vec<_> = (0..300_u64)
+                .map(|item| sketch((item / 3) * 50..(item / 3) * 50 + 40))
+                .collect();
+            index
+                .insert_many(items.iter().zip(0_u64..).map(|(sketch, key)| (key, sketch)))
+                .expect("insert");
+            index.sync().expect("sync");
+            assert!(index.remove(5));
+            index.insert(9_000, &items[0]).expect("insert");
+            let live = index.inner.collect_live_signatures().expect("signatures");
+            let expected = index
+                .inner
+                .encode_snapshot(live.as_deref())
+                .expect("encode");
+            let mut streamed = Vec::new();
+            index
+                .inner
+                .write_snapshot(&mut streamed, live.as_deref())
+                .expect("stream");
+            assert_eq!(streamed, expected, "{name} snapshot bytes differ");
+            cleanup(&path);
+        }
+    }
+
+    #[test]
+    fn streamed_snapshot_splits_buckets_into_many_segments() {
+        let path = test_path("stream-segments");
+        let split = test_path("stream-segments-out");
+        let items: Vec<_> = (0..200_u64)
+            .map(|item| sketch((item / 2) * 60..(item / 2) * 60 + 40))
+            .collect();
+        let mut index = PersistentIndex32::create(&path, 0.8, 128, 7).expect("create");
+        index
+            .insert_many(items.iter().zip(0_u64..).map(|(sketch, key)| (key, sketch)))
+            .expect("insert");
+        index.sync().expect("sync");
+        let expected: Vec<_> = items
+            .iter()
+            .map(|item| index.query(item).expect("query"))
+            .collect();
+        let mut bytes = Vec::new();
+        index
+            .inner
+            .write_snapshot_with(&mut bytes, None, 2_048)
+            .expect("stream small segments");
+        drop(index);
+        fs::write(&split, &bytes).expect("write");
+        let layout =
+            FileLayout::read_from(&mut fs::File::open(&split).expect("open")).expect("layout");
+        let segments = layout
+            .sections()
+            .iter()
+            .filter(|section| section.kind() == SectionKind::Buckets)
+            .count();
+        assert!(
+            segments > 10,
+            "expected many bucket segments, got {segments}"
+        );
+        let reopened = PersistentIndex32::open(&split).expect("reopen");
+        for (item, candidates) in items.iter().zip(&expected) {
+            assert_eq!(&reopened.query(item).expect("query"), candidates);
+        }
+        cleanup(&path);
+        cleanup(&split);
+    }
+
+    #[test]
+    fn empty_index_streams_one_empty_bucket_section() {
+        let path = test_path("stream-empty");
+        let index = PersistentIndex32::create(&path, 0.8, 128, 7).expect("create");
+        let expected = index.inner.encode_snapshot(None).expect("encode");
+        let mut streamed = Vec::new();
+        index
+            .inner
+            .write_snapshot(&mut streamed, None)
+            .expect("stream");
+        assert_eq!(streamed, expected);
+        cleanup(&path);
     }
 
     #[test]

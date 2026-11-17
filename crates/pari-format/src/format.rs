@@ -9,10 +9,10 @@ const FORMAT_VERSION: u16 = 1;
 const HEADER_SIZE: usize = 72;
 const HEADER_SIZE_U16: u16 = 72;
 const SECTION_HEADER_SIZE: usize = 16;
-const SECTION_FLAG_REQUIRED: u16 = 1;
+pub(crate) const SECTION_FLAG_REQUIRED: u16 = 1;
 const KNOWN_SECTION_FLAGS: u16 = SECTION_FLAG_REQUIRED;
-const MAX_SECTION_COUNT: usize = 1_024;
-const MAX_SECTION_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_SECTION_COUNT: usize = 1_024;
+pub(crate) const MAX_SECTION_BYTES: u64 = 256 * 1024 * 1024;
 const SUPPORTED_FEATURE_FLAGS: u64 = 0;
 
 /// Algorithm identifier stored in a Pari index header.
@@ -510,7 +510,7 @@ fn validate_metadata(
     Ok(())
 }
 
-fn encode_header(metadata: &IndexMetadata, section_count: u32) -> [u8; HEADER_SIZE] {
+pub(crate) fn encode_header(metadata: &IndexMetadata, section_count: u32) -> [u8; HEADER_SIZE] {
     let mut header = [0_u8; HEADER_SIZE];
     header[0..8].copy_from_slice(&MAGIC);
     header[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
