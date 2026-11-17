@@ -81,6 +81,8 @@ pub enum SectionKind {
     Buckets = 3,
     /// Deletion/tombstone state for append-oriented stores.
     Tombstones = 4,
+    /// Optional full `MinHash` signatures, one row per key.
+    Signatures = 5,
 }
 
 impl SectionKind {
@@ -90,6 +92,7 @@ impl SectionKind {
             2 => Some(Self::BandHashes),
             3 => Some(Self::Buckets),
             4 => Some(Self::Tombstones),
+            5 => Some(Self::Signatures),
             _ => None,
         }
     }

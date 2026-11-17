@@ -19,8 +19,9 @@ use std::{
 
 use crc32fast::Hasher;
 use pari_format::{
-    bucket_record_size, write_bucket_segment, Algorithm, BucketError, BucketKey, BucketWriteRecord,
-    CodecId, FileLayout, FormatError, IndexMetadata, LayoutError, SectionDescriptor, SectionKind,
+    bucket_record_size, decode_signature_segment, validate_signature_coverage,
+    write_bucket_segment, Algorithm, BucketError, BucketKey, BucketWriteRecord, CodecId,
+    FileLayout, FormatError, IndexMetadata, LayoutError, SectionDescriptor, SectionKind,
     SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES, BUCKET_SEGMENT_TARGET_BYTES,
 };
 use same_file::Handle;
@@ -212,6 +213,7 @@ pub fn build_external(
     build_external_with_hook(source.as_ref(), destination.as_ref(), options, || Ok(()))
 }
 
+#[allow(clippy::too_many_lines)] // One linear validate, spill, merge, publish pipeline.
 fn build_external_with_hook(
     source: &Path,
     destination: &Path,
@@ -249,6 +251,7 @@ fn build_external_with_hook(
     let bands =
         usize::try_from(layout.metadata().bands()).map_err(|_| BuildError::LengthOverflow)?;
     validate_source_lengths(keys, band_hashes, item_count, bands)?;
+    let signature_sections = source_signature_sections(&layout, &mut source_file, item_count)?;
 
     let ordered = source_keys_are_ordered(&mut source_file, keys, item_count)?;
     let validation_band = if ordered {
@@ -310,6 +313,7 @@ fn build_external_with_hook(
         &layout,
         keys,
         band_hashes,
+        &signature_sections,
         &segments,
         &destination_temp,
     )?;
@@ -324,6 +328,39 @@ fn build_external_with_hook(
         buckets,
         output_bytes,
     })
+}
+
+/// Validate optional signature sections so they can be copied unchanged.
+///
+/// Rows are positional against the keys section, which the builder copies
+/// verbatim, so complete, contiguous coverage keeps them aligned.
+fn source_signature_sections(
+    layout: &FileLayout,
+    source: &mut File,
+    item_count: usize,
+) -> Result<Vec<SectionDescriptor>, BuildError> {
+    let invalid = |_| BuildError::InvalidSource {
+        reason: "invalid signature section",
+    };
+    let mut descriptors = Vec::new();
+    let mut segments = Vec::new();
+    for descriptor in layout.sections() {
+        if descriptor.kind() != SectionKind::Signatures {
+            continue;
+        }
+        if descriptor.required() {
+            return Err(BuildError::InvalidSource {
+                reason: "signature sections must be optional",
+            });
+        }
+        segments.push(decode_signature_segment(layout, source, *descriptor).map_err(invalid)?);
+        descriptors.push(*descriptor);
+    }
+    if !segments.is_empty() {
+        let rows = u64::try_from(item_count).map_err(|_| BuildError::LengthOverflow)?;
+        validate_signature_coverage(&segments, rows).map_err(invalid)?;
+    }
+    Ok(descriptors)
 }
 
 fn validate_source_metadata(layout: &FileLayout) -> Result<(), BuildError> {
@@ -823,11 +860,13 @@ fn write_final_container(
     layout: &FileLayout,
     keys: SectionDescriptor,
     band_hashes: SectionDescriptor,
+    signatures: &[SectionDescriptor],
     segments: &[SegmentFile],
     destination_temp: &Path,
 ) -> Result<(), BuildError> {
     let section_count = 2_usize
-        .checked_add(segments.len())
+        .checked_add(signatures.len())
+        .and_then(|count| count.checked_add(segments.len()))
         .ok_or(BuildError::LengthOverflow)?;
     let section_count = u32::try_from(section_count).map_err(|_| BuildError::LengthOverflow)?;
     let file = OpenOptions::new()
@@ -839,9 +878,14 @@ fn write_final_container(
 
     copy_framed_source_section(source, &mut output, SectionKind::Keys, keys)?;
     copy_framed_source_section(source, &mut output, SectionKind::BandHashes, band_hashes)?;
+    // Signature rows follow key order, which the copied keys section preserves.
+    for descriptor in signatures {
+        copy_framed_source_section(source, &mut output, SectionKind::Signatures, *descriptor)?;
+    }
     for segment in segments {
         output.write_all(&encode_section_header(
             SectionKind::Buckets,
+            true,
             segment.bytes,
             segment.checksum,
         ))?;
@@ -861,6 +905,7 @@ fn copy_framed_source_section(
 ) -> Result<(), BuildError> {
     output.write_all(&encode_section_header(
         kind,
+        descriptor.required(),
         descriptor.payload_length(),
         descriptor.checksum(),
     ))?;
@@ -895,12 +940,14 @@ fn encode_header(metadata: &IndexMetadata, section_count: u32) -> [u8; HEADER_BY
 
 fn encode_section_header(
     kind: SectionKind,
+    required: bool,
     payload_length: u64,
     checksum: u32,
 ) -> [u8; SECTION_HEADER_BYTES] {
     let mut header = [0_u8; SECTION_HEADER_BYTES];
+    let flags = if required { SECTION_REQUIRED } else { 0 };
     header[0..2].copy_from_slice(&section_kind_raw(kind).to_le_bytes());
-    header[2..4].copy_from_slice(&SECTION_REQUIRED.to_le_bytes());
+    header[2..4].copy_from_slice(&flags.to_le_bytes());
     header[4..12].copy_from_slice(&payload_length.to_le_bytes());
     header[12..16].copy_from_slice(&checksum.to_le_bytes());
     header
@@ -935,6 +982,7 @@ const fn section_kind_raw(kind: SectionKind) -> u16 {
         SectionKind::BandHashes => 2,
         SectionKind::Buckets => 3,
         SectionKind::Tombstones => 4,
+        SectionKind::Signatures => 5,
     }
 }
 

@@ -6,6 +6,22 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Added
+
+- Persistent indexes can store full signatures
+  (`PersistentIndexOptions::store_signatures`) and answer
+  `query_scored`/`query_scored_many` with estimated Jaccard similarity,
+  `min_similarity`, and `top_k` filters. Signatures live in new optional
+  `Signatures` sections that older readers skip, and the bounded external
+  builder carries them through.
+
+### Changed
+
+- `pari_format::SectionKind` gains a `Signatures` variant, `StoreError` gains
+  signature and score-filter variants, and `StoreStats` gains
+  `stores_signatures`. These additions to public enums and structs require the
+  next minor release.
+
 ### Fixed
 
 - CLI commands exit successfully instead of panicking or reporting an error

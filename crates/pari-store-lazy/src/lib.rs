@@ -667,7 +667,10 @@ fn collect_bucket_sections(layout: &FileLayout) -> Result<Vec<SectionDescriptor>
                     reason: "required tombstone sections are not supported",
                 });
             }
-            SectionKind::Keys | SectionKind::BandHashes | SectionKind::Tombstones => {}
+            SectionKind::Keys
+            | SectionKind::BandHashes
+            | SectionKind::Tombstones
+            | SectionKind::Signatures => {}
         }
     }
     Ok(sections)
@@ -679,6 +682,7 @@ const fn missing_section_reason(kind: SectionKind) -> &'static str {
         SectionKind::BandHashes => "missing required band-hash section",
         SectionKind::Buckets => "missing required bucket section",
         SectionKind::Tombstones => "missing required tombstone section",
+        SectionKind::Signatures => "missing required signature section",
     }
 }
 
@@ -688,6 +692,7 @@ const fn duplicate_section_reason(kind: SectionKind) -> &'static str {
         SectionKind::BandHashes => "duplicate band-hash section",
         SectionKind::Buckets => "duplicate singleton bucket section",
         SectionKind::Tombstones => "duplicate tombstone section",
+        SectionKind::Signatures => "duplicate signature section",
     }
 }
 

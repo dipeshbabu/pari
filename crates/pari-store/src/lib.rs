@@ -35,6 +35,12 @@ use pari_format::{
     SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
     BUCKET_SEGMENT_TARGET_BYTES,
 };
+use pari_format::{
+    decode_signature_segment, encode_signature_segment, read_signature_row,
+    read_signature_segment_values, signature_row_bytes, validate_signature_coverage,
+    SignatureError, SignatureSegment, SIGNATURE_SEGMENT_HEADER_BYTES,
+    SIGNATURE_SEGMENT_TARGET_BYTES,
+};
 use pari_index::{
     explain_lsh, explain_lsh64, BucketDistribution, LshError, LshParams, LshPlan, LshPlanError,
     LshPlanOptions, QueryMetrics, StorageMode,
@@ -75,6 +81,12 @@ pub enum StoreError {
     InvalidPath,
     /// The committed-file mutex was poisoned by a panicking caller.
     PoisonedFileLock,
+    /// Persisted signature sections are malformed.
+    Signature(SignatureError),
+    /// Scored queries need an index created with stored signatures.
+    SignaturesUnavailable,
+    /// A scored-query filter is out of range.
+    InvalidScoreFilter { reason: &'static str },
 }
 
 impl fmt::Display for StoreError {
@@ -104,6 +116,13 @@ impl fmt::Display for StoreError {
             }
             Self::InvalidPath => formatter.write_str("persistent index path must identify a file"),
             Self::PoisonedFileLock => formatter.write_str("committed index file lock is poisoned"),
+            Self::Signature(error) => write!(formatter, "invalid stored signatures: {error}"),
+            Self::SignaturesUnavailable => formatter.write_str(
+                "this index does not store signatures; create it with stored signatures to get similarity scores",
+            ),
+            Self::InvalidScoreFilter { reason } => {
+                write!(formatter, "invalid similarity filter: {reason}")
+            }
         }
     }
 }
@@ -116,6 +135,7 @@ impl Error for StoreError {
             Self::Layout(error) => Some(error),
             Self::Bucket(error) => Some(error),
             Self::Index(error) => Some(error),
+            Self::Signature(error) => Some(error),
             _ => None,
         }
     }
@@ -142,6 +162,12 @@ impl From<LayoutError> for StoreError {
 impl From<BucketError> for StoreError {
     fn from(error: BucketError) -> Self {
         Self::Bucket(error)
+    }
+}
+
+impl From<SignatureError> for StoreError {
+    fn from(error: SignatureError) -> Self {
+        Self::Signature(error)
     }
 }
 
@@ -177,6 +203,154 @@ pub struct StoreStats {
     pub overlay_distribution: BucketDistribution,
     /// Process-local query metrics when observability is enabled.
     pub queries: Option<QueryMetrics>,
+    /// Whether full signatures are stored for similarity-scored queries.
+    pub stores_signatures: bool,
+}
+
+/// Options for creating a persistent index.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PersistentIndexOptions {
+    params: Option<LshParams>,
+    store_signatures: bool,
+}
+
+impl PersistentIndexOptions {
+    /// Start from automatic LSH tuning without stored signatures.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            params: None,
+            store_signatures: false,
+        }
+    }
+
+    /// Use explicit LSH banding parameters instead of automatic tuning.
+    #[must_use]
+    pub const fn params(mut self, params: LshParams) -> Self {
+        self.params = Some(params);
+        self
+    }
+
+    /// Store each key's full signature so queries can return similarity scores.
+    ///
+    /// Each item then uses `num_perm * 4` (affine32) or `num_perm * 8`
+    /// (affine64) additional bytes on disk. Signatures are read lazily during
+    /// queries and are materialized only while a commit encodes a snapshot.
+    #[must_use]
+    pub const fn store_signatures(mut self, enabled: bool) -> Self {
+        self.store_signatures = enabled;
+        self
+    }
+}
+
+/// One LSH candidate with its estimated Jaccard similarity to the query.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScoredCandidate {
+    /// External key of the candidate.
+    pub key: u64,
+    /// Fraction of equal signature values, an unbiased Jaccard estimate.
+    pub similarity: f64,
+}
+
+/// Filters applied to similarity-scored query results.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ScoreFilter {
+    min_similarity: Option<f64>,
+    top_k: Option<usize>,
+}
+
+impl ScoreFilter {
+    /// Return every candidate, most similar first.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            min_similarity: None,
+            top_k: None,
+        }
+    }
+
+    /// Keep candidates whose estimated similarity is at least `threshold`.
+    #[must_use]
+    pub const fn min_similarity(mut self, threshold: f64) -> Self {
+        self.min_similarity = Some(threshold);
+        self
+    }
+
+    /// Keep at most `count` candidates after sorting by similarity.
+    #[must_use]
+    pub const fn top_k(mut self, count: usize) -> Self {
+        self.top_k = Some(count);
+        self
+    }
+
+    /// Reject a non-finite or out-of-range threshold and a zero `top_k`.
+    pub fn validate(self) -> Result<(), StoreError> {
+        if let Some(threshold) = self.min_similarity {
+            if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+                return Err(StoreError::InvalidScoreFilter {
+                    reason: "min_similarity must be finite and in [0, 1]",
+                });
+            }
+        }
+        if self.top_k == Some(0) {
+            return Err(StoreError::InvalidScoreFilter {
+                reason: "top_k must be positive",
+            });
+        }
+        Ok(())
+    }
+
+    fn apply(self, mut scored: Vec<ScoredCandidate>) -> Vec<ScoredCandidate> {
+        if let Some(threshold) = self.min_similarity {
+            scored.retain(|candidate| candidate.similarity >= threshold);
+        }
+        scored.sort_by(|left, right| {
+            right
+                .similarity
+                .total_cmp(&left.similarity)
+                .then(left.key.cmp(&right.key))
+        });
+        if let Some(count) = self.top_k {
+            scored.truncate(count);
+        }
+        scored
+    }
+}
+
+/// Stored-signature state for an index created with signatures enabled.
+#[derive(Debug, Default)]
+struct SignatureState {
+    /// Committed `(key, row)` pairs sorted by key; rows index the base file.
+    base_rows: Vec<(u64, u64)>,
+    /// Committed signature segments ordered by first row.
+    base_segments: Vec<SignatureSegment>,
+    /// Signatures inserted since the last commit, widened to `u64`.
+    overlay: HashMap<u64, Vec<u64>>,
+}
+
+impl SignatureState {
+    fn base_row(&self, key: u64) -> Option<u64> {
+        self.base_rows
+            .binary_search_by_key(&key, |(candidate, _)| *candidate)
+            .ok()
+            .map(|index| self.base_rows[index].1)
+    }
+
+    fn segment_for_row(&self, row: u64) -> Option<SignatureSegment> {
+        let index = self
+            .base_segments
+            .partition_point(|segment| segment.first_row() <= row);
+        index
+            .checked_sub(1)
+            .map(|index| self.base_segments[index])
+            .filter(|segment| segment.contains_row(row))
+    }
+
+    /// Drop committed rows when the committed base file is no longer readable.
+    fn forget_base(&mut self) {
+        self.base_rows = Vec::new();
+        self.base_segments = Vec::new();
+    }
 }
 
 #[derive(Debug)]
@@ -231,7 +405,11 @@ struct PersistentIndexCore {
     key_hashes: BTreeMap<u64, Vec<u64>>,
     dirty: bool,
     query_metrics: Option<Mutex<QueryMetrics>>,
+    signatures: Option<SignatureState>,
 }
+
+/// Live keys' signatures in key order, materialized for a commit.
+type LiveSignatures = Vec<(u64, Vec<u64>)>;
 
 impl PersistentIndexCore {
     fn create_with_params(
@@ -241,6 +419,7 @@ impl PersistentIndexCore {
         seed: u64,
         params: LshParams,
         scheme: SignatureScheme,
+        store_signatures: bool,
     ) -> Result<Self, StoreError> {
         Self::create_with_params_and_hook(
             path,
@@ -249,10 +428,12 @@ impl PersistentIndexCore {
             seed,
             params,
             scheme,
+            store_signatures,
             || Ok(()),
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // Private constructor plumbing.
     fn create_with_params_and_hook(
         path: &Path,
         threshold: f64,
@@ -260,12 +441,16 @@ impl PersistentIndexCore {
         seed: u64,
         params: LshParams,
         scheme: SignatureScheme,
+        store_signatures: bool,
         before_publish: impl FnOnce() -> Result<(), StoreError>,
     ) -> Result<Self, StoreError> {
         let path = path.to_path_buf();
         ensure_destination_absent(&path)?;
         validate_lsh_configuration(scheme, threshold, num_perm, seed, params)?;
         let mut store = Self::empty(path, threshold, num_perm, seed, params, scheme);
+        if store_signatures {
+            store.signatures = Some(SignatureState::default());
+        }
         store.commit_initial(before_publish)?;
         Ok(store)
     }
@@ -286,11 +471,26 @@ impl PersistentIndexCore {
         let params = LshParams::new(bands, rows);
         validate_lsh_configuration(scheme, threshold, num_perm, seed, params)?;
 
-        let key_hashes = read_key_metadata(&layout, &mut file, bands)?;
+        let (file_keys, key_hashes) = read_key_metadata(&layout, &mut file, bands)?;
+        let signature_segments = read_signature_segments(&layout, &mut file, file_keys.len())?;
         let bucket_descriptors = collect_bucket_descriptors(&layout)?;
         if bucket_descriptors.is_empty() {
-            return Self::open_legacy(path, threshold, num_perm, seed, params, scheme, key_hashes);
+            let signatures = match signature_segments {
+                Some(segments) => Some(SignatureState {
+                    overlay: read_all_signatures(&layout, &mut file, &segments, &file_keys)?,
+                    ..SignatureState::default()
+                }),
+                None => None,
+            };
+            return Self::open_legacy(
+                path, threshold, num_perm, seed, params, scheme, key_hashes, signatures,
+            );
         }
+        let signatures = signature_segments.map(|segments| SignatureState {
+            base_rows: sorted_rows(&file_keys),
+            base_segments: segments,
+            overlay: HashMap::new(),
+        });
 
         let mut buckets = Vec::new();
         for descriptor in bucket_descriptors {
@@ -318,19 +518,23 @@ impl PersistentIndexCore {
             key_hashes,
             dirty: false,
             query_metrics: None,
+            signatures,
         })
     }
 
-    fn insert_hashes_many(&mut self, prepared: Vec<(u64, Vec<u64>)>) -> Result<(), StoreError> {
+    fn insert_hashes_many(&mut self, prepared: Vec<PreparedItem>) -> Result<(), StoreError> {
         let mut batch_keys = HashSet::new();
-        for (key, _) in &prepared {
-            if self.key_hashes.contains_key(key) || !batch_keys.insert(*key) {
-                return Err(StoreError::DuplicateKey { key: *key });
+        for item in &prepared {
+            if self.key_hashes.contains_key(&item.key) || !batch_keys.insert(item.key) {
+                return Err(StoreError::DuplicateKey { key: item.key });
             }
         }
 
-        for (key, hashes) in prepared {
-            self.insert_overlay(key, hashes);
+        for item in prepared {
+            if let Some(state) = &mut self.signatures {
+                state.overlay.insert(item.key, item.signature);
+            }
+            self.insert_overlay(item.key, item.hashes);
         }
         if !batch_keys.is_empty() {
             self.dirty = true;
@@ -344,6 +548,9 @@ impl PersistentIndexCore {
         };
         let was_overlay = self.overlay_keys.remove(&key);
         remove_overlay_key(&mut self.overlay_buckets, key, &hashes);
+        if let Some(state) = &mut self.signatures {
+            state.overlay.remove(&key);
+        }
         if self.base.is_some() && !was_overlay {
             self.suppressed_base_keys.insert(key);
         }
@@ -387,6 +594,178 @@ impl PersistentIndexCore {
             started,
         );
         Ok(output)
+    }
+
+    fn query_scored(
+        &self,
+        hashes: &[u64],
+        signature: &[u64],
+        filter: ScoreFilter,
+        started: Option<Instant>,
+    ) -> Result<Vec<ScoredCandidate>, StoreError> {
+        let scored = self.score_candidates(hashes, signature, filter)?;
+        self.record_query_metrics(1, scored.len(), self.len(), started);
+        Ok(scored)
+    }
+
+    fn query_scored_many(
+        &self,
+        queries: Vec<(Vec<u64>, Vec<u64>)>,
+        filter: ScoreFilter,
+        started: Option<Instant>,
+    ) -> Result<Vec<Vec<ScoredCandidate>>, StoreError> {
+        let mut output = Vec::with_capacity(queries.len());
+        let mut candidate_count = 0_usize;
+        for (hashes, signature) in queries {
+            let scored = self.score_candidates(&hashes, &signature, filter)?;
+            candidate_count = candidate_count.saturating_add(scored.len());
+            output.push(scored);
+        }
+        self.record_query_metrics(
+            output.len(),
+            candidate_count,
+            output.len().saturating_mul(self.len()),
+            started,
+        );
+        Ok(output)
+    }
+
+    fn score_candidates(
+        &self,
+        hashes: &[u64],
+        signature: &[u64],
+        filter: ScoreFilter,
+    ) -> Result<Vec<ScoredCandidate>, StoreError> {
+        filter.validate()?;
+        if self.signatures.is_none() {
+            return Err(StoreError::SignaturesUnavailable);
+        }
+        let mut candidates = HashSet::new();
+        self.collect_candidates(hashes, &mut candidates)?;
+        let mut keys: Vec<_> = candidates.into_iter().collect();
+        keys.sort_unstable();
+        let signatures = self.stored_signatures(&keys)?;
+        let scored = keys
+            .into_iter()
+            .zip(signatures)
+            .map(|(key, values)| ScoredCandidate {
+                key,
+                similarity: match_ratio(signature, &values),
+            })
+            .collect();
+        Ok(filter.apply(scored))
+    }
+
+    /// Return the stored signatures of live `keys`, in order.
+    fn stored_signatures(&self, keys: &[u64]) -> Result<Vec<Vec<u64>>, StoreError> {
+        let state = self
+            .signatures
+            .as_ref()
+            .ok_or(StoreError::SignaturesUnavailable)?;
+        let mut output = Vec::with_capacity(keys.len());
+        let mut file = None;
+        for key in keys {
+            if let Some(values) = state.overlay.get(key) {
+                output.push(values.clone());
+                continue;
+            }
+            let row =
+                if self.key_hashes.contains_key(key) && !self.suppressed_base_keys.contains(key) {
+                    state.base_row(*key)
+                } else {
+                    None
+                };
+            let (Some(row), Some(base)) = (row, self.base.as_ref()) else {
+                return Err(StoreError::InvalidSnapshot {
+                    reason: "live key has no stored signature",
+                });
+            };
+            let segment = state
+                .segment_for_row(row)
+                .ok_or(StoreError::InvalidSnapshot {
+                    reason: "stored signature row is outside every segment",
+                })?;
+            if file.is_none() {
+                file = Some(base.file.lock().map_err(|_| StoreError::PoisonedFileLock)?);
+            }
+            let handle = file.as_mut().ok_or(StoreError::PoisonedFileLock)?;
+            output.push(read_signature_row(
+                &base.layout,
+                &mut **handle,
+                segment,
+                row,
+            )?);
+        }
+        Ok(output)
+    }
+
+    /// Return one live key's stored signature, if signatures are enabled.
+    fn stored_signature(&self, key: u64) -> Result<Option<Vec<u64>>, StoreError> {
+        if self.signatures.is_none() || !self.key_hashes.contains_key(&key) {
+            return Ok(None);
+        }
+        Ok(self.stored_signatures(&[key])?.pop())
+    }
+
+    /// Materialize every live signature in key order for a snapshot commit.
+    fn collect_live_signatures(&self) -> Result<Option<LiveSignatures>, StoreError> {
+        let Some(state) = &self.signatures else {
+            return Ok(None);
+        };
+        let mut live = Vec::with_capacity(self.key_hashes.len());
+        if let Some(base) = &self.base {
+            if !state.base_segments.is_empty() {
+                let mut row_keys = vec![0_u64; state.base_rows.len()];
+                for (key, row) in &state.base_rows {
+                    let row = usize::try_from(*row).map_err(|_| StoreError::LengthOverflow)?;
+                    *row_keys.get_mut(row).ok_or(StoreError::InvalidSnapshot {
+                        reason: "stored signature row is out of range",
+                    })? = *key;
+                }
+                let mut file = base.file.lock().map_err(|_| StoreError::PoisonedFileLock)?;
+                for segment in &state.base_segments {
+                    let values = read_signature_segment_values(&base.layout, &mut *file, *segment)?;
+                    let first = usize::try_from(segment.first_row())
+                        .map_err(|_| StoreError::LengthOverflow)?;
+                    for (offset, row) in values.chunks_exact(self.num_perm).enumerate() {
+                        let key =
+                            *row_keys
+                                .get(first + offset)
+                                .ok_or(StoreError::InvalidSnapshot {
+                                    reason: "stored signature row is out of range",
+                                })?;
+                        if self.key_hashes.contains_key(&key)
+                            && !self.suppressed_base_keys.contains(&key)
+                            && !state.overlay.contains_key(&key)
+                        {
+                            live.push((key, row.to_vec()));
+                        }
+                    }
+                }
+            }
+        }
+        live.extend(
+            state
+                .overlay
+                .iter()
+                .filter(|(key, _)| self.key_hashes.contains_key(key))
+                .map(|(key, values)| (*key, values.clone())),
+        );
+        live.sort_unstable_by_key(|(key, _)| *key);
+        if live.len() != self.key_hashes.len() {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "stored signatures do not cover every live key",
+            });
+        }
+        Ok(Some(live))
+    }
+
+    /// Keep signatures in memory after the committed base becomes unreadable.
+    fn restore_signatures(&mut self, live: Option<LiveSignatures>) {
+        if let (Some(state), Some(live)) = (&mut self.signatures, live) {
+            state.forget_base();
+            state.overlay = live.into_iter().collect();
+        }
     }
 
     fn len(&self) -> usize {
@@ -460,6 +839,7 @@ impl PersistentIndexCore {
                 .query_metrics
                 .as_ref()
                 .and_then(|metrics| metrics.lock().ok().map(|metrics| *metrics)),
+            stores_signatures: self.signatures.is_some(),
         })
     }
 
@@ -485,6 +865,7 @@ impl PersistentIndexCore {
             key_hashes: BTreeMap::new(),
             dirty: true,
             query_metrics: None,
+            signatures: None,
         }
     }
 
@@ -503,6 +884,7 @@ impl PersistentIndexCore {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // Private constructor plumbing.
     fn open_legacy(
         path: PathBuf,
         threshold: f64,
@@ -511,9 +893,11 @@ impl PersistentIndexCore {
         params: LshParams,
         scheme: SignatureScheme,
         key_hashes: BTreeMap<u64, Vec<u64>>,
+        signatures: Option<SignatureState>,
     ) -> Result<Self, StoreError> {
         let mut store = Self::empty(path, threshold, num_perm, seed, params, scheme);
         store.key_hashes = key_hashes;
+        store.signatures = signatures;
         store.rebuild_overlay_all()?;
         store.dirty = true;
         Ok(store)
@@ -562,6 +946,9 @@ impl PersistentIndexCore {
         self.overlay_keys = overlay_keys;
         self.suppressed_base_keys.clear();
         self.base = None;
+        if let Some(state) = &mut self.signatures {
+            state.forget_base();
+        }
         Ok(())
     }
 
@@ -573,13 +960,18 @@ impl PersistentIndexCore {
             return Ok(());
         }
 
-        let temporary = self.stage_snapshot()?;
+        // Signatures are materialized once: they are encoded into the
+        // snapshot and kept to recover in memory if publication fails after
+        // the committed base has been closed.
+        let signatures = self.collect_live_signatures()?;
+        let temporary = self.stage_snapshot(signatures.as_deref())?;
 
         // Close the committed base before replacing the file. This is required
         // on Windows and avoids retaining a handle to the old generation.
         self.base = None;
         if let Err(error) = temporary.publish_replace(&self.path) {
             self.rebuild_overlay_all()?;
+            self.restore_signatures(signatures);
             return Err(error);
         }
 
@@ -588,26 +980,31 @@ impl PersistentIndexCore {
         } else {
             None
         };
-        self.refresh_after_commit(parent_error)
+        self.refresh_after_commit(parent_error, signatures)
     }
 
     fn commit_initial(
         &mut self,
         before_publish: impl FnOnce() -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        let temporary = self.stage_snapshot()?;
+        let signatures = self.collect_live_signatures()?;
+        let temporary = self.stage_snapshot(signatures.as_deref())?;
         before_publish()?;
 
         self.base = None;
         if let Err(error) = temporary.publish_no_replace(&self.path) {
             self.rebuild_overlay_all()?;
+            self.restore_signatures(signatures);
             return Err(error);
         }
-        self.refresh_after_commit(None)
+        self.refresh_after_commit(None, signatures)
     }
 
-    fn stage_snapshot(&self) -> Result<OwnedTemporaryFile, StoreError> {
-        let snapshot = self.encode_snapshot()?;
+    fn stage_snapshot(
+        &self,
+        signatures: Option<&[(u64, Vec<u64>)]>,
+    ) -> Result<OwnedTemporaryFile, StoreError> {
+        let snapshot = self.encode_snapshot(signatures)?;
         create_parent_if_needed(&self.path)?;
         let mut temporary = OwnedTemporaryFile::allocate(&self.path)?;
         if let Err(error) = temporary.write_synced(&snapshot) {
@@ -616,7 +1013,11 @@ impl PersistentIndexCore {
         Ok(temporary)
     }
 
-    fn refresh_after_commit(&mut self, parent_error: Option<StoreError>) -> Result<(), StoreError> {
+    fn refresh_after_commit(
+        &mut self,
+        parent_error: Option<StoreError>,
+        signatures: Option<LiveSignatures>,
+    ) -> Result<(), StoreError> {
         match Self::open(&self.path, self.scheme) {
             Ok(mut refreshed) => {
                 if parent_error.is_some() {
@@ -628,6 +1029,7 @@ impl PersistentIndexCore {
             }
             Err(error) => {
                 self.rebuild_overlay_all()?;
+                self.restore_signatures(signatures);
                 self.dirty = true;
                 return Err(error);
             }
@@ -638,7 +1040,10 @@ impl PersistentIndexCore {
         Ok(())
     }
 
-    fn encode_snapshot(&self) -> Result<Vec<u8>, StoreError> {
+    fn encode_snapshot(
+        &self,
+        signatures: Option<&[(u64, Vec<u64>)]>,
+    ) -> Result<Vec<u8>, StoreError> {
         let metadata = IndexMetadata::new(
             Algorithm::MinHashLsh,
             self.scheme,
@@ -656,6 +1061,9 @@ impl PersistentIndexCore {
             Section::new(SectionKind::Keys, true, keys)?,
             Section::new(SectionKind::BandHashes, true, hashes)?,
         ];
+        if let Some(signatures) = signatures {
+            append_signature_sections(&mut sections, signatures, self.scheme, self.num_perm)?;
+        }
         append_bucket_sections(&mut sections, &self.key_hashes, self.params.bands)?;
         Ok(IndexFile::new(metadata, sections)?.encode()?)
     }
@@ -698,6 +1106,30 @@ macro_rules! impl_persistent_index {
                 seed: u64,
                 params: LshParams,
             ) -> Result<Self, StoreError> {
+                Self::create_with_options(
+                    path,
+                    threshold,
+                    num_perm,
+                    seed,
+                    PersistentIndexOptions::new().params(params),
+                )
+            }
+
+            /// Create a new empty index from explicit creation options.
+            ///
+            /// Use [`PersistentIndexOptions::store_signatures`] to enable
+            /// similarity-scored queries such as [`Self::query_scored`].
+            pub fn create_with_options(
+                path: impl AsRef<Path>,
+                threshold: f64,
+                num_perm: usize,
+                seed: u64,
+                options: PersistentIndexOptions,
+            ) -> Result<Self, StoreError> {
+                let params = match options.params {
+                    Some(params) => params,
+                    None => LshParams::tune(threshold, num_perm)?,
+                };
                 Ok(Self {
                     inner: PersistentIndexCore::create_with_params(
                         path.as_ref(),
@@ -706,6 +1138,7 @@ macro_rules! impl_persistent_index {
                         seed,
                         params,
                         $scheme,
+                        options.store_signatures,
                     )?,
                 })
             }
@@ -731,9 +1164,24 @@ macro_rules! impl_persistent_index {
                 &mut self,
                 items: impl IntoIterator<Item = (u64, &'a $sketch)>,
             ) -> Result<(), StoreError> {
+                let store_signatures = self.inner.signatures.is_some();
                 let prepared = items
                     .into_iter()
-                    .map(|(key, sketch)| Ok((key, self.band_hashes(sketch)?)))
+                    .map(|(key, sketch)| {
+                        Ok(PreparedItem {
+                            key,
+                            hashes: self.band_hashes(sketch)?,
+                            signature: if store_signatures {
+                                sketch
+                                    .signature()
+                                    .iter()
+                                    .map(|value| u64::from(*value))
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            },
+                        })
+                    })
                     .collect::<Result<Vec<_>, StoreError>>()?;
                 self.inner.insert_hashes_many(prepared)
             }
@@ -761,6 +1209,64 @@ macro_rules! impl_persistent_index {
                     .map(|sketch| self.band_hashes(sketch))
                     .collect::<Result<Vec<_>, StoreError>>()?;
                 self.inner.query_hashes_many(hashes, started)
+            }
+
+            /// Query candidates with their estimated Jaccard similarity.
+            ///
+            /// Results are sorted by similarity, highest first, then by key.
+            /// Requires an index created with stored signatures; otherwise
+            /// returns [`StoreError::SignaturesUnavailable`].
+            pub fn query_scored(
+                &self,
+                sketch: &$sketch,
+                filter: ScoreFilter,
+            ) -> Result<Vec<ScoredCandidate>, StoreError> {
+                let started = self.inner.query_metrics.as_ref().map(|_| Instant::now());
+                let hashes = self.band_hashes(sketch)?;
+                let signature = widen(sketch.signature());
+                self.inner
+                    .query_scored(&hashes, &signature, filter, started)
+            }
+
+            /// Query many signatures with similarity scores and one filter.
+            pub fn query_scored_many<'a>(
+                &self,
+                sketches: impl IntoIterator<Item = &'a $sketch>,
+                filter: ScoreFilter,
+            ) -> Result<Vec<Vec<ScoredCandidate>>, StoreError> {
+                let started = self.inner.query_metrics.as_ref().map(|_| Instant::now());
+                let queries = sketches
+                    .into_iter()
+                    .map(|sketch| Ok((self.band_hashes(sketch)?, widen(sketch.signature()))))
+                    .collect::<Result<Vec<_>, StoreError>>()?;
+                self.inner.query_scored_many(queries, filter, started)
+            }
+
+            /// Return whether this index stores signatures for scored queries.
+            #[must_use]
+            pub const fn stores_signatures(&self) -> bool {
+                self.inner.signatures.is_some()
+            }
+
+            /// Return the stored signature of a live key as a sketch.
+            ///
+            /// Returns `Ok(None)` when the key is absent or the index does not
+            /// store signatures.
+            pub fn signature(&self, key: u64) -> Result<Option<$sketch>, StoreError> {
+                let Some(values) = self.inner.stored_signature(key)? else {
+                    return Ok(None);
+                };
+                let values = values
+                    .into_iter()
+                    .map(|value| value.try_into().map_err(|_| StoreError::LengthOverflow))
+                    .collect::<Result<Vec<_>, StoreError>>()?;
+                Ok(Some(
+                    <$sketch>::from_signature(values, self.inner.seed).map_err(|_| {
+                        StoreError::InvalidSnapshot {
+                            reason: "stored signature length is invalid",
+                        }
+                    })?,
+                ))
             }
 
             /// Return whether a live key exists.
@@ -879,6 +1385,10 @@ impl_persistent_index!(
     SignatureScheme::PariAffine64V1,
     hash_band64
 );
+
+fn widen<T: Copy + Into<u64>>(values: &[T]) -> Vec<u64> {
+    values.iter().map(|value| (*value).into()).collect()
+}
 
 fn create_parent_if_needed(path: &Path) -> Result<(), StoreError> {
     if let Some(parent) = path
@@ -1209,11 +1719,14 @@ fn validate_lsh_configuration(
     Ok(())
 }
 
+/// Keys in file row order plus each key's band hashes.
+type KeyMetadata = (Vec<u64>, BTreeMap<u64, Vec<u64>>);
+
 fn read_key_metadata(
     layout: &FileLayout,
     file: &mut File,
     bands: usize,
-) -> Result<BTreeMap<u64, Vec<u64>>, StoreError> {
+) -> Result<KeyMetadata, StoreError> {
     let keys_descriptor = required_unique_section(layout, SectionKind::Keys)?;
     let hashes_descriptor = required_unique_section(layout, SectionKind::BandHashes)?;
     let keys_payload = layout.read_section(file, keys_descriptor)?;
@@ -1227,14 +1740,125 @@ fn read_key_metadata(
     }
 
     let mut key_hashes = BTreeMap::new();
-    for (key, hashes) in keys.into_iter().zip(rows_by_key) {
+    for (key, hashes) in keys.iter().copied().zip(rows_by_key) {
         if key_hashes.insert(key, hashes).is_some() {
             return Err(StoreError::InvalidSnapshot {
                 reason: "duplicate key in persisted keys section",
             });
         }
     }
-    Ok(key_hashes)
+    Ok((keys, key_hashes))
+}
+
+/// Validate optional signature sections, returning `None` when absent.
+///
+/// A file written with signatures enabled always contains at least one
+/// section, even when it has no keys, so presence alone records the setting.
+fn read_signature_segments(
+    layout: &FileLayout,
+    file: &mut File,
+    rows: usize,
+) -> Result<Option<Vec<SignatureSegment>>, StoreError> {
+    let mut segments = Vec::new();
+    for descriptor in layout.sections() {
+        if descriptor.kind() != SectionKind::Signatures {
+            continue;
+        }
+        if descriptor.required() {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "signature sections must be optional",
+            });
+        }
+        segments.push(decode_signature_segment(layout, file, *descriptor)?);
+    }
+    if segments.is_empty() {
+        return Ok(None);
+    }
+    let rows = u64::try_from(rows).map_err(|_| StoreError::LengthOverflow)?;
+    validate_signature_coverage(&segments, rows)?;
+    Ok(Some(segments))
+}
+
+fn read_all_signatures(
+    layout: &FileLayout,
+    file: &mut File,
+    segments: &[SignatureSegment],
+    file_keys: &[u64],
+) -> Result<HashMap<u64, Vec<u64>>, StoreError> {
+    let width =
+        usize::try_from(layout.metadata().num_perm()).map_err(|_| StoreError::LengthOverflow)?;
+    let mut keys = file_keys.iter();
+    let mut output = HashMap::with_capacity(file_keys.len());
+    for segment in segments {
+        let values = read_signature_segment_values(layout, file, *segment)?;
+        for row in values.chunks_exact(width) {
+            let key = keys.next().ok_or(StoreError::InvalidSnapshot {
+                reason: "signature rows exceed the key count",
+            })?;
+            output.insert(*key, row.to_vec());
+        }
+    }
+    Ok(output)
+}
+
+fn sorted_rows(file_keys: &[u64]) -> Vec<(u64, u64)> {
+    let mut rows: Vec<(u64, u64)> = file_keys.iter().copied().zip(0_u64..).collect();
+    rows.sort_unstable_by_key(|(key, _)| *key);
+    rows
+}
+
+fn append_signature_sections(
+    sections: &mut Vec<Section>,
+    signatures: &[(u64, Vec<u64>)],
+    scheme: SignatureScheme,
+    num_perm: usize,
+) -> Result<(), StoreError> {
+    let num_perm = u32::try_from(num_perm).map_err(|_| StoreError::LengthOverflow)?;
+    let row_bytes = signature_row_bytes(scheme, num_perm)?.max(1);
+    let rows_per_segment =
+        ((SIGNATURE_SEGMENT_TARGET_BYTES - SIGNATURE_SEGMENT_HEADER_BYTES) / row_bytes).max(1);
+    if signatures.is_empty() {
+        sections.push(Section::new(
+            SectionKind::Signatures,
+            false,
+            encode_signature_segment(scheme, num_perm, 0, std::iter::empty())?,
+        )?);
+        return Ok(());
+    }
+    for (index, chunk) in signatures.chunks(rows_per_segment).enumerate() {
+        let first_row = index
+            .checked_mul(rows_per_segment)
+            .and_then(|row| u64::try_from(row).ok())
+            .ok_or(StoreError::LengthOverflow)?;
+        let payload = encode_signature_segment(
+            scheme,
+            num_perm,
+            first_row,
+            chunk.iter().map(|(_, values)| values.as_slice()),
+        )?;
+        sections.push(Section::new(SectionKind::Signatures, false, payload)?);
+    }
+    Ok(())
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn match_ratio(left: &[u64], right: &[u64]) -> f64 {
+    if left.is_empty() || left.len() != right.len() {
+        return 0.0;
+    }
+    let matches = left
+        .iter()
+        .zip(right)
+        .filter(|(left, right)| left == right)
+        .count();
+    matches as f64 / left.len() as f64
+}
+
+/// One validated insertion: key, band hashes, and the signature to store.
+struct PreparedItem {
+    key: u64,
+    hashes: Vec<u64>,
+    signature: Vec<u64>,
 }
 
 fn collect_bucket_descriptors(layout: &FileLayout) -> Result<Vec<SectionDescriptor>, StoreError> {
@@ -1254,7 +1878,10 @@ fn collect_bucket_descriptors(layout: &FileLayout) -> Result<Vec<SectionDescript
                     reason: "required tombstone sections are not supported",
                 });
             }
-            SectionKind::Keys | SectionKind::BandHashes | SectionKind::Tombstones => {}
+            SectionKind::Keys
+            | SectionKind::BandHashes
+            | SectionKind::Tombstones
+            | SectionKind::Signatures => {}
         }
     }
     Ok(descriptors)
@@ -1291,6 +1918,7 @@ const fn missing_section_reason(kind: SectionKind) -> &'static str {
         SectionKind::BandHashes => "missing required band-hash section",
         SectionKind::Buckets => "missing required bucket section",
         SectionKind::Tombstones => "missing required tombstone section",
+        SectionKind::Signatures => "missing required signature section",
     }
 }
 
@@ -1300,6 +1928,7 @@ const fn duplicate_section_reason(kind: SectionKind) -> &'static str {
         SectionKind::BandHashes => "duplicate band-hash section",
         SectionKind::Buckets => "duplicate singleton bucket section",
         SectionKind::Tombstones => "duplicate tombstone section",
+        SectionKind::Signatures => "duplicate signature section",
     }
 }
 
@@ -1805,9 +2434,10 @@ mod tests {
 
         store
             .inner
-            .refresh_after_commit(Some(StoreError::Io(io::Error::other(
-                "directory sync failed",
-            ))))
+            .refresh_after_commit(
+                Some(StoreError::Io(io::Error::other("directory sync failed"))),
+                None,
+            )
             .expect_err("durability error must propagate");
         assert!(store.stats().expect("stats").dirty);
         assert_eq!(store.stats().expect("stats").queries, observed);
@@ -1817,7 +2447,7 @@ mod tests {
         store.inner.path = directory.join("missing.pari");
         store
             .inner
-            .refresh_after_commit(None)
+            .refresh_after_commit(None, None)
             .expect_err("reopen failure");
         assert_eq!(store.stats().expect("stats").queries, observed);
         store.inner.path = path;
@@ -2204,6 +2834,7 @@ mod tests {
             7,
             params,
             SignatureScheme::PariAffine32V1,
+            false,
             || {
                 fs::write(&destination, competing)?;
                 Ok(())

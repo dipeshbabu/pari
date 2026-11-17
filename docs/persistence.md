@@ -35,6 +35,48 @@ CI verifies both directions:
 
 Changing those bytes is therefore a persisted-format compatibility change, not an incidental refactor.
 
+## Stored signatures and similarity scores
+
+LSH alone returns candidate keys. To rank candidates by similarity, create the
+index with stored signatures:
+
+```rust
+use pari_store::{PersistentIndex32, PersistentIndexOptions, ScoreFilter};
+
+let mut index = PersistentIndex32::create_with_options(
+    "documents.pari",
+    0.8,
+    128,
+    7,
+    PersistentIndexOptions::new().store_signatures(true),
+)?;
+index.insert(1, &sketch)?;
+for candidate in index.query_scored(&query, ScoreFilter::new().min_similarity(0.8).top_k(10))? {
+    println!("{} {:.3}", candidate.key, candidate.similarity);
+}
+```
+
+`query_scored` returns only LSH candidates, each with the fraction of equal
+signature values (the standard MinHash Jaccard estimate), sorted from most to
+least similar with ties broken by key. `ScoreFilter::min_similarity` drops
+candidates below a threshold and `ScoreFilter::top_k` limits the result count.
+`signature(key)` returns a stored sketch, and `stores_signatures()` reports the
+setting. Indexes created without signatures return
+`StoreError::SignaturesUnavailable` from scored queries.
+
+Signatures cost `num_perm × 4` bytes per item for affine32 and `num_perm × 8`
+for affine64 on disk. Queries read candidate rows lazily, so reopening does not
+load them. A commit materializes every live signature once, alongside the
+snapshot encoding the commit already performs, and reuses that copy to recover
+in memory if publication fails. The setting is fixed at creation and persists
+across reopen; signatures cannot be added to an existing index after the fact.
+
+Signatures are stored in optional `Signatures` sections (see the
+[index format](index-format.md)). Pari releases that predate them skip the
+sections when reading. Committing such a file with an older release rewrites
+it without signatures, after which scored queries report that signatures are
+unavailable. The bounded external builder copies signature sections unchanged.
+
 ## Writer model
 
 Use one persistent-index writer for an index path at a time.
