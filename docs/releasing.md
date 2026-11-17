@@ -114,7 +114,7 @@ For v0.1.0, the crates.io publication job verifies the bootstrapped crates rathe
 
 ## Subsequent releases
 
-The current alpha release target is 0.2.0. Patch releases advance one patch at a time within a minor line; a minor release such as 0.2.0 is required when public enums, structs, or other surfaces change incompatibly. The workspace version, release tag, package versions, and installation
+The current alpha release target is 0.2.1. Patch releases advance one patch at a time within a minor line; a minor release such as 0.2.0 is required when public enums, structs, or other surfaces change incompatibly. The workspace version, release tag, package versions, and installation
 examples must agree before publication.
 
 For releases after 0.1.0:
@@ -128,17 +128,27 @@ For releases after 0.1.0:
 
 Before tagging, dispatch `release.yml` manually from the exact green `main` branch. The manual run performs the full artifact build and an authentication-only crates.io OIDC exchange in the `crates-io` environment; it does not publish. A missing or mismatched trusted-publisher configuration fails that job. PyPI configuration is verified by the successful prior OIDC deployment and must still name owner `dipeshbabu`, repository `pari`, workflow `release.yml`, and environment `pypi`.
 
-For 0.2.0, after the release-candidate PR and manual preflight are green:
+For 0.2.1, after the release-candidate PR and manual preflight are green:
 
 ```bash
 git checkout main
 git pull --ff-only
 git status --porcelain
-git tag -s v0.2.0 -m "Pari 0.2.0 alpha"
-git push origin v0.2.0
+git tag -s v0.2.1 -m "Pari 0.2.1 alpha"
+git push origin v0.2.1
 ```
 
 Confirm the tag points to the exact preflighted commit before pushing. The tag workflow must publish all four crates, the Python distribution, attest the assembled files, and create the prerelease. Do not create a GitHub Release separately or move the tag if publication fails.
+
+## Reused PyPI filenames
+
+PyPI never accepts a filename that was uploaded before, even after the file or
+release is deleted. Before choosing a version, check that it was never
+published to PyPI, including abandoned attempts. If a tag's Python upload is
+rejected for a reused filename, do not move the tag; publish the next patch
+version for every package so Rust and Python versions stay aligned. Pari
+0.2.0 reached crates.io only for this reason, and 0.2.1 is the complete
+release.
 
 ## Yank and rollback policy
 
