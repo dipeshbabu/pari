@@ -28,10 +28,10 @@ The supported command names, documented 0.1 input fields, and machine-readable o
 Machine-readable output revision 1 is pinned by compiled CLI integration tests. The current JSON/JSONL field sets are:
 
 - `index --json`: `items`, `file_bytes`, `bands`, `rows`
-- `search --json`: `query`, optional `id`, `candidates`
+- `search --json`: `query`, optional `id`, `candidates`, and `scores` only with `--scores`, `--min-similarity`, or `--top-k`
 - `dedup --emit pairs --json`: `left`, `right`
 - `dedup --emit groups --json`: `representative`, `members`
-- `stats --json`: `items`, `file_bytes`, `dirty`, `bands`, `rows`, `committed_buckets`, `overlay_buckets`, `suppressed_base_keys`, `committed_bucket_distribution`, `overlay_bucket_distribution`, `query_metrics`, `num_perm`, `seed`, `threshold`
+- `stats --json`: `items`, `file_bytes`, `dirty`, `bands`, `rows`, `committed_buckets`, `overlay_buckets`, `suppressed_base_keys`, `committed_bucket_distribution`, `overlay_bucket_distribution`, `query_metrics`, `num_perm`, `seed`, `threshold`, `stores_signatures`
 - `verify --json`: `valid`, `sections`, `bucket_sections`, `buckets`, `members_checked`
 
 The experimental `plan --json` and `explain --json` commands share the model-labeled field set documented in [planning.md](planning.md). Compiled tests pin their current shape, but the planner model may be versioned at a future 0.x minor release as workload evidence improves.
@@ -144,7 +144,32 @@ Example result:
 {"query":0,"id":"query-1","candidates":[1,2]}
 ```
 
-Candidates are approximate LSH matches. Application-level exact verification remains the caller's responsibility.
+Candidates are approximate LSH matches, sorted by key.
+
+### Similarity scores
+
+Build the index with `--store-signatures` to rank candidates by estimated
+Jaccard similarity:
+
+```bash
+pari index --input documents.jsonl --output documents.pari --store-signatures
+pari search --index documents.pari --input queries.jsonl --min-similarity 0.8 --top-k 10 --json
+```
+
+```json
+{"query":0,"id":"query-1","candidates":[2,1],"scores":[1.0,0.875]}
+```
+
+`--scores` adds a `scores` array aligned with `candidates` and orders both from
+most to least similar, with ties broken by key. `--min-similarity` (in `[0, 1]`)
+and `--top-k` filter the scored list and imply `--scores`. Text output prints
+`key:score` pairs with four decimal places. Scores are the fraction of equal
+signature values, the standard MinHash estimate, so they are still estimates;
+verify against source records when an exact threshold matters.
+
+Stored signatures add `num_perm × 4` bytes per item for affine32 (`× 8` for
+affine64). Searching an index built without them with any scoring flag exits
+with status 2. `stats` reports `stores_signatures`.
 
 Search progress is emitted every 1,000 queries by default. Use `--progress-every N` to change the interval. Final JSON progress includes the exact process-local candidate count and rate.
 

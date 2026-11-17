@@ -14,6 +14,12 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   `min_similarity`, and `top_k` filters. Signatures live in new optional
   `Signatures` sections that older readers skip, and the bounded external
   builder carries them through.
+- Python `Index.create(..., store_signatures=True)` and `Index64` gain
+  `search_scored`, `search_scored_many`, `signature`, and
+  `stores_signatures`; `IndexStats.stores_signatures` reports the setting.
+- `pari index --store-signatures` and `pari search --scores`,
+  `--min-similarity`, and `--top-k` return aligned `scores` in JSONL output and
+  `key:score` pairs in text output. `stats --json` adds `stores_signatures`.
 
 ### Changed
 

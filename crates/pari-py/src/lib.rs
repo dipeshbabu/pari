@@ -12,7 +12,10 @@ use pari_index::{
     plan_lsh, DuplicateGroup, LshError, LshIndex32, LshPlan, LshPlanError, LshPlanOptions,
     StorageMode,
 };
-use pari_store::{PersistentIndex32, PersistentIndex64, StoreError, StoreStats};
+use pari_store::{
+    PersistentIndex32, PersistentIndex64, PersistentIndexOptions, ScoreFilter, ScoredCandidate,
+    StoreError, StoreStats,
+};
 use pyo3::{
     create_exception,
     exceptions::{PyException, PyTypeError},
@@ -76,12 +79,16 @@ impl BindingError {
                 | LshError::AutomaticTuningTooLarge { .. }
                 | LshError::InvalidParams { .. },
             )
-            | Self::Store(StoreError::Index(
-                LshError::InvalidThreshold { .. }
-                | LshError::InvalidPermutationCount { .. }
-                | LshError::AutomaticTuningTooLarge { .. }
-                | LshError::InvalidParams { .. },
-            ))
+            | Self::Store(
+                StoreError::Index(
+                    LshError::InvalidThreshold { .. }
+                    | LshError::InvalidPermutationCount { .. }
+                    | LshError::AutomaticTuningTooLarge { .. }
+                    | LshError::InvalidParams { .. },
+                )
+                | StoreError::SignaturesUnavailable
+                | StoreError::InvalidScoreFilter { .. },
+            )
             | Self::Plan(_) => BindingErrorKind::Configuration,
             Self::Busy
             | Self::Poisoned
@@ -631,6 +638,8 @@ struct PyIndexStats {
     average_query_ms: Option<f64>,
     #[pyo3(get)]
     max_query_ms: Option<f64>,
+    #[pyo3(get)]
+    stores_signatures: bool,
 }
 
 impl From<StoreStats> for PyIndexStats {
@@ -660,6 +669,7 @@ impl From<StoreStats> for PyIndexStats {
             max_query_ms: stats.queries.map(|metrics| {
                 std::time::Duration::from_nanos(metrics.max_latency_ns).as_secs_f64() * 1_000.0
             }),
+            stores_signatures: stats.stores_signatures,
         }
     }
 }
@@ -880,6 +890,24 @@ impl PyLshPlan {
     }
 }
 
+fn score_filter(min_similarity: Option<f64>, top_k: Option<usize>) -> ScoreFilter {
+    let mut filter = ScoreFilter::new();
+    if let Some(threshold) = min_similarity {
+        filter = filter.min_similarity(threshold);
+    }
+    if let Some(count) = top_k {
+        filter = filter.top_k(count);
+    }
+    filter
+}
+
+fn scored_pairs(scored: Vec<ScoredCandidate>) -> Vec<(u64, f64)> {
+    scored
+        .into_iter()
+        .map(|candidate| (candidate.key, candidate.similarity))
+        .collect()
+}
+
 type SharedIndex = Arc<Mutex<Option<PersistentIndex32>>>;
 
 /// High-level persistent `MinHash` LSH index.
@@ -929,7 +957,15 @@ impl PyIndex {
 #[pymethods]
 impl PyIndex {
     #[staticmethod]
-    #[pyo3(signature = (path, *, threshold = 0.8, num_perm = 128, seed = 1, observability = false))]
+    #[pyo3(signature = (
+        path,
+        *,
+        threshold = 0.8,
+        num_perm = 128,
+        seed = 1,
+        observability = false,
+        store_signatures = false,
+    ))]
     fn create(
         py: Python<'_>,
         path: PathBuf,
@@ -937,9 +973,17 @@ impl PyIndex {
         num_perm: usize,
         seed: u64,
         observability: bool,
+        store_signatures: bool,
     ) -> PyResult<Self> {
         py.detach(move || {
-            PersistentIndex32::create(path, threshold, num_perm, seed).map_err(BindingError::from)
+            PersistentIndex32::create_with_options(
+                path,
+                threshold,
+                num_perm,
+                seed,
+                PersistentIndexOptions::new().store_signatures(store_signatures),
+            )
+            .map_err(BindingError::from)
         })
         .map(|store| Self::from_store(store, observability))
         .map_err(binding_error)
@@ -993,6 +1037,62 @@ impl PyIndex {
                 .query_many(sketches.iter())
                 .map_err(BindingError::from)
         })
+    }
+
+    /// Return `(key, similarity)` pairs for LSH candidates, most similar first.
+    #[pyo3(signature = (sketch, *, min_similarity = None, top_k = None))]
+    fn search_scored(
+        &self,
+        py: Python<'_>,
+        sketch: &Bound<'_, PyAny>,
+        min_similarity: Option<f64>,
+        top_k: Option<usize>,
+    ) -> PyResult<Vec<(u64, f64)>> {
+        let sketch = clone_minhash32(sketch)?;
+        let filter = score_filter(min_similarity, top_k);
+        self.run_read(py, move |store| {
+            store
+                .query_scored(&sketch, filter)
+                .map(scored_pairs)
+                .map_err(BindingError::from)
+        })
+    }
+
+    /// Batch form of `search_scored` with one filter for every query.
+    #[pyo3(signature = (sketches, *, min_similarity = None, top_k = None))]
+    fn search_scored_many(
+        &self,
+        py: Python<'_>,
+        sketches: Vec<Py<PyAny>>,
+        min_similarity: Option<f64>,
+        top_k: Option<usize>,
+    ) -> PyResult<Vec<Vec<(u64, f64)>>> {
+        let sketches = sketches
+            .into_iter()
+            .map(|sketch| clone_minhash32(sketch.bind(py)))
+            .collect::<PyResult<Vec<_>>>()?;
+        let filter = score_filter(min_similarity, top_k);
+        self.run_read(py, move |store| {
+            store
+                .query_scored_many(sketches.iter(), filter)
+                .map(|results| results.into_iter().map(scored_pairs).collect())
+                .map_err(BindingError::from)
+        })
+    }
+
+    /// Return the stored sketch for `key`, or `None` when unavailable.
+    fn signature(&self, py: Python<'_>, key: u64) -> PyResult<Option<PyMinHash>> {
+        self.run_read(py, move |store| {
+            store
+                .signature(key)
+                .map(|sketch| sketch.map(|inner| PyMinHash { inner }))
+                .map_err(BindingError::from)
+        })
+    }
+
+    #[getter]
+    fn stores_signatures(&self, py: Python<'_>) -> PyResult<bool> {
+        self.run_read(py, |store| Ok(store.stores_signatures()))
     }
 
     /// Remove a key, returning whether it existed.
@@ -1143,7 +1243,15 @@ impl PyIndex64 {
 #[pymethods]
 impl PyIndex64 {
     #[staticmethod]
-    #[pyo3(signature = (path, *, threshold = 0.8, num_perm = 128, seed = 1, observability = false))]
+    #[pyo3(signature = (
+        path,
+        *,
+        threshold = 0.8,
+        num_perm = 128,
+        seed = 1,
+        observability = false,
+        store_signatures = false,
+    ))]
     fn create(
         py: Python<'_>,
         path: PathBuf,
@@ -1151,9 +1259,17 @@ impl PyIndex64 {
         num_perm: usize,
         seed: u64,
         observability: bool,
+        store_signatures: bool,
     ) -> PyResult<Self> {
         py.detach(move || {
-            PersistentIndex64::create(path, threshold, num_perm, seed).map_err(BindingError::from)
+            PersistentIndex64::create_with_options(
+                path,
+                threshold,
+                num_perm,
+                seed,
+                PersistentIndexOptions::new().store_signatures(store_signatures),
+            )
+            .map_err(BindingError::from)
         })
         .map(|store| Self::from_store(store, observability))
         .map_err(binding_error)
@@ -1207,6 +1323,62 @@ impl PyIndex64 {
                 .query_many(sketches.iter())
                 .map_err(BindingError::from)
         })
+    }
+
+    /// Return `(key, similarity)` pairs for LSH candidates, most similar first.
+    #[pyo3(signature = (sketch, *, min_similarity = None, top_k = None))]
+    fn search_scored(
+        &self,
+        py: Python<'_>,
+        sketch: &Bound<'_, PyAny>,
+        min_similarity: Option<f64>,
+        top_k: Option<usize>,
+    ) -> PyResult<Vec<(u64, f64)>> {
+        let sketch = clone_minhash64(sketch)?;
+        let filter = score_filter(min_similarity, top_k);
+        self.run_read(py, move |store| {
+            store
+                .query_scored(&sketch, filter)
+                .map(scored_pairs)
+                .map_err(BindingError::from)
+        })
+    }
+
+    /// Batch form of `search_scored` with one filter for every query.
+    #[pyo3(signature = (sketches, *, min_similarity = None, top_k = None))]
+    fn search_scored_many(
+        &self,
+        py: Python<'_>,
+        sketches: Vec<Py<PyAny>>,
+        min_similarity: Option<f64>,
+        top_k: Option<usize>,
+    ) -> PyResult<Vec<Vec<(u64, f64)>>> {
+        let sketches = sketches
+            .into_iter()
+            .map(|sketch| clone_minhash64(sketch.bind(py)))
+            .collect::<PyResult<Vec<_>>>()?;
+        let filter = score_filter(min_similarity, top_k);
+        self.run_read(py, move |store| {
+            store
+                .query_scored_many(sketches.iter(), filter)
+                .map(|results| results.into_iter().map(scored_pairs).collect())
+                .map_err(BindingError::from)
+        })
+    }
+
+    /// Return the stored sketch for `key`, or `None` when unavailable.
+    fn signature(&self, py: Python<'_>, key: u64) -> PyResult<Option<PyMinHash64>> {
+        self.run_read(py, move |store| {
+            store
+                .signature(key)
+                .map(|sketch| sketch.map(|inner| PyMinHash64 { inner }))
+                .map_err(BindingError::from)
+        })
+    }
+
+    #[getter]
+    fn stores_signatures(&self, py: Python<'_>) -> PyResult<bool> {
+        self.run_read(py, |store| Ok(store.stores_signatures()))
     }
 
     fn remove(&self, py: Python<'_>, key: u64) -> PyResult<bool> {

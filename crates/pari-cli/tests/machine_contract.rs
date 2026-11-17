@@ -147,6 +147,7 @@ fn assert_stats_contract(fixture: &Fixture) {
             "query_metrics",
             "rows",
             "seed",
+            "stores_signatures",
             "suppressed_base_keys",
             "threshold",
         ],
@@ -282,4 +283,103 @@ fn v01_json_output_fields_are_pinned() {
         assert_dedup_contract(&fixture, "groups", &["members", "representative"]);
         assert_dedup_contract(&fixture, "pairs", &["left", "right"]);
     }
+}
+
+#[test]
+fn scored_search_adds_aligned_scores_only_when_requested() {
+    for scheme in ["pari-affine32-v1", "pari-affine64-v1"] {
+        let fixture = Fixture::new(Some(scheme));
+        let output = pari()
+            .args([
+                "index",
+                "--input",
+                fixture.records.to_str().expect("records path"),
+                "--output",
+                fixture.index.to_str().expect("index path"),
+                "--signature-scheme",
+                scheme,
+                "--store-signatures",
+                "--json",
+            ])
+            .output()
+            .expect("index command");
+        assert_success(&output);
+
+        let search = |extra: &[&str]| {
+            let output = pari()
+                .args([
+                    "search",
+                    "--index",
+                    fixture.index.to_str().expect("index path"),
+                    "--input",
+                    fixture.queries.to_str().expect("queries path"),
+                    "--json",
+                ])
+                .args(extra)
+                .output()
+                .expect("search command");
+            assert_success(&output);
+            parse_json(&output)
+        };
+
+        let plain = search(&[]);
+        assert_exact_keys(&plain, &["candidates", "id", "query"]);
+        let scored = search(&["--scores"]);
+        assert_exact_keys(&scored, &["candidates", "id", "query", "scores"]);
+        assert_eq!(scored["candidates"], serde_json::json!([1, 2]));
+        assert_eq!(scored["scores"], serde_json::json!([1.0, 1.0]));
+        let limited = search(&["--top-k", "1", "--min-similarity", "0.5"]);
+        assert_eq!(limited["candidates"], serde_json::json!([1]));
+        assert_eq!(limited["scores"], serde_json::json!([1.0]));
+
+        let stats = pari()
+            .args([
+                "stats",
+                "--index",
+                fixture.index.to_str().expect("index path"),
+                "--json",
+            ])
+            .output()
+            .expect("stats command");
+        assert_success(&stats);
+        assert_eq!(parse_json(&stats)["stores_signatures"], true);
+    }
+}
+
+#[test]
+fn scored_search_requires_stored_signatures_and_valid_filters() {
+    let fixture = Fixture::new(None);
+    assert_index_contract(&fixture);
+    for (extra, message) in [
+        (&["--scores"][..], "--store-signatures"),
+        (&["--top-k", "1"][..], "--store-signatures"),
+    ] {
+        let output = pari()
+            .args([
+                "search",
+                "--index",
+                fixture.index.to_str().expect("index path"),
+                "--input",
+                fixture.queries.to_str().expect("queries path"),
+            ])
+            .args(extra)
+            .output()
+            .expect("search command");
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+    }
+    let output = pari()
+        .args([
+            "search",
+            "--index",
+            fixture.index.to_str().expect("index path"),
+            "--input",
+            fixture.queries.to_str().expect("queries path"),
+            "--min-similarity",
+            "1.5",
+        ])
+        .output()
+        .expect("search command");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("min_similarity"));
 }

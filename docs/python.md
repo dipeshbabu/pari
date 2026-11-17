@@ -227,7 +227,18 @@ with Index.create("documents.pari", threshold=0.8, num_perm=128, seed=7) as inde
 
 The common API selects LSH bands and rows automatically from the threshold and signature length. Advanced Rust APIs can still use explicit parameters, but Python users do not need to understand storage layout or banding to create an index.
 
-`Index.search` returns **approximate candidate keys** that share one or more configured LSH bands. It is not an exact Jaccard filter. Applications that require an exact threshold should retain or reconstruct the source signatures and verify returned candidates with `MinHash.jaccard`.
+`Index.search` returns **approximate candidate keys** that share one or more configured LSH bands. It is not a similarity filter.
+
+To rank or threshold candidates, create the index with `store_signatures=True` and use `search_scored`:
+
+```python
+with Index.create("documents.pari", threshold=0.8, store_signatures=True) as index:
+    index.add_many(items)
+    for key, similarity in index.search_scored(query, min_similarity=0.8, top_k=10):
+        print(key, round(similarity, 3))
+```
+
+`search_scored` returns `(key, similarity)` pairs for LSH candidates, most similar first with ties broken by key. Similarity is the fraction of equal signature values, the same estimate as `MinHash.jaccard`. `min_similarity` must be in `[0, 1]` and `top_k` must be positive; invalid values raise `ConfigurationError`, as does calling `search_scored` on an index created without signatures. `search_scored_many` applies one filter to a batch, `signature(key)` returns a stored sketch or `None`, and `stores_signatures` reports the setting. Stored signatures add `num_perm × 4` bytes per item on disk (`× 8` for `Index64`) and are read lazily during queries.
 
 ## Reopen an index
 
