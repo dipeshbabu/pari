@@ -11,6 +11,11 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - The release workflow's PyPI recovery accepts a `recover_version` input
   instead of only restoring 0.1.0, so any release whose wheel filenames PyPI
   blocked can publish its archived, checksum-verified wheels with build tag 1.
+- Release validation refuses versions whose PyPI filenames were previously
+  uploaded and deleted (0.1.0 and 0.2.0), so a release cannot fail at the final
+  PyPI upload after other registries have published.
+- PyPI now serves 0.2.0 as build-1 wheels; the 0.2.0 release notes explain why
+  its source distribution is only available as 0.2.1.
 
 ## [0.2.1] - 2026-11-17
 

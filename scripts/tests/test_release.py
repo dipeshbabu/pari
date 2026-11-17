@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
 import os
@@ -27,6 +28,21 @@ class ReleaseMetadataTests(unittest.TestCase):
         release.validate("v0.2.1")
         with self.assertRaises(SystemExit):
             release.validate("v9.9.9")
+
+    def test_versions_burned_on_pypi_cannot_be_released(self) -> None:
+        self.assertEqual(release.BURNED_PYPI_VERSIONS, {"0.1.0", "0.2.0"})
+        original = release.workspace_version
+        try:
+            release.workspace_version = lambda: "0.2.0"
+            stderr = io.StringIO()
+            with (
+                contextlib.redirect_stderr(stderr),
+                self.assertRaises(SystemExit),
+            ):
+                release.validate()
+            self.assertIn("previously uploaded to PyPI", stderr.getvalue())
+        finally:
+            release.workspace_version = original
 
 
 class ArtifactTests(unittest.TestCase):

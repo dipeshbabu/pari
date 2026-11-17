@@ -71,6 +71,10 @@ FORBIDDEN_SDIST_PARTS = {
 }
 FORBIDDEN_SDIST_NAMES = {".env", "credentials", "credentials.json"}
 FORBIDDEN_SDIST_SUFFIXES = {".key", ".pem", ".p12", ".pfx"}
+# PyPI never accepts a filename that was uploaded before, even after deletion.
+# These versions' original wheel and sdist filenames were uploaded and later
+# deleted, so a new release must never reuse them. See docs/releasing.md.
+BURNED_PYPI_VERSIONS = frozenset({"0.1.0", "0.2.0"})
 
 
 def load_toml(path: Path) -> dict:
@@ -94,6 +98,11 @@ def validate(tag: str | None = None) -> None:
 
     if tag and tag != f"v{version}":
         errors.append(f"tag {tag!r} does not match workspace version v{version}")
+    if version in BURNED_PYPI_VERSIONS:
+        errors.append(
+            f"version {version} was previously uploaded to PyPI and deleted; "
+            "PyPI rejects its filenames, so release the next unused version"
+        )
 
     pyproject = load_toml(ROOT / "pyproject.toml")
     project = pyproject.get("project", {})
