@@ -6,6 +6,17 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-17
+
+### Fixed
+
+- Republish the 0.2.0 contents for Python. PyPI rejected the 0.2.0 wheels and
+  source distribution because their filenames were used by an earlier, deleted
+  upload; 0.2.0 therefore exists only on crates.io. 0.2.1 publishes all four
+  Rust crates, the Python distribution, CLI archives, and the GitHub Release
+  together, with no code changes from 0.2.0.
+- The release guide documents how to handle reused PyPI filenames.
+
 ## [0.2.0] - 2026-11-17
 
 ### Added
@@ -199,7 +210,8 @@ First public alpha of the Pari similarity and deduplication engine.
 
 This is an alpha release. Public 0.x compatibility is governed by `docs/compatibility.md`; interfaces marked experimental or internal may change before 1.0.
 
-[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dipeshbabu/pari/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/dipeshbabu/pari/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dipeshbabu/pari/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/dipeshbabu/pari/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/dipeshbabu/pari/compare/v0.1.1...v0.1.2
