@@ -1,5 +1,9 @@
 # Benchmark evidence
 
+The dedicated 10M campaign, its same-host 1M comparison, the `DedupeIndex`
+memory measurement, and the resulting scaling decisions are recorded in
+[10M scale evidence and decisions](scale-10m-evidence.md).
+
 Real text, code, contamination, and labeled product results are recorded in the
 [public-corpus evidence report](public-corpus-evidence.md). Their workloads and
 denominators differ from the synthetic campaign summarized below.

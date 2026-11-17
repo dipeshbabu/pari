@@ -1,0 +1,2 @@
+    Finished `release` profile [optimized] target(s) in 0.03s
+     Running `target/release/pari-bench run --items 10000000 --queries 100 --set-size 32 --overlap 29 --threshold 0.8 --num-perm 128 --seed 7 --output /mnt/nvme/scale-run/evidence-4d9782209601244ba2cdb280b5a98aa7f7ad8672/.scale-10m.partial-9eq7lgga/synthetic.json`

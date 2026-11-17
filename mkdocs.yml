@@ -130,6 +130,7 @@ nav:
       - Public-corpus evidence: public-corpus-evidence.md
       - Similarity families: similarity-family-evaluation.md
       - Sharding evaluation: sharding-evaluation.md
+      - 10M evidence and decisions: scale-10m-evidence.md
       - Dedicated 10M run: dedicated-scale-run.md
   - Project:
       - Compatibility: compatibility.md

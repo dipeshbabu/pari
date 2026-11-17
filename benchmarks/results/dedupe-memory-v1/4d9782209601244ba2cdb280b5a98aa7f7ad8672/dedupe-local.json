@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "benchmark": "pari-dedupe-memory",
+  "pari_version": "0.2.1",
+  "git_sha": "4d9782209601244ba2cdb280b5a98aa7f7ad8672",
+  "python": "3.12.3",
+  "platform": "Linux-7.0.0-1017-gcp-x86_64-with-glibc2.39",
+  "logical_cpus": 12,
+  "config": {
+    "items": 10000000,
+    "batch_size": 65536,
+    "threshold": 0.8,
+    "num_perm": 128,
+    "seed": 7,
+    "set_size": 32,
+    "overlap": 29
+  },
+  "expected_duplicate_pairs": 5000000,
+  "result": {
+    "backend": "local",
+    "items": 10000000,
+    "ingest_seconds": 209.632,
+    "ingest_items_per_second": 47702.7,
+    "grouping_seconds": 24.341,
+    "close_seconds": 315.157,
+    "groups": 2790330,
+    "grouped_members": 5580660,
+    "rss_before_bytes": 17039360,
+    "rss_after_ingest_bytes": 20450521088,
+    "resident_growth_bytes": 20433481728,
+    "resident_bytes_per_item": 2043.3,
+    "peak_rss_bytes": 39818113024,
+    "local_file_bytes": 4275059128
+  }
+}
