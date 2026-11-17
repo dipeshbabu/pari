@@ -144,7 +144,9 @@ Confirm the tag points to the exact preflighted commit before pushing. The tag w
 
 PyPI never accepts a filename that was uploaded before, even after the file or
 release is deleted. Before choosing a version, check that it was never
-published to PyPI, including abandoned attempts. If a tag's Python upload is
+published to PyPI, including abandoned attempts. `scripts/release.py validate` refuses versions listed in
+`BURNED_PYPI_VERSIONS` (currently 0.1.0 and 0.2.0); add a version there whenever
+its PyPI files are deleted. If a tag's Python upload is
 rejected for a reused filename, do not move the tag; publish the next patch
 version for every package so Rust and Python versions stay aligned.
 
