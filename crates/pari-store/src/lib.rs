@@ -42,9 +42,10 @@ use pari_format::{
     SIGNATURE_SEGMENT_TARGET_BYTES,
 };
 use pari_index::{
-    explain_lsh, explain_lsh64, BucketDistribution, LshError, LshParams, LshPlan, LshPlanError,
-    LshPlanOptions, QueryMetrics, StorageMode,
+    explain_lsh, explain_lsh64, signature_similarity, BucketDistribution, LshError, LshParams,
+    LshPlan, LshPlanError, LshPlanOptions, QueryMetrics, ScoreFilterError, StorageMode,
 };
+pub use pari_index::{ScoreFilter, ScoredCandidate};
 use same_file::Handle;
 
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
@@ -175,6 +176,14 @@ impl From<SignatureError> for StoreError {
     }
 }
 
+impl From<ScoreFilterError> for StoreError {
+    fn from(error: ScoreFilterError) -> Self {
+        Self::InvalidScoreFilter {
+            reason: error.reason(),
+        }
+    }
+}
+
 impl From<LshError> for StoreError {
     fn from(error: LshError) -> Self {
         Self::Index(error)
@@ -244,80 +253,6 @@ impl PersistentIndexOptions {
     pub const fn store_signatures(mut self, enabled: bool) -> Self {
         self.store_signatures = enabled;
         self
-    }
-}
-
-/// One LSH candidate with its estimated Jaccard similarity to the query.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ScoredCandidate {
-    /// External key of the candidate.
-    pub key: u64,
-    /// Fraction of equal signature values, an unbiased Jaccard estimate.
-    pub similarity: f64,
-}
-
-/// Filters applied to similarity-scored query results.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct ScoreFilter {
-    min_similarity: Option<f64>,
-    top_k: Option<usize>,
-}
-
-impl ScoreFilter {
-    /// Return every candidate, most similar first.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            min_similarity: None,
-            top_k: None,
-        }
-    }
-
-    /// Keep candidates whose estimated similarity is at least `threshold`.
-    #[must_use]
-    pub const fn min_similarity(mut self, threshold: f64) -> Self {
-        self.min_similarity = Some(threshold);
-        self
-    }
-
-    /// Keep at most `count` candidates after sorting by similarity.
-    #[must_use]
-    pub const fn top_k(mut self, count: usize) -> Self {
-        self.top_k = Some(count);
-        self
-    }
-
-    /// Reject a non-finite or out-of-range threshold and a zero `top_k`.
-    pub fn validate(self) -> Result<(), StoreError> {
-        if let Some(threshold) = self.min_similarity {
-            if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
-                return Err(StoreError::InvalidScoreFilter {
-                    reason: "min_similarity must be finite and in [0, 1]",
-                });
-            }
-        }
-        if self.top_k == Some(0) {
-            return Err(StoreError::InvalidScoreFilter {
-                reason: "top_k must be positive",
-            });
-        }
-        Ok(())
-    }
-
-    fn apply(self, mut scored: Vec<ScoredCandidate>) -> Vec<ScoredCandidate> {
-        if let Some(threshold) = self.min_similarity {
-            scored.retain(|candidate| candidate.similarity >= threshold);
-        }
-        scored.sort_by(|left, right| {
-            right
-                .similarity
-                .total_cmp(&left.similarity)
-                .then(left.key.cmp(&right.key))
-        });
-        if let Some(count) = self.top_k {
-            scored.truncate(count);
-        }
-        scored
     }
 }
 
@@ -654,7 +589,7 @@ impl PersistentIndexCore {
             .zip(signatures)
             .map(|(key, values)| ScoredCandidate {
                 key,
-                similarity: match_ratio(signature, &values),
+                similarity: signature_similarity(signature, &values),
             })
             .collect();
         Ok(filter.apply(scored))
@@ -1913,19 +1848,6 @@ fn append_signature_sections(
         sections.push(Section::new(SectionKind::Signatures, false, payload)?);
     }
     Ok(())
-}
-
-#[allow(clippy::cast_precision_loss)]
-fn match_ratio(left: &[u64], right: &[u64]) -> f64 {
-    if left.is_empty() || left.len() != right.len() {
-        return 0.0;
-    }
-    let matches = left
-        .iter()
-        .zip(right)
-        .filter(|(left, right)| left == right)
-        .count();
-    matches as f64 / left.len() as f64
 }
 
 /// One validated insertion: key, band hashes, and the signature to store.

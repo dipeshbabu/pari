@@ -77,6 +77,11 @@ sections when reading. Committing such a file with an older release rewrites
 it without signatures, after which scored queries report that signatures are
 unavailable. The bounded external builder copies signature sections unchanged.
 
+Read-only `LazyIndex32` and `LazyIndex64` answer the same scored queries from a
+file written with stored signatures: `query_scored`, `query_scored_many`, and
+`stores_signatures` read only the candidate rows they score. Files without
+signature sections return `LazyStoreError::SignaturesUnavailable`.
+
 ## Writer model
 
 Use one persistent-index writer for an index path at a time.

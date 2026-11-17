@@ -33,6 +33,28 @@ optional exact verification
 duplicate groups
 ```
 
+### Similarity scores
+
+An in-memory index can keep each item's full signature and rank candidates by
+estimated Jaccard similarity:
+
+```rust
+use pari_index::{LshIndex32, ScoreFilter};
+
+let mut index = LshIndex32::new(0.8, 128, 7)?.with_signature_storage();
+index.insert(1, &sketch)?;
+for candidate in index.query_scored(&query, ScoreFilter::new().min_similarity(0.8).top_k(10))? {
+    println!("{} {:.3}", candidate.key, candidate.similarity);
+}
+```
+
+Call `with_signature_storage` before inserting; it costs `num_perm` `u64`
+values per item. `query_scored` and `query_scored_many` return only LSH
+candidates, sorted by similarity and then key. A candidate without a stored
+signature returns `LshError::SignaturesUnavailable`, and an out-of-range filter
+returns `LshError::InvalidScoreFilter`. `ScoreFilter` and `ScoredCandidate` are
+shared with the persistent and lazy indexes.
+
 ## Parameter tuning
 
 `LshIndex32::new(threshold, num_perm, seed)` and

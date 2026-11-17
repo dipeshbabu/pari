@@ -6,6 +6,21 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Added
+
+- In-memory `LshIndex32`/`LshIndex64` can store signatures
+  (`with_signature_storage`) and answer `query_scored`/`query_scored_many`;
+  read-only `LazyIndex32`/`LazyIndex64` answer the same scored queries from
+  files with stored signatures.
+
+### Changed
+
+- `ScoreFilter` and `ScoredCandidate` moved to `pari-index` (still re-exported
+  by `pari-store`), and `ScoreFilter::validate` now returns
+  `ScoreFilterError`. `LshError` gains `SignaturesUnavailable` and
+  `InvalidScoreFilter`, and `LazyStoreError` gains signature variants. These
+  public-type changes require the next minor release.
+
 ## [0.2.2] - 2026-11-18
 
 ### Added

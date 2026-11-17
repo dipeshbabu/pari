@@ -29,9 +29,13 @@ use pari_format::{
     SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
     BUCKET_SEGMENT_TARGET_BYTES,
 };
+use pari_format::{
+    decode_signature_segment, read_signature_row, validate_signature_coverage, SignatureError,
+    SignatureSegment,
+};
 use pari_index::{
-    explain_lsh, explain_lsh64, BucketDistribution, LshError, LshParams, LshPlan, LshPlanError,
-    LshPlanOptions, QueryMetrics, StorageMode,
+    explain_lsh, explain_lsh64, signature_similarity, BucketDistribution, LshError, LshParams,
+    LshPlan, LshPlanError, LshPlanOptions, QueryMetrics, ScoreFilter, ScoredCandidate, StorageMode,
 };
 use same_file::Handle;
 
@@ -71,6 +75,12 @@ pub enum LazyStoreError {
     IncompatibleSeed { expected: u64, actual: u64 },
     /// A supplied sketch uses a different signature length.
     IncompatiblePermutationCount { expected: usize, actual: usize },
+    /// Persisted signature sections are malformed.
+    Signature(SignatureError),
+    /// Scored queries need a file written with stored signatures.
+    SignaturesUnavailable,
+    /// A scored-query filter is out of range.
+    InvalidScoreFilter { reason: &'static str },
 }
 
 impl fmt::Display for LazyStoreError {
@@ -101,6 +111,13 @@ impl fmt::Display for LazyStoreError {
                 formatter,
                 "incompatible MinHash permutation count: expected {expected}, got {actual}"
             ),
+            Self::Signature(error) => write!(formatter, "invalid stored signatures: {error}"),
+            Self::SignaturesUnavailable => formatter.write_str(
+                "this index file does not store signatures; build it with stored signatures to get similarity scores",
+            ),
+            Self::InvalidScoreFilter { reason } => {
+                write!(formatter, "invalid similarity filter: {reason}")
+            }
         }
     }
 }
@@ -114,6 +131,7 @@ impl Error for LazyStoreError {
             Self::Bucket(error) => Some(error),
             Self::Index(error) => Some(error),
             Self::Cleanup { original, .. } => Some(original.as_ref()),
+            Self::Signature(error) => Some(error),
             _ => None,
         }
     }
@@ -140,6 +158,12 @@ impl From<FormatError> for LazyStoreError {
 impl From<BucketError> for LazyStoreError {
     fn from(error: BucketError) -> Self {
         Self::Bucket(error)
+    }
+}
+
+impl From<SignatureError> for LazyStoreError {
+    fn from(error: SignatureError) -> Self {
+        Self::Signature(error)
     }
 }
 
@@ -180,6 +204,30 @@ struct LazyIndexCore {
     seed: u64,
     params: LshParams,
     query_metrics: Option<QueryMetrics>,
+    signatures: Option<LazySignatures>,
+}
+
+/// Stored signature rows located through the file's key order.
+#[derive(Debug)]
+struct LazySignatures {
+    /// `(key, row)` pairs sorted by key; rows follow the keys sections.
+    rows: Vec<(u64, u64)>,
+    segments: Vec<SignatureSegment>,
+}
+
+impl LazySignatures {
+    fn locate(&self, key: u64) -> Option<(SignatureSegment, u64)> {
+        let row = self
+            .rows
+            .binary_search_by_key(&key, |(candidate, _)| *candidate)
+            .ok()
+            .map(|index| self.rows[index].1)?;
+        let index = self
+            .segments
+            .partition_point(|segment| segment.first_row() <= row);
+        let segment = self.segments.get(index.checked_sub(1)?)?;
+        segment.contains_row(row).then_some((*segment, row))
+    }
 }
 
 impl LazyIndexCore {
@@ -200,8 +248,11 @@ impl LazyIndexCore {
 
         let mut keys = Vec::new();
         for descriptor in keys_sections {
-            keys.extend(read_source_keys(&layout, &mut file, descriptor)?);
+            keys.extend(read_source_keys_in_file_order(
+                &layout, &mut file, descriptor,
+            )?);
         }
+        let signatures = read_lazy_signatures(&layout, &mut file, &keys)?;
         keys.sort_unstable();
         if keys.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(LazyStoreError::InvalidSnapshot {
@@ -242,7 +293,46 @@ impl LazyIndexCore {
             seed,
             params,
             query_metrics: None,
+            signatures,
         })
+    }
+
+    fn query_scored(
+        &mut self,
+        hashes: &[u64],
+        query: &[u64],
+        filter: ScoreFilter,
+    ) -> Result<Vec<ScoredCandidate>, LazyStoreError> {
+        filter
+            .validate()
+            .map_err(|error| LazyStoreError::InvalidScoreFilter {
+                reason: error.reason(),
+            })?;
+        if self.signatures.is_none() {
+            return Err(LazyStoreError::SignaturesUnavailable);
+        }
+        let mut candidates = HashSet::new();
+        self.collect_candidates(hashes, &mut candidates)?;
+        let mut keys: Vec<_> = candidates.into_iter().collect();
+        keys.sort_unstable();
+        let signatures = self
+            .signatures
+            .as_ref()
+            .ok_or(LazyStoreError::SignaturesUnavailable)?;
+        let mut scored = Vec::with_capacity(keys.len());
+        for key in keys {
+            let (segment, row) = signatures
+                .locate(key)
+                .ok_or(LazyStoreError::InvalidSnapshot {
+                    reason: "live key has no stored signature",
+                })?;
+            let row_values = read_signature_row(&self.layout, &mut self.file, segment, row)?;
+            scored.push(ScoredCandidate {
+                key,
+                similarity: signature_similarity(query, &row_values),
+            });
+        }
+        Ok(filter.apply(scored))
     }
 
     fn query_hashes(
@@ -397,6 +487,44 @@ macro_rules! impl_lazy_index {
                     .map(|sketch| self.band_hashes(sketch))
                     .collect::<Result<Vec<_>, LazyStoreError>>()?;
                 self.inner.query_hashes_many(hashes, started)
+            }
+
+            /// Query candidates with their estimated Jaccard similarity.
+            ///
+            /// Requires a file written with stored signatures. Results are
+            /// sorted by similarity, highest first, then by key.
+            pub fn query_scored(
+                &mut self,
+                sketch: &$sketch,
+                filter: ScoreFilter,
+            ) -> Result<Vec<ScoredCandidate>, LazyStoreError> {
+                let started = self.inner.query_metrics.as_ref().map(|_| Instant::now());
+                let hashes = self.band_hashes(sketch)?;
+                let query = widen(sketch.signature());
+                let scored = self.inner.query_scored(&hashes, &query, filter)?;
+                if let (Some(metrics), Some(started)) = (&mut self.inner.query_metrics, started) {
+                    metrics.record(1, scored.len(), self.inner.item_count, started.elapsed());
+                }
+                Ok(scored)
+            }
+
+            /// Query many signatures with similarity scores and one filter.
+            pub fn query_scored_many<'a>(
+                &mut self,
+                sketches: impl IntoIterator<Item = &'a $sketch>,
+                filter: ScoreFilter,
+            ) -> Result<Vec<Vec<ScoredCandidate>>, LazyStoreError> {
+                let mut output = Vec::new();
+                for sketch in sketches {
+                    output.push(self.query_scored(sketch, filter)?);
+                }
+                Ok(output)
+            }
+
+            /// Return whether the file stores signatures for scored queries.
+            #[must_use]
+            pub const fn stores_signatures(&self) -> bool {
+                self.inner.signatures.is_some()
             }
 
             /// Enable or disable process-local query observation.
@@ -742,7 +870,50 @@ const fn duplicate_section_reason(kind: SectionKind) -> &'static str {
     }
 }
 
-fn read_source_keys(
+fn widen<T: Copy + Into<u64>>(values: &[T]) -> Vec<u64> {
+    values.iter().map(|value| (*value).into()).collect()
+}
+
+/// Validate optional signature sections and index their rows by key.
+///
+/// `file_keys` must be in `Keys`-section order, which signature rows follow.
+fn read_lazy_signatures(
+    layout: &FileLayout,
+    file: &mut File,
+    file_keys: &[u64],
+) -> Result<Option<LazySignatures>, LazyStoreError> {
+    let mut segments = Vec::new();
+    for descriptor in layout.sections() {
+        if descriptor.kind() != SectionKind::Signatures {
+            continue;
+        }
+        if descriptor.required() {
+            return Err(LazyStoreError::InvalidSnapshot {
+                reason: "signature sections must be optional",
+            });
+        }
+        segments.push(decode_signature_segment(layout, file, *descriptor)?);
+    }
+    if segments.is_empty() {
+        return Ok(None);
+    }
+    let rows = u64::try_from(file_keys.len()).map_err(|_| LazyStoreError::LengthOverflow)?;
+    validate_signature_coverage(&segments, rows)?;
+    let mut rows: Vec<(u64, u64)> = file_keys.iter().copied().zip(0_u64..).collect();
+    rows.sort_unstable_by_key(|(key, _)| *key);
+    Ok(Some(LazySignatures { rows, segments }))
+}
+
+/// Read a keys section in file order, validating its length and checksum.
+fn read_source_keys_in_file_order(
+    layout: &FileLayout,
+    file: &mut File,
+    descriptor: SectionDescriptor,
+) -> Result<Vec<u64>, LazyStoreError> {
+    read_keys(layout, file, descriptor)
+}
+
+fn read_keys(
     layout: &FileLayout,
     file: &mut File,
     descriptor: SectionDescriptor,
@@ -764,32 +935,17 @@ fn read_source_keys(
     hasher.update(&bytes);
     let mut buffer = vec![0_u8; CHECKSUM_BUFFER_BYTES];
     let mut remaining = expected - 8;
-    let mut previous = None;
-    let mut unordered = false;
     while remaining > 0 {
         let length =
             usize::try_from(remaining.min(65_536)).map_err(|_| LazyStoreError::LengthOverflow)?;
         file.read_exact(&mut buffer[..length])?;
         hasher.update(&buffer[..length]);
         for raw in buffer[..length].chunks_exact(U64_BYTES) {
-            let key = read_u64_exact(raw)?;
-            if let Some(last) = previous {
-                unordered |= key < last;
-            }
-            previous = Some(key);
-            keys.push(key);
+            keys.push(read_u64_exact(raw)?);
         }
         remaining -= u64::try_from(length).map_err(|_| LazyStoreError::LengthOverflow)?;
     }
     check_checksum(descriptor.checksum(), hasher.finalize())?;
-    if unordered {
-        keys.sort_unstable();
-    }
-    if keys.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(LazyStoreError::InvalidSnapshot {
-            reason: "duplicate key in persisted keys section",
-        });
-    }
     Ok(keys)
 }
 

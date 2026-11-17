@@ -19,6 +19,7 @@ use pari_core::{MinHash32, MinHash64};
 
 mod grouping;
 mod planner;
+mod scoring;
 
 pub use grouping::{
     group_pairs, group_pairs_with_representative, CandidatePairs, DuplicateGroup, GroupError,
@@ -27,6 +28,7 @@ pub use planner::{
     explain_lsh, explain_lsh64, plan_lsh, LshPlan, LshPlanError, LshPlanOptions, LshSizeEstimates,
     ParameterSource, RecommendationReason, StorageMode, LSH_PLANNER_MODEL,
 };
+pub use scoring::{signature_similarity, ScoreFilter, ScoreFilterError, ScoredCandidate};
 
 const AUTO_TUNE_INTEGRATION_SEGMENTS: u32 = 64;
 const MAX_AUTO_TUNE_PERMUTATIONS: usize = 4_096;
@@ -298,6 +300,10 @@ pub enum LshError {
     DuplicateKey { key: u64 },
     /// The append-only internal identifier space would be exhausted.
     TooManyItems,
+    /// A scored query needs signatures the index did not store.
+    SignaturesUnavailable,
+    /// A scored-query filter is out of range.
+    InvalidScoreFilter(ScoreFilterError),
 }
 
 impl fmt::Display for LshError {
@@ -334,6 +340,10 @@ impl fmt::Display for LshError {
             ),
             Self::DuplicateKey { key } => write!(formatter, "key {key} already exists in the index"),
             Self::TooManyItems => formatter.write_str("internal LSH item identifier space exhausted"),
+            Self::SignaturesUnavailable => formatter.write_str(
+                "this index does not store signatures for every candidate; build it with with_signature_storage()",
+            ),
+            Self::InvalidScoreFilter(error) => error.fmt(formatter),
         }
     }
 }
@@ -347,6 +357,8 @@ struct IndexData {
     id_to_key: Vec<Option<u64>>,
     band_hashes: Vec<Option<Vec<u64>>>,
     query_observer: Option<Box<QueryObserver>>,
+    /// Signatures by internal id, widened to `u64`, when storage is enabled.
+    signatures: Option<Vec<Option<Box<[u64]>>>>,
 }
 
 impl IndexData {
@@ -358,6 +370,7 @@ impl IndexData {
             id_to_key: Vec::new(),
             band_hashes: Vec::new(),
             query_observer: None,
+            signatures: None,
         }
     }
 
@@ -388,6 +401,13 @@ impl IndexData {
             }
         }
         if let Some(slot) = self.id_to_key.get_mut(index) {
+            *slot = None;
+        }
+        if let Some(slot) = self
+            .signatures
+            .as_mut()
+            .and_then(|signatures| signatures.get_mut(index))
+        {
             *slot = None;
         }
         true
@@ -439,7 +459,10 @@ impl IndexData {
         Ok(())
     }
 
-    fn insert_validated(&mut self, key: u64, hashes: Vec<u64>) {
+    fn insert_validated(&mut self, key: u64, hashes: Vec<u64>, signature: Option<Box<[u64]>>) {
+        if let Some(signatures) = &mut self.signatures {
+            signatures.push(signature);
+        }
         let id = u32::try_from(self.id_to_key.len()).expect("capacity validated before insertion");
         for (table, hash) in self.buckets.iter_mut().zip(&hashes) {
             table.entry(*hash).or_default().push(id);
@@ -456,6 +479,35 @@ impl IndexData {
                 output.extend(ids.iter().copied());
             }
         }
+    }
+
+    fn score_candidates(
+        &self,
+        candidates: &HashSet<u32>,
+        query: &[u64],
+        filter: ScoreFilter,
+    ) -> Result<Vec<ScoredCandidate>, LshError> {
+        let signatures = self
+            .signatures
+            .as_ref()
+            .ok_or(LshError::SignaturesUnavailable)?;
+        let mut scored = Vec::with_capacity(candidates.len());
+        for id in candidates {
+            let index =
+                usize::try_from(*id).expect("u32 identifier fits usize on supported targets");
+            let Some(Some(key)) = self.id_to_key.get(index) else {
+                continue;
+            };
+            let signature = signatures
+                .get(index)
+                .and_then(Option::as_deref)
+                .ok_or(LshError::SignaturesUnavailable)?;
+            scored.push(ScoredCandidate {
+                key: *key,
+                similarity: signature_similarity(query, signature),
+            });
+        }
+        Ok(filter.apply(scored))
     }
 
     fn keys_for_candidates(&self, candidates: &HashSet<u32>) -> Vec<u64> {
@@ -571,11 +623,91 @@ macro_rules! impl_lsh_index {
                     self.ensure_compatible(sketch)?;
                 }
                 self.data.ensure_capacity(items.len())?;
+                let store_signatures = self.data.signatures.is_some();
                 for (key, sketch) in items {
                     let hashes = self.compute_band_hashes(sketch.signature());
-                    self.data.insert_validated(key, hashes);
+                    let signature = store_signatures.then(|| widen(sketch.signature()));
+                    self.data.insert_validated(key, hashes, signature);
                 }
                 Ok(())
+            }
+
+            /// Keep each inserted item's full signature so queries can be scored.
+            ///
+            /// Call this before inserting: items inserted earlier have no stored
+            /// signature, and a scored query that reaches one of them returns
+            /// [`LshError::SignaturesUnavailable`]. Storage costs `num_perm`
+            /// `u64` values per item.
+            #[must_use]
+            pub fn with_signature_storage(mut self) -> Self {
+                if self.data.signatures.is_none() {
+                    self.data.signatures = Some(vec![None; self.data.id_to_key.len()]);
+                }
+                self
+            }
+
+            /// Return whether this index stores signatures for scored queries.
+            #[must_use]
+            pub const fn stores_signatures(&self) -> bool {
+                self.data.signatures.is_some()
+            }
+
+            /// Query candidates with their estimated Jaccard similarity.
+            ///
+            /// Results are sorted by similarity, highest first, then by key.
+            pub fn query_scored(
+                &self,
+                sketch: &$sketch,
+                filter: ScoreFilter,
+            ) -> Result<Vec<ScoredCandidate>, LshError> {
+                let started = self.data.query_observer.as_ref().map(|_| Instant::now());
+                filter.validate().map_err(LshError::InvalidScoreFilter)?;
+                self.ensure_compatible(sketch)?;
+                let hashes = self.compute_band_hashes(sketch.signature());
+                let mut candidates = HashSet::new();
+                self.data.collect_candidate_ids(&hashes, &mut candidates);
+                let scored =
+                    self.data
+                        .score_candidates(&candidates, &widen(sketch.signature()), filter)?;
+                if let (Some(observer), Some(started)) = (&self.data.query_observer, started) {
+                    observer.record(1, scored.len(), self.len(), started.elapsed());
+                }
+                Ok(scored)
+            }
+
+            /// Query many signatures with similarity scores and one filter.
+            pub fn query_scored_many<'a>(
+                &self,
+                sketches: impl IntoIterator<Item = &'a $sketch>,
+                filter: ScoreFilter,
+            ) -> Result<Vec<Vec<ScoredCandidate>>, LshError> {
+                let started = self.data.query_observer.as_ref().map(|_| Instant::now());
+                filter.validate().map_err(LshError::InvalidScoreFilter)?;
+                let mut output = Vec::new();
+                let mut candidates = HashSet::new();
+                let mut candidate_count = 0_usize;
+                for sketch in sketches {
+                    self.ensure_compatible(sketch)?;
+                    let hashes = self.compute_band_hashes(sketch.signature());
+                    candidates.clear();
+                    self.data.collect_candidate_ids(&hashes, &mut candidates);
+                    let scored = self.data.score_candidates(
+                        &candidates,
+                        &widen(sketch.signature()),
+                        filter,
+                    )?;
+                    candidate_count = candidate_count.saturating_add(scored.len());
+                    output.push(scored);
+                }
+                if let (Some(observer), Some(started)) = (&self.data.query_observer, started) {
+                    observer.record(
+                        output.len(),
+                        candidate_count,
+                        output.len().saturating_mul(self.len()),
+                        started.elapsed(),
+                    );
+                }
+                Ok(output)
             }
 
             /// Query approximate candidates for one signature.
@@ -711,6 +843,10 @@ macro_rules! impl_lsh_index {
 
 impl_lsh_index!(LshIndex32, MinHash32, u32, 4, hash_band32);
 impl_lsh_index!(LshIndex64, MinHash64, u64, 8, hash_band64);
+
+fn widen<T: Copy + Into<u64>>(values: &[T]) -> Box<[u64]> {
+    values.iter().map(|value| (*value).into()).collect()
+}
 
 fn validate_threshold(threshold: f64) -> Result<(), LshError> {
     if !threshold.is_finite() || threshold <= 0.0 || threshold > 1.0 {
