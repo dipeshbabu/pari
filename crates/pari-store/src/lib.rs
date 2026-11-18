@@ -346,7 +346,7 @@ struct PersistentIndexCore {
     params: LshParams,
     scheme: SignatureScheme,
     base: Option<LazyBase>,
-    overlay_buckets: Vec<HashMap<u64, Vec<u64>>>,
+    overlay_buckets: Vec<OverlayTable>,
     overlay_keys: HashSet<u64>,
     suppressed_base_keys: HashSet<u64>,
     key_hashes: BTreeMap<u64, Vec<u64>>,
@@ -755,7 +755,11 @@ impl PersistentIndexCore {
             Err(error) => return Err(StoreError::Io(error)),
         };
         let committed_buckets = self.base.as_ref().map_or(0, |base| base.buckets.len());
-        let overlay_buckets = self.overlay_buckets.iter().map(HashMap::len).sum::<usize>();
+        let overlay_buckets = self
+            .overlay_buckets
+            .iter()
+            .map(OverlayTable::len)
+            .sum::<usize>();
         let committed_distribution =
             self.base
                 .as_ref()
@@ -769,7 +773,7 @@ impl PersistentIndexCore {
         let overlay_distribution = BucketDistribution::from_sizes(
             self.overlay_buckets
                 .iter()
-                .flat_map(|table| table.values().map(Vec::len)),
+                .flat_map(OverlayTable::bucket_sizes),
         );
         Ok(StoreStats {
             items: self.len(),
@@ -2043,39 +2047,100 @@ const fn missing_section_reason(kind: SectionKind) -> &'static str {
     }
 }
 
-fn empty_bucket_tables(bands: usize) -> Vec<HashMap<u64, Vec<u64>>> {
-    std::iter::repeat_with(HashMap::new).take(bands).collect()
+/// One band's uncommitted buckets.
+///
+/// Most LSH buckets hold a single key, so the first member of every bucket is
+/// stored inline and only buckets with more members allocate a list. This
+/// keeps a singleton bucket at one map entry instead of a map entry plus a
+/// separately allocated vector.
+#[derive(Debug, Default)]
+struct OverlayTable {
+    /// The first member of every bucket.
+    first: HashMap<u64, u64>,
+    /// The remaining members of buckets with more than one.
+    rest: HashMap<u64, Vec<u64>>,
 }
 
-fn add_overlay_key(tables: &mut [HashMap<u64, Vec<u64>>], key: u64, hashes: &[u64]) {
-    for (table, hash) in tables.iter_mut().zip(hashes) {
-        table.entry(*hash).or_default().push(key);
+impl OverlayTable {
+    fn insert(&mut self, hash: u64, key: u64) {
+        match self.first.entry(hash) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(key);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                self.rest.entry(hash).or_default().push(key);
+            }
+        }
     }
-}
 
-fn remove_overlay_key(tables: &mut [HashMap<u64, Vec<u64>>], key: u64, hashes: &[u64]) {
-    for (table, hash) in tables.iter_mut().zip(hashes) {
-        let remove_bucket = if let Some(keys) = table.get_mut(hash) {
-            keys.retain(|candidate| *candidate != key);
-            keys.is_empty()
-        } else {
-            false
+    fn remove(&mut self, hash: u64, key: u64) {
+        let Some(first) = self.first.get_mut(&hash) else {
+            return;
         };
-        if remove_bucket {
-            table.remove(hash);
+        if *first == key {
+            // Promote a remaining member, or drop the now-empty bucket.
+            match self.rest.get_mut(&hash) {
+                Some(rest) => {
+                    if let Some(next) = rest.pop() {
+                        *first = next;
+                    }
+                    if rest.is_empty() {
+                        self.rest.remove(&hash);
+                    }
+                }
+                None => {
+                    self.first.remove(&hash);
+                }
+            }
+        } else if let Some(rest) = self.rest.get_mut(&hash) {
+            rest.retain(|candidate| *candidate != key);
+            if rest.is_empty() {
+                self.rest.remove(&hash);
+            }
         }
+    }
+
+    fn extend_members(&self, hash: u64, output: &mut HashSet<u64>) {
+        if let Some(first) = self.first.get(&hash) {
+            output.insert(*first);
+            if let Some(rest) = self.rest.get(&hash) {
+                output.extend(rest.iter().copied());
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.first.len()
+    }
+
+    fn bucket_sizes(&self) -> impl Iterator<Item = usize> + '_ {
+        self.first
+            .keys()
+            .map(|hash| 1 + self.rest.get(hash).map_or(0, Vec::len))
     }
 }
 
-fn collect_overlay_candidates(
-    tables: &[HashMap<u64, Vec<u64>>],
-    hashes: &[u64],
-    output: &mut HashSet<u64>,
-) {
+fn empty_bucket_tables(bands: usize) -> Vec<OverlayTable> {
+    std::iter::repeat_with(OverlayTable::default)
+        .take(bands)
+        .collect()
+}
+
+fn add_overlay_key(tables: &mut [OverlayTable], key: u64, hashes: &[u64]) {
+    for (table, hash) in tables.iter_mut().zip(hashes) {
+        table.insert(*hash, key);
+    }
+}
+
+fn remove_overlay_key(tables: &mut [OverlayTable], key: u64, hashes: &[u64]) {
+    for (table, hash) in tables.iter_mut().zip(hashes) {
+        table.remove(*hash, key);
+    }
+}
+
+fn collect_overlay_candidates(tables: &[OverlayTable], hashes: &[u64], output: &mut HashSet<u64>) {
     for (table, hash) in tables.iter().zip(hashes) {
-        if let Some(keys) = table.get(hash) {
-            output.extend(keys.iter().copied());
-        }
+        table.extend_members(*hash, output);
     }
 }
 
@@ -2324,7 +2389,7 @@ fn avalanche64(mut value: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{BTreeMap, HashMap},
+        collections::BTreeMap,
         fs::{self, OpenOptions},
         io::{self, Seek, SeekFrom, Write},
         path::{Path, PathBuf},
@@ -2389,6 +2454,57 @@ mod tests {
             .expect("encode");
         fs::write(output, encoded).expect("write split snapshot");
         pairs
+    }
+
+    #[test]
+    fn overlay_table_matches_a_reference_multimap() {
+        use std::collections::{HashMap, HashSet};
+
+        let mut table = super::OverlayTable::default();
+        let mut reference: HashMap<u64, HashSet<u64>> = HashMap::new();
+        // A small hash range forces shared buckets, promotions, and removals
+        // of both inline and overflow members.
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut live: Vec<(u64, u64)> = Vec::new();
+        for key in 0..4_000_u64 {
+            if !live.is_empty() && next() % 3 == 0 {
+                let index = usize::try_from(next() % live.len() as u64).expect("index");
+                let (hash, removed) = live.swap_remove(index);
+                table.remove(hash, removed);
+                let members = reference.get_mut(&hash).expect("bucket");
+                members.remove(&removed);
+                if members.is_empty() {
+                    reference.remove(&hash);
+                }
+            }
+            let hash = next() % 64;
+            table.insert(hash, key);
+            reference.entry(hash).or_default().insert(key);
+            live.push((hash, key));
+        }
+        // Removing an absent key or hash changes nothing.
+        table.remove(1_000_000, 1);
+        table.remove(live[0].0, u64::MAX);
+
+        assert_eq!(table.len(), reference.len());
+        let mut sizes: Vec<_> = table.bucket_sizes().collect();
+        let mut expected_sizes: Vec<_> = reference.values().map(HashSet::len).collect();
+        sizes.sort_unstable();
+        expected_sizes.sort_unstable();
+        assert_eq!(sizes, expected_sizes);
+        for hash in 0..64 {
+            let mut members = HashSet::new();
+            table.extend_members(hash, &mut members);
+            assert_eq!(members, reference.get(&hash).cloned().unwrap_or_default());
+        }
+        assert!(table.rest.values().all(|rest| !rest.is_empty()));
+        assert!(table.rest.keys().all(|hash| table.first.contains_key(hash)));
     }
 
     #[test]
@@ -2941,7 +3057,11 @@ mod tests {
 
         let mut reopened = PersistentIndex32::open(&path).expect("reopen snapshot");
         assert!(reopened.inner.base.is_some());
-        assert!(reopened.inner.overlay_buckets.iter().all(HashMap::is_empty));
+        assert!(reopened
+            .inner
+            .overlay_buckets
+            .iter()
+            .all(|table| table.len() == 0));
         let stats = reopened.stats().expect("stats");
         assert!(stats.committed_buckets > 0);
         assert!(stats.committed_distribution.memberships > 0);
