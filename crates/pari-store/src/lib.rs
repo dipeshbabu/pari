@@ -18,7 +18,7 @@ use std::{
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, BufWriter, Write},
+    io::{self, BufWriter, Seek, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -29,12 +29,14 @@ use std::{
 
 use pari_core::{MinHash32, MinHash64};
 #[cfg(test)]
-use pari_format::IndexFile;
 use pari_format::{
-    bucket_record_size, decode_bucket_segment, encode_bucket_segment, read_bucket_members,
-    validate_global_bucket_order, Algorithm, BucketError, BucketKey, BucketLocation, BucketRecord,
-    CodecId, FileLayout, FormatError, IndexMetadata, LayoutError, Section, SectionDescriptor,
-    SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES, BUCKET_SEGMENT_TARGET_BYTES,
+    bucket_record_size, encode_bucket_segment, BucketRecord, IndexFile, Section,
+    BUCKET_SEGMENT_HEADER_BYTES,
+};
+use pari_format::{
+    decode_bucket_segment, read_bucket_members, validate_global_bucket_order, Algorithm,
+    BucketError, BucketKey, BucketLocation, CodecId, FileLayout, FormatError, IndexMetadata,
+    LayoutError, SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_TARGET_BYTES,
 };
 use pari_format::{
     decode_signature_segment, encode_signature_segment, read_signature_row,
@@ -48,8 +50,11 @@ use pari_index::{
     LshPlan, LshPlanError, LshPlanOptions, QueryMetrics, ScoreFilterError, StorageMode,
 };
 pub use pari_index::{ScoreFilter, ScoredCandidate};
-use rayon::slice::ParallelSliceMut;
 use same_file::Handle;
+
+mod snapshot_buckets;
+
+use snapshot_buckets::{write_bucket_sections, SORT_RECORD_LIMIT};
 
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
@@ -961,6 +966,14 @@ impl PersistentIndexCore {
         parent_error: Option<StoreError>,
         signatures: Option<LiveSignatures>,
     ) -> Result<(), StoreError> {
+        // The file was published. Reopening can release the old overlay now:
+        // the live catalog and collected signatures suffice to rebuild it on error.
+        self.overlay_buckets = Vec::new();
+        self.overlay_keys = HashSet::new();
+        self.suppressed_base_keys = HashSet::new();
+        if let Some(state) = &mut self.signatures {
+            *state = SignatureState::default();
+        }
         match Self::open(&self.path, self.scheme) {
             Ok(mut refreshed) => {
                 if parent_error.is_some() {
@@ -997,65 +1010,50 @@ impl PersistentIndexCore {
         )?)
     }
 
-    /// Stream the committed snapshot to `output` without materializing it.
-    ///
-    /// Bucket memberships are collected into one flat `(bucket, key)` list,
-    /// sorted in parallel, and encoded one bucket segment at a time, so peak
-    /// memory is the key metadata plus that list and a single segment. The
-    /// bytes are identical to encoding the whole container in memory.
-    fn write_snapshot<W: Write>(
+    /// Write each metadata and bucket section directly to the staging sink.
+    fn write_snapshot<W: Write + Seek>(
         &self,
         output: W,
         signatures: Option<&[(u64, Vec<u64>)]>,
     ) -> Result<(), StoreError> {
-        self.write_snapshot_with(output, signatures, BUCKET_SEGMENT_TARGET_BYTES)
+        self.write_snapshot_with(
+            output,
+            signatures,
+            BUCKET_SEGMENT_TARGET_BYTES,
+            SORT_RECORD_LIMIT,
+        )
     }
 
-    fn write_snapshot_with<W: Write>(
+    fn write_snapshot_with<W: Write + Seek>(
         &self,
         output: W,
         signatures: Option<&[(u64, Vec<u64>)]>,
         bucket_target_bytes: usize,
+        sort_limit: usize,
     ) -> Result<(), StoreError> {
         let metadata = self.snapshot_metadata()?;
-        let mut leading = Vec::new();
-        append_key_metadata_sections(
-            &mut leading,
-            &self.key_hashes,
-            self.params.bands,
-            METADATA_SECTION_TARGET_BYTES,
-        )?;
-        if let Some(signatures) = signatures {
-            append_signature_sections(&mut leading, signatures, self.scheme, self.num_perm)?;
-        }
-        let memberships = sorted_bucket_memberships(&self.key_hashes, self.params.bands)?;
-        let segment_starts = plan_bucket_segments(&memberships, bucket_target_bytes)?;
-        let bucket_sections = segment_starts.len().max(1);
-
-        let mut writer = ContainerWriter::new(output, &metadata, leading.len() + bucket_sections)
-            .map_err(container_error)?;
-        for section in &leading {
-            writer
-                .write_section(section.kind(), section.required(), section.payload())
-                .map_err(container_error)?;
-        }
-        drop(leading);
-        if segment_starts.is_empty() {
-            writer
-                .write_section(SectionKind::Buckets, true, &encode_bucket_segment(&[])?)
-                .map_err(container_error)?;
-        }
-        for (index, start) in segment_starts.iter().copied().enumerate() {
-            let end = segment_starts
-                .get(index + 1)
-                .copied()
-                .unwrap_or(memberships.len());
-            let payload = encode_membership_segment(&memberships[start..end])?;
-            writer
-                .write_section(SectionKind::Buckets, true, &payload)
-                .map_err(container_error)?;
-        }
-        writer.finish().map_err(container_error)?;
+        ContainerWriter::write_seekable(output, &metadata, |writer| {
+            let mut emit = |kind, required, payload: Vec<u8>| {
+                writer.write_section(kind, required, &payload)?;
+                Ok(())
+            };
+            emit_key_metadata_sections(
+                &self.key_hashes,
+                self.params.bands,
+                METADATA_SECTION_TARGET_BYTES,
+                &mut emit,
+            )?;
+            if let Some(signatures) = signatures {
+                emit_signature_sections(signatures, self.scheme, self.num_perm, emit)?;
+            }
+            write_bucket_sections(
+                writer,
+                &self.key_hashes,
+                self.params.bands,
+                bucket_target_bytes,
+                sort_limit,
+            )
+        })?;
         Ok(())
     }
 
@@ -1083,7 +1081,15 @@ impl PersistentIndexCore {
             METADATA_SECTION_TARGET_BYTES,
         )?;
         if let Some(signatures) = signatures {
-            append_signature_sections(&mut sections, signatures, self.scheme, self.num_perm)?;
+            emit_signature_sections(
+                signatures,
+                self.scheme,
+                self.num_perm,
+                |kind, required, payload| {
+                    sections.push(Section::new(kind, required, payload)?);
+                    Ok(())
+                },
+            )?;
         }
         append_bucket_sections(&mut sections, &self.key_hashes, self.params.bands)?;
         Ok(IndexFile::new(metadata, sections)?.encode()?)
@@ -1843,31 +1849,53 @@ fn key_metadata_pairs(
 ///
 /// Every `Keys` section is written before the `BandHashes` sections, so a
 /// catalog that fits one pair keeps the original single-pair byte layout.
-fn append_key_metadata_sections(
-    sections: &mut Vec<Section>,
+fn emit_key_metadata_sections(
     key_hashes: &BTreeMap<u64, Vec<u64>>,
     bands: usize,
     target_bytes: usize,
+    mut emit: impl FnMut(SectionKind, bool, Vec<u8>) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let row_bytes = bands
         .max(1)
         .checked_mul(U64_BYTES)
         .ok_or(StoreError::LengthOverflow)?;
     let rows_per_section = (target_bytes.saturating_sub(COUNT_BYTES) / row_bytes).max(1);
-    let entries: Vec<_> = key_hashes.iter().collect();
-    let mut chunks: Vec<&[(&u64, &Vec<u64>)]> = entries.chunks(rows_per_section).collect();
-    if chunks.is_empty() {
-        chunks.push(&[]);
+    let chunks = key_hashes.len().div_ceil(rows_per_section).max(1);
+    let mut keys = key_hashes.keys().copied();
+    for _ in 0..chunks {
+        emit(
+            SectionKind::Keys,
+            true,
+            encode_keys(keys.by_ref().take(rows_per_section))?,
+        )?;
     }
-    for chunk in &chunks {
-        let keys = encode_keys(chunk.iter().map(|(key, _)| **key))?;
-        sections.push(Section::new(SectionKind::Keys, true, keys)?);
-    }
-    for chunk in &chunks {
-        let hashes = encode_band_hashes(chunk.iter().map(|(_, hashes)| *hashes), bands)?;
-        sections.push(Section::new(SectionKind::BandHashes, true, hashes)?);
+    let mut hashes = key_hashes.values();
+    for _ in 0..chunks {
+        emit(
+            SectionKind::BandHashes,
+            true,
+            encode_band_hashes(hashes.by_ref().take(rows_per_section), bands)?,
+        )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn append_key_metadata_sections(
+    sections: &mut Vec<Section>,
+    key_hashes: &BTreeMap<u64, Vec<u64>>,
+    bands: usize,
+    target_bytes: usize,
+) -> Result<(), StoreError> {
+    emit_key_metadata_sections(
+        key_hashes,
+        bands,
+        target_bytes,
+        |kind, required, payload| {
+            sections.push(Section::new(kind, required, payload)?);
+            Ok(())
+        },
+    )
 }
 
 /// Validate optional signature sections, returning `None` when absent.
@@ -1927,23 +1955,22 @@ fn sorted_rows(file_keys: &[u64]) -> Vec<(u64, u64)> {
     rows
 }
 
-fn append_signature_sections(
-    sections: &mut Vec<Section>,
+fn emit_signature_sections(
     signatures: &[(u64, Vec<u64>)],
     scheme: SignatureScheme,
     num_perm: usize,
+    mut emit: impl FnMut(SectionKind, bool, Vec<u8>) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let num_perm = u32::try_from(num_perm).map_err(|_| StoreError::LengthOverflow)?;
     let row_bytes = signature_row_bytes(scheme, num_perm)?.max(1);
     let rows_per_segment =
         ((SIGNATURE_SEGMENT_TARGET_BYTES - SIGNATURE_SEGMENT_HEADER_BYTES) / row_bytes).max(1);
     if signatures.is_empty() {
-        sections.push(Section::new(
+        return emit(
             SectionKind::Signatures,
             false,
             encode_signature_segment(scheme, num_perm, 0, std::iter::empty())?,
-        )?);
-        return Ok(());
+        );
     }
     for (index, chunk) in signatures.chunks(rows_per_segment).enumerate() {
         let first_row = index
@@ -1956,96 +1983,20 @@ fn append_signature_sections(
             first_row,
             chunk.iter().map(|(_, values)| values.as_slice()),
         )?;
-        sections.push(Section::new(SectionKind::Signatures, false, payload)?);
+        emit(SectionKind::Signatures, false, payload)?;
     }
     Ok(())
 }
 
-/// Every `(bucket, key)` membership, sorted by bucket and then key.
-///
-/// Within a bucket keys are ascending, exactly as committed buckets store them.
-fn sorted_bucket_memberships(
-    key_hashes: &BTreeMap<u64, Vec<u64>>,
-    bands: usize,
-) -> Result<Vec<(BucketKey, u64)>, StoreError> {
-    let total = key_hashes
-        .len()
-        .checked_mul(bands)
-        .ok_or(StoreError::LengthOverflow)?;
-    let mut memberships = Vec::with_capacity(total);
-    for (key, hashes) in key_hashes {
-        if hashes.len() != bands {
-            return Err(StoreError::InvalidSnapshot {
-                reason: "in-memory band-hash row has the wrong width",
-            });
+impl From<ContainerWriteError> for StoreError {
+    fn from(error: ContainerWriteError) -> Self {
+        match error {
+            ContainerWriteError::Io(error) => Self::Io(error),
+            ContainerWriteError::Format(error) => Self::Format(error),
+            ContainerWriteError::SectionCountMismatch { .. } => Self::InvalidSnapshot {
+                reason: "snapshot writer section count mismatch",
+            },
         }
-        for (band, hash) in hashes.iter().copied().enumerate() {
-            let band = u32::try_from(band).map_err(|_| StoreError::LengthOverflow)?;
-            memberships.push((BucketKey::new(band, hash), *key));
-        }
-    }
-    memberships.par_sort_unstable();
-    Ok(memberships)
-}
-
-/// Return the membership index where each bucket segment starts.
-///
-/// Segments close before the bucket that would push them past `target_bytes`,
-/// matching the canonical in-memory segmentation.
-fn plan_bucket_segments(
-    memberships: &[(BucketKey, u64)],
-    target_bytes: usize,
-) -> Result<Vec<usize>, StoreError> {
-    let mut starts = Vec::new();
-    let mut estimated = BUCKET_SEGMENT_HEADER_BYTES;
-    let mut index = 0;
-    while index < memberships.len() {
-        let bucket = memberships[index].0;
-        let mut end = index + 1;
-        while end < memberships.len() && memberships[end].0 == bucket {
-            end += 1;
-        }
-        let contribution = bucket_record_size(end - index)?;
-        let grown = estimated
-            .checked_add(contribution)
-            .ok_or(StoreError::LengthOverflow)?;
-        if starts.is_empty() || grown > target_bytes {
-            starts.push(index);
-            estimated = BUCKET_SEGMENT_HEADER_BYTES
-                .checked_add(contribution)
-                .ok_or(StoreError::LengthOverflow)?;
-        } else {
-            estimated = grown;
-        }
-        index = end;
-    }
-    Ok(starts)
-}
-
-/// Encode one bucket segment from a sorted membership slice.
-fn encode_membership_segment(memberships: &[(BucketKey, u64)]) -> Result<Vec<u8>, StoreError> {
-    let members: Vec<u64> = memberships.iter().map(|(_, key)| *key).collect();
-    let mut records = Vec::new();
-    let mut start = 0;
-    while start < memberships.len() {
-        let bucket = memberships[start].0;
-        let mut end = start + 1;
-        while end < memberships.len() && memberships[end].0 == bucket {
-            end += 1;
-        }
-        records.push(BucketRecord::new(bucket, &members[start..end]));
-        start = end;
-    }
-    Ok(encode_bucket_segment(&records)?)
-}
-
-fn container_error(error: ContainerWriteError) -> StoreError {
-    match error {
-        ContainerWriteError::Io(error) => StoreError::Io(error),
-        ContainerWriteError::Format(error) => StoreError::Format(error),
-        ContainerWriteError::SectionCountMismatch { .. } => StoreError::InvalidSnapshot {
-            reason: "snapshot writer section count mismatch",
-        },
     }
 }
 
@@ -2501,12 +2452,25 @@ mod tests {
                 .inner
                 .encode_snapshot(live.as_deref())
                 .expect("encode");
-            let mut streamed = Vec::new();
-            index
-                .inner
-                .write_snapshot(&mut streamed, live.as_deref())
-                .expect("stream");
-            assert_eq!(streamed, expected, "{name} snapshot bytes differ");
+            // Exercise one sort, several band batches, and hash partitions.
+            // A limit below three also forces buckets larger than the sort buffer.
+            for sort_limit in [super::SORT_RECORD_LIMIT, 512, 17, 2] {
+                let mut streamed = std::io::Cursor::new(Vec::new());
+                index
+                    .inner
+                    .write_snapshot_with(
+                        &mut streamed,
+                        live.as_deref(),
+                        super::BUCKET_SEGMENT_TARGET_BYTES,
+                        sort_limit,
+                    )
+                    .expect("stream");
+                assert_eq!(
+                    streamed.into_inner(),
+                    expected,
+                    "{name} snapshot bytes differ at sort limit {sort_limit}",
+                );
+            }
             cleanup(&path);
         }
     }
@@ -2527,13 +2491,13 @@ mod tests {
             .iter()
             .map(|item| index.query(item).expect("query"))
             .collect();
-        let mut bytes = Vec::new();
+        let mut output = std::io::Cursor::new(Vec::new());
         index
             .inner
-            .write_snapshot_with(&mut bytes, None, 2_048)
+            .write_snapshot_with(&mut output, None, 2_048, 17)
             .expect("stream small segments");
         drop(index);
-        fs::write(&split, &bytes).expect("write");
+        fs::write(&split, output.into_inner()).expect("write");
         let layout =
             FileLayout::read_from(&mut fs::File::open(&split).expect("open")).expect("layout");
         let segments = layout
@@ -2558,12 +2522,12 @@ mod tests {
         let path = test_path("stream-empty");
         let index = PersistentIndex32::create(&path, 0.8, 128, 7).expect("create");
         let expected = index.inner.encode_snapshot(None).expect("encode");
-        let mut streamed = Vec::new();
+        let mut streamed = std::io::Cursor::new(Vec::new());
         index
             .inner
             .write_snapshot(&mut streamed, None)
             .expect("stream");
-        assert_eq!(streamed, expected);
+        assert_eq!(streamed.into_inner(), expected);
         cleanup(&path);
     }
 
@@ -2896,7 +2860,14 @@ mod tests {
         let directory = test_directory("query-metrics-refresh-error");
         let path = directory.join("index.pari");
         let value = sketch(0..40);
-        let mut store = PersistentIndex32::create(&path, 0.8, 128, 7).expect("create");
+        let mut store = PersistentIndex32::create_with_options(
+            &path,
+            0.8,
+            128,
+            7,
+            super::PersistentIndexOptions::new().store_signatures(true),
+        )
+        .expect("create");
         store.insert(1, &value).expect("insert");
         store.sync().expect("commit");
         store.set_observability(true);
@@ -2915,16 +2886,30 @@ mod tests {
         store.sync().expect("retry durability");
         assert_eq!(store.stats().expect("stats").queries, observed);
 
+        let pending = sketch(30..64);
+        store.insert(2, &pending).expect("insert pending key");
+        let signatures = store
+            .inner
+            .collect_live_signatures()
+            .expect("live signatures");
+        store.inner.base = None;
         store.inner.path = directory.join("missing.pari");
         store
             .inner
-            .refresh_after_commit(None, None)
+            .refresh_after_commit(None, signatures.clone())
             .expect_err("reopen failure");
         assert_eq!(store.stats().expect("stats").queries, observed);
+        assert_eq!(
+            store
+                .inner
+                .collect_live_signatures()
+                .expect("recovered signatures"),
+            signatures
+        );
         store.inner.path = path;
         store.sync().expect("retry reopen");
         assert_eq!(store.stats().expect("stats").queries, observed);
-        assert_eq!(store.query(&value).expect("query after retry"), vec![1]);
+        assert!(store.query(&value).expect("query after retry").contains(&1));
         assert_eq!(
             store
                 .stats()

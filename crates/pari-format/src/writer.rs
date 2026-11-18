@@ -7,7 +7,7 @@
 use std::{
     error::Error,
     fmt,
-    io::{self, Write},
+    io::{self, Seek, SeekFrom, Write},
 };
 
 use crc32fast::hash as crc32;
@@ -65,13 +65,12 @@ impl From<FormatError> for ContainerWriteError {
 
 /// Write a version-1 container one section at a time.
 ///
-/// The section count is part of the header, so it is declared up front and
-/// [`ContainerWriter::finish`] verifies that exactly that many sections were
-/// written.
+/// Supply the section count up front with [`Self::new`], or use
+/// [`Self::write_seekable`] to fill in the count after writing the sections.
 #[derive(Debug)]
 pub struct ContainerWriter<W: Write> {
     writer: W,
-    declared: u32,
+    declared: Option<u32>,
     written: u32,
 }
 
@@ -93,7 +92,7 @@ impl<W: Write> ContainerWriter<W> {
         writer.write_all(&encode_header(metadata, declared))?;
         Ok(Self {
             writer,
-            declared,
+            declared: Some(declared),
             written: 0,
         })
     }
@@ -105,11 +104,23 @@ impl<W: Write> ContainerWriter<W> {
         required: bool,
         payload: &[u8],
     ) -> Result<(), ContainerWriteError> {
-        if self.written >= self.declared {
-            return Err(ContainerWriteError::SectionCountMismatch {
-                declared: self.declared,
-                written: self.written.saturating_add(1),
-            });
+        if let Some(declared) = self.declared {
+            if self.written >= declared {
+                return Err(ContainerWriteError::SectionCountMismatch {
+                    declared,
+                    written: self.written + 1,
+                });
+            }
+        } else {
+            let count =
+                usize::try_from(self.written + 1).map_err(|_| FormatError::LengthOverflow)?;
+            if count > MAX_SECTION_COUNT {
+                return Err(FormatError::TooManySections {
+                    count,
+                    max: MAX_SECTION_COUNT,
+                }
+                .into());
+            }
         }
         let length = u64::try_from(payload.len()).map_err(|_| FormatError::LengthOverflow)?;
         if length > MAX_SECTION_BYTES {
@@ -127,21 +138,65 @@ impl<W: Write> ContainerWriter<W> {
 
     /// Verify the declared section count and return the underlying writer.
     pub fn finish(self) -> Result<W, ContainerWriteError> {
-        if self.written != self.declared {
-            return Err(ContainerWriteError::SectionCountMismatch {
-                declared: self.declared,
-                written: self.written,
-            });
+        if let Some(declared) = self.declared {
+            if self.written != declared {
+                return Err(ContainerWriteError::SectionCountMismatch {
+                    declared,
+                    written: self.written,
+                });
+            }
         }
         Ok(self.writer)
     }
 }
 
+impl<W: Write + Seek> ContainerWriter<W> {
+    /// Write a container whose section count is only known after encoding.
+    ///
+    /// The sink must support overwriting bytes at the current position. On
+    /// success it is positioned after the container. Use a staging file when
+    /// publishing, since an error can leave a partial container.
+    pub fn write_seekable<E>(
+        mut writer: W,
+        metadata: &IndexMetadata,
+        write: impl FnOnce(&mut Self) -> Result<(), E>,
+    ) -> Result<W, E>
+    where
+        E: From<ContainerWriteError>,
+    {
+        let start = writer.stream_position().map_err(ContainerWriteError::Io)?;
+        writer
+            .write_all(&encode_header(metadata, 0))
+            .map_err(ContainerWriteError::Io)?;
+        let mut container = Self {
+            writer,
+            declared: None,
+            written: 0,
+        };
+        write(&mut container)?;
+        let mut writer = container.writer;
+        let end = writer.stream_position().map_err(ContainerWriteError::Io)?;
+        writer
+            .seek(SeekFrom::Start(start))
+            .map_err(ContainerWriteError::Io)?;
+        writer
+            .write_all(&encode_header(metadata, container.written))
+            .map_err(ContainerWriteError::Io)?;
+        writer
+            .seek(SeekFrom::Start(end))
+            .map_err(ContainerWriteError::Io)?;
+        Ok(writer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::{Cursor, Write};
+
     use super::{ContainerWriteError, ContainerWriter};
     use crate::{
-        Algorithm, CodecId, IndexFile, IndexMetadata, Section, SectionKind, SignatureScheme,
+        format::MAX_SECTION_COUNT, Algorithm, CodecId, FormatError, IndexFile, IndexMetadata,
+        Section, SectionKind, SignatureScheme,
     };
 
     fn metadata() -> IndexMetadata {
@@ -178,6 +233,22 @@ mod tests {
                 .expect("section");
         }
         assert_eq!(writer.finish().expect("finish"), expected);
+
+        let prefix = b"prefix";
+        let mut sink = Cursor::new(Vec::new());
+        sink.write_all(prefix).expect("prefix");
+        let mut sink = ContainerWriter::write_seekable(sink, &metadata(), |writer| {
+            for section in &sections {
+                writer.write_section(section.kind(), section.required(), section.payload())?;
+            }
+            Ok::<_, ContainerWriteError>(())
+        })
+        .expect("stream with unknown section count");
+        sink.write_all(b"suffix").expect("suffix");
+        assert_eq!(
+            sink.into_inner(),
+            [prefix, expected.as_slice(), b"suffix"].concat()
+        );
     }
 
     #[test]
@@ -200,5 +271,18 @@ mod tests {
             Err(ContainerWriteError::SectionCountMismatch { .. })
         ));
         assert!(ContainerWriter::new(Vec::new(), &metadata(), 2_000).is_err());
+
+        let result =
+            ContainerWriter::write_seekable(Cursor::new(Vec::new()), &metadata(), |writer| {
+                for _ in 0..=MAX_SECTION_COUNT {
+                    writer.write_section(SectionKind::Keys, true, &[])?;
+                }
+                Ok::<_, ContainerWriteError>(())
+            });
+        assert!(matches!(
+            result,
+            Err(ContainerWriteError::Format(FormatError::TooManySections { count, max }))
+                if count == MAX_SECTION_COUNT + 1 && max == MAX_SECTION_COUNT
+        ));
     }
 }

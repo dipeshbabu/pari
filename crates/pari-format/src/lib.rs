@@ -24,6 +24,7 @@ pub use codec::{
 };
 pub use format::{
     Algorithm, FormatError, IndexFile, IndexMetadata, Section, SectionKind, SignatureScheme,
+    MAX_SECTION_BYTES,
 };
 pub use layout::{FileLayout, LayoutError, SectionDescriptor};
 pub use signatures::{

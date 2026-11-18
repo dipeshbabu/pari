@@ -12,7 +12,8 @@ const SECTION_HEADER_SIZE: usize = 16;
 pub(crate) const SECTION_FLAG_REQUIRED: u16 = 1;
 const KNOWN_SECTION_FLAGS: u16 = SECTION_FLAG_REQUIRED;
 pub(crate) const MAX_SECTION_COUNT: usize = 1_024;
-pub(crate) const MAX_SECTION_BYTES: u64 = 256 * 1024 * 1024;
+/// Maximum payload size of a version-1 container section.
+pub const MAX_SECTION_BYTES: u64 = 256 * 1024 * 1024;
 const SUPPORTED_FEATURE_FLAGS: u64 = 0;
 
 /// Algorithm identifier stored in a Pari index header.
