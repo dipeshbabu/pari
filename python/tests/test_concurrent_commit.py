@@ -26,7 +26,9 @@ class ConcurrentCommitTests(unittest.TestCase):
                     first.add(1, first_value)
                     first.sync()
                     second.add(2, second_value)
-                    with self.assertRaisesRegex(StorageError, "committed by another handle"):
+                    with self.assertRaisesRegex(
+                        StorageError, "committed by another handle"
+                    ):
                         second.sync()
                     # The refused handle keeps its changes and stays open.
                     self.assertIn(2, second)
