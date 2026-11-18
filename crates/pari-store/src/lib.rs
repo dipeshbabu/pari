@@ -3,8 +3,9 @@
 //!
 //! Committed snapshots keep keys and per-key LSH band hashes as stable metadata
 //! while bucket membership uses the canonical checksummed segments from
-//! `pari-format`. Reopening a current snapshot loads key metadata plus compact
-//! bucket locations only. Candidate memberships remain on disk until queried.
+//! `pari-format`. Reopening a current snapshot loads key metadata plus a sparse
+//! bucket directory (one key and checksum per 128 buckets). Directory blocks
+//! and candidate memberships remain on disk until queried.
 //!
 //! Inserts and removals since the last successful commit live in an in-memory
 //! overlay. Removed committed generations are explicitly suppressed so
@@ -1213,7 +1214,7 @@ macro_rules! impl_persistent_index {
 
             /// Open and validate the last committed snapshot at `path`.
             ///
-            /// Current snapshots load key metadata plus bucket locations only. Legacy
+            /// Current snapshots load key metadata plus a sparse bucket directory. Legacy
             /// phase-1 snapshots are accepted by rebuilding their buckets into the
             /// mutation overlay and are marked dirty so the next sync upgrades them.
             pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {

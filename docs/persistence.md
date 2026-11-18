@@ -106,6 +106,18 @@ Inserts and removals are visible immediately through the writer that performed t
 
 The overlay stores the first key of each uncommitted bucket inline and allocates a list only for buckets that hold more than one key, so a singleton bucket costs one hash-map entry.
 
+## Memory after open
+
+Opening a current snapshot, through a persistent index, `ReadOnlyIndex`,
+`LazyIndex32`/`LazyIndex64`, or `pari verify`, reads and validates every
+bucket directory but keeps only a sparse index in memory: the first key and a
+CRC32 of each block of 128 directory entries (4 KiB on disk), plus an exact
+histogram of bucket sizes for statistics. That is about a quarter of a byte
+per bucket. A query reads and checksums the one directory block that can hold
+each of its band keys, then reads that bucket's members. A persistent index
+additionally keeps every live key's band hashes in memory so it can remove
+keys and write the next snapshot.
+
 ## Reader model and file lifetime
 
 An opened local index owns a file handle to the committed generation it opened. A separate reader does not automatically observe a generation committed later by another process. Reopen the index to observe the latest committed target.

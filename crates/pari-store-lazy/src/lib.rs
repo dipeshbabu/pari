@@ -2,9 +2,10 @@
 //! Read-only affine32 and affine64 paged bucket storage for Pari similarity indexes.
 //!
 //! Lazy indexes use the canonical bucket-segment codec from `pari-format`.
-//! Reopening reads validated metadata and compact bucket locations only;
-//! membership vectors stay on disk until a query touches the corresponding
-//! bucket. The same persisted files retain `BandHashes`, so mutable store
+//! Reopening validates every bucket directory but keeps only a sparse
+//! [`pari_format::BucketDirectory`] in memory: one key and checksum per 128
+//! directory entries. Directory blocks and membership vectors stay on disk
+//! until a query touches the corresponding bucket. The same persisted files retain `BandHashes`, so mutable store
 //! implementations can reopen and compact them without format conversion.
 
 use std::{
@@ -177,7 +178,7 @@ impl From<LshError> for LazyStoreError {
 pub struct LazyStats {
     /// Number of live keys encoded by the source snapshot.
     pub items: usize,
-    /// Number of distinct bucket descriptors retained in memory.
+    /// Number of distinct buckets in the snapshot.
     pub buckets: usize,
     /// Number of LSH bands.
     pub bands: usize,
