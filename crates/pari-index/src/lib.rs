@@ -125,6 +125,49 @@ impl BucketDistribution {
         }
     }
 
+    /// Summarize `(bucket size, number of buckets with that size)` pairs.
+    ///
+    /// The result equals [`Self::from_sizes`] over the expanded sizes, without
+    /// materializing one entry per bucket. Pairs may repeat and arrive in any
+    /// order; zero sizes and zero counts are ignored.
+    #[must_use]
+    pub fn from_size_counts(counts: impl IntoIterator<Item = (u64, u64)>) -> Self {
+        let mut merged = std::collections::BTreeMap::<u64, u64>::new();
+        for (size, count) in counts {
+            if size > 0 && count > 0 {
+                let total = merged.entry(size).or_insert(0);
+                *total = total.saturating_add(count);
+            }
+        }
+        let buckets = merged.values().copied().fold(0_u64, u64::saturating_add);
+        if buckets == 0 {
+            return Self::default();
+        }
+        let rank_value = |percentile: u64| {
+            // ceil(buckets * percentile / 100) without overflow, as nearest_rank.
+            let rank = (buckets / 100) * percentile + ((buckets % 100) * percentile).div_ceil(100);
+            let mut seen = 0_u64;
+            for (size, count) in &merged {
+                seen = seen.saturating_add(*count);
+                if seen >= rank {
+                    return *size;
+                }
+            }
+            merged.keys().next_back().copied().unwrap_or(0)
+        };
+        Self {
+            buckets,
+            memberships: merged.iter().fold(0_u64, |total, (size, count)| {
+                total.saturating_add(size.saturating_mul(*count))
+            }),
+            minimum: merged.keys().next().copied().unwrap_or(0),
+            p50: rank_value(50),
+            p95: rank_value(95),
+            p99: rank_value(99),
+            maximum: merged.keys().next_back().copied().unwrap_or(0),
+        }
+    }
+
     /// Exact membership count divided by the exact non-empty bucket count.
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
@@ -987,6 +1030,41 @@ mod tests {
         assert_eq!(distribution.maximum, 100);
         assert!((distribution.average_members() - 22.0).abs() < f64::EPSILON);
         assert_eq!(BucketDistribution::from_sizes([]).buckets, 0);
+    }
+
+    #[test]
+    fn size_count_distributions_match_expanded_sizes() {
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for length in [0_usize, 1, 2, 7, 99, 100, 101, 1_000, 5_003] {
+            let sizes: Vec<usize> = (0..length)
+                .map(|_| usize::try_from(next() % 40).expect("small"))
+                .collect();
+            let mut counts = std::collections::HashMap::<u64, u64>::new();
+            for size in &sizes {
+                *counts
+                    .entry(u64::try_from(*size).expect("small"))
+                    .or_default() += 1;
+            }
+            // Split each size's count across two pairs to exercise merging.
+            let pairs = counts
+                .into_iter()
+                .flat_map(|(size, count)| [(size, count / 2), (size, count - count / 2)]);
+            assert_eq!(
+                BucketDistribution::from_size_counts(pairs),
+                BucketDistribution::from_sizes(sizes),
+                "{length} sizes"
+            );
+        }
+        assert_eq!(
+            BucketDistribution::from_size_counts([(0, 5), (3, 0)]),
+            BucketDistribution::default()
+        );
     }
 
     #[test]

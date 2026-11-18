@@ -35,15 +35,15 @@ use pari_format::{
     BUCKET_SEGMENT_HEADER_BYTES,
 };
 use pari_format::{
-    decode_bucket_segment, read_bucket_members, validate_global_bucket_order, Algorithm,
-    BucketError, BucketKey, BucketLocation, CodecId, FileLayout, FormatError, IndexMetadata,
-    LayoutError, SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_TARGET_BYTES,
-};
-use pari_format::{
     decode_signature_segment, encode_signature_segment, read_signature_row,
     read_signature_segment_values, signature_row_bytes, validate_signature_coverage,
     SignatureError, SignatureSegment, SIGNATURE_SEGMENT_HEADER_BYTES,
     SIGNATURE_SEGMENT_TARGET_BYTES,
+};
+use pari_format::{
+    read_bucket_members, Algorithm, BucketDirectory, BucketError, BucketKey, CodecId, FileLayout,
+    FormatError, IndexMetadata, LayoutError, SectionDescriptor, SectionKind, SignatureScheme,
+    BUCKET_SEGMENT_TARGET_BYTES,
 };
 use pari_format::{ContainerWriteError, ContainerWriter};
 use pari_index::{
@@ -305,7 +305,7 @@ impl SignatureState {
 struct LazyBase {
     file: Mutex<File>,
     layout: FileLayout,
-    buckets: Vec<BucketLocation>,
+    directory: BucketDirectory,
 }
 
 impl LazyBase {
@@ -322,13 +322,10 @@ impl LazyBase {
                 u32::try_from(band).map_err(|_| StoreError::LengthOverflow)?,
                 hash,
             );
-            let Ok(index) = self
-                .buckets
-                .binary_search_by_key(&key, |location| location.key())
-            else {
+            let Some(location) = self.directory.find(&self.layout, &mut *file, key)? else {
                 continue;
             };
-            for member in read_bucket_members(&self.layout, &mut *file, self.buckets[index])? {
+            for member in read_bucket_members(&self.layout, &mut *file, location)? {
                 if live_keys.contains_key(&member) && !suppressed.contains(&member) {
                     output.insert(member);
                 }
@@ -445,13 +442,7 @@ impl PersistentIndexCore {
             overlay: HashMap::new(),
         });
 
-        let mut buckets = Vec::new();
-        for descriptor in bucket_descriptors {
-            buckets.extend(decode_bucket_segment(
-                &layout, &mut file, descriptor, bands,
-            )?);
-        }
-        validate_global_bucket_order(&buckets)?;
+        let directory = BucketDirectory::read(&layout, &mut file, &bucket_descriptors, bands)?;
 
         Ok(Self {
             path,
@@ -463,7 +454,7 @@ impl PersistentIndexCore {
             base: Some(LazyBase {
                 file: Mutex::new(file),
                 layout,
-                buckets,
+                directory,
             }),
             overlay_buckets: Vec::new(),
             overlay_keys: HashSet::new(),
@@ -761,7 +752,9 @@ impl PersistentIndexCore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
             Err(error) => return Err(StoreError::Io(error)),
         };
-        let committed_buckets = self.base.as_ref().map_or(0, |base| base.buckets.len());
+        let committed_buckets = self.base.as_ref().map_or(0, |base| {
+            usize::try_from(base.directory.len()).unwrap_or(usize::MAX)
+        });
         let overlay_buckets = self
             .overlay_buckets
             .iter()
@@ -771,10 +764,10 @@ impl PersistentIndexCore {
             self.base
                 .as_ref()
                 .map_or_else(BucketDistribution::default, |base| {
-                    BucketDistribution::from_sizes(
-                        base.buckets.iter().map(|bucket| {
-                            usize::try_from(bucket.member_count()).unwrap_or(usize::MAX)
-                        }),
+                    BucketDistribution::from_size_counts(
+                        base.directory
+                            .size_counts()
+                            .map(|(size, count)| (u64::from(size), count)),
                     )
                 });
         let overlay_distribution = BucketDistribution::from_sizes(
@@ -3724,15 +3717,19 @@ mod tests {
         let mut store = PersistentIndex32::create(&path, 0.8, 128, 7).expect("create");
         store.insert(10, &query).expect("insert");
         store.sync().expect("sync");
-        let location = store
-            .inner
-            .base
-            .as_ref()
-            .expect("lazy base")
-            .buckets
-            .first()
-            .copied()
-            .expect("bucket location");
+        let location = {
+            let base = store.inner.base.as_ref().expect("lazy base");
+            let hash = store.inner.key_hashes[&10][0];
+            let mut file = base.file.lock().expect("committed file");
+            base.directory
+                .find(
+                    &base.layout,
+                    &mut *file,
+                    pari_format::BucketKey::new(0, hash),
+                )
+                .expect("read directory block")
+                .expect("bucket location")
+        };
         drop(store);
 
         let absolute = location

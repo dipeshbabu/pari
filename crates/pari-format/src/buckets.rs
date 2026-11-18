@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     error::Error,
     fmt,
     io::{Read, Seek},
@@ -264,6 +265,28 @@ pub fn decode_bucket_segment<R: Read + Seek>(
     descriptor: SectionDescriptor,
     bands: usize,
 ) -> Result<Vec<BucketLocation>, BucketError> {
+    let directory = read_segment_directory(layout, reader, descriptor)?;
+    let mut locations = Vec::with_capacity(directory.count);
+    visit_directory_entries(descriptor, &directory, bands, |location| {
+        locations.push(location);
+        Ok(())
+    })?;
+    Ok(locations)
+}
+
+/// A checksum-verified bucket directory read from one `Buckets` section.
+struct SegmentDirectory {
+    bytes: Vec<u8>,
+    count: usize,
+    member_start: u64,
+}
+
+/// Validate a segment header and read its checksum-verified directory.
+fn read_segment_directory<R: Read + Seek>(
+    layout: &FileLayout,
+    reader: &mut R,
+    descriptor: SectionDescriptor,
+) -> Result<SegmentDirectory, BucketError> {
     if descriptor.kind() != SectionKind::Buckets || !descriptor.required() {
         return Err(BucketError::Invalid {
             reason: "bucket segment must be a required Buckets section",
@@ -323,7 +346,11 @@ pub fn decode_bucket_segment<R: Read + Seek>(
         });
     }
 
-    decode_directory_entries(descriptor, &directory, count, member_start_u64, bands)
+    Ok(SegmentDirectory {
+        bytes: directory,
+        count,
+        member_start: member_start_u64,
+    })
 }
 
 /// Verify a bucket member range and return its decoded keys.
@@ -400,18 +427,18 @@ fn validate_header_fixed_fields(header: &[u8]) -> Result<(), BucketError> {
     Ok(())
 }
 
-fn decode_directory_entries(
+/// Validate every entry of a verified directory in order, passing each to `visit`.
+fn visit_directory_entries(
     descriptor: SectionDescriptor,
-    directory: &[u8],
-    count: usize,
-    member_start: u64,
+    directory: &SegmentDirectory,
     bands: usize,
-) -> Result<Vec<BucketLocation>, BucketError> {
+    mut visit: impl FnMut(BucketLocation) -> Result<(), BucketError>,
+) -> Result<(), BucketError> {
     let bands_u32 = u32::try_from(bands).map_err(|_| BucketError::LengthOverflow)?;
-    let mut locations = Vec::with_capacity(count);
-    let mut expected_member_offset = member_start;
+    let mut visited = 0_usize;
+    let mut expected_member_offset = directory.member_start;
     let mut previous_key = None;
-    for entry in directory.chunks_exact(BUCKET_DIRECTORY_ENTRY_BYTES) {
+    for entry in directory.bytes.chunks_exact(BUCKET_DIRECTORY_ENTRY_BYTES) {
         if read_u32_at(entry, 4)? != 0 {
             return Err(BucketError::Invalid {
                 reason: "bucket directory reserved bytes must be zero",
@@ -459,9 +486,10 @@ fn decode_directory_entries(
         };
         expected_member_offset = member_end;
         previous_key = Some(key);
-        locations.push(location);
+        visited += 1;
+        visit(location)?;
     }
-    if locations.len() != count {
+    if visited != directory.count {
         return Err(BucketError::Invalid {
             reason: "bucket directory record count is inconsistent",
         });
@@ -471,7 +499,179 @@ fn decode_directory_entries(
             reason: "bucket segment has trailing member bytes",
         });
     }
-    Ok(locations)
+    Ok(())
+}
+
+/// Directory entries summarized by one in-memory fence: 4 KiB of directory.
+const DIRECTORY_BLOCK_ENTRIES: usize = 128;
+const DIRECTORY_BLOCK_BYTES: usize = DIRECTORY_BLOCK_ENTRIES * BUCKET_DIRECTORY_ENTRY_BYTES;
+
+/// Sparse, checksummed index over every bucket directory in a snapshot.
+///
+/// [`BucketDirectory::read`] validates every directory exactly as
+/// [`decode_bucket_segment`] and [`validate_global_bucket_order`] do, but keeps
+/// only the first key and CRC32 of each block of 128 directory entries plus
+/// an exact histogram of bucket sizes. That is about 0.25 bytes per bucket
+/// instead of a full [`BucketLocation`] per bucket. [`BucketDirectory::find`]
+/// reads the one 4 KiB block that can hold a key and verifies its checksum
+/// before using it.
+#[derive(Debug, Clone)]
+pub struct BucketDirectory {
+    sections: Vec<SectionDescriptor>,
+    blocks: Vec<DirectoryBlock>,
+    buckets: u64,
+    size_counts: Vec<(u32, u64)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DirectoryBlock {
+    first_key: BucketKey,
+    section: u32,
+    first_entry: u32,
+    entries: u32,
+    checksum: u32,
+}
+
+impl BucketDirectory {
+    /// Validate the directories of `descriptors`, in file order, and index them.
+    ///
+    /// Directory bytes are read one section at a time; member payloads are
+    /// not read.
+    pub fn read<R: Read + Seek>(
+        layout: &FileLayout,
+        reader: &mut R,
+        descriptors: &[SectionDescriptor],
+        bands: usize,
+    ) -> Result<Self, BucketError> {
+        let mut blocks = Vec::new();
+        let mut buckets = 0_u64;
+        let mut sizes = BTreeMap::<u32, u64>::new();
+        let mut previous: Option<BucketKey> = None;
+        for (section_index, descriptor) in descriptors.iter().copied().enumerate() {
+            let directory = read_segment_directory(layout, reader, descriptor)?;
+            visit_directory_entries(descriptor, &directory, bands, |location| {
+                if previous.is_some_and(|previous| previous >= location.key) {
+                    return Err(BucketError::Invalid {
+                        reason: "bucket directory contains duplicate or unsorted bucket keys",
+                    });
+                }
+                previous = Some(location.key);
+                let count = sizes.entry(location.member_count).or_insert(0);
+                *count = count.checked_add(1).ok_or(BucketError::LengthOverflow)?;
+                Ok(())
+            })?;
+            let section = u32::try_from(section_index).map_err(|_| BucketError::LengthOverflow)?;
+            for (block_index, block) in directory.bytes.chunks(DIRECTORY_BLOCK_BYTES).enumerate() {
+                blocks.push(DirectoryBlock {
+                    first_key: entry_key(block)?,
+                    section,
+                    first_entry: u32::try_from(block_index * DIRECTORY_BLOCK_ENTRIES)
+                        .map_err(|_| BucketError::LengthOverflow)?,
+                    entries: u32::try_from(block.len() / BUCKET_DIRECTORY_ENTRY_BYTES)
+                        .map_err(|_| BucketError::LengthOverflow)?,
+                    checksum: crc32(block),
+                });
+            }
+            buckets = buckets
+                .checked_add(
+                    u64::try_from(directory.count).map_err(|_| BucketError::LengthOverflow)?,
+                )
+                .ok_or(BucketError::LengthOverflow)?;
+        }
+        blocks.shrink_to_fit();
+        Ok(Self {
+            sections: descriptors.to_vec(),
+            blocks,
+            buckets,
+            size_counts: sizes.into_iter().collect(),
+        })
+    }
+
+    /// Return the number of indexed buckets.
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.buckets
+    }
+
+    /// Return whether no buckets are indexed.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.buckets == 0
+    }
+
+    /// Return `(member count, number of buckets)` pairs in ascending size order.
+    pub fn size_counts(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        self.size_counts.iter().copied()
+    }
+
+    /// Locate one bucket by reading and verifying its directory block.
+    pub fn find<R: Read + Seek>(
+        &self,
+        layout: &FileLayout,
+        reader: &mut R,
+        key: BucketKey,
+    ) -> Result<Option<BucketLocation>, BucketError> {
+        let Some(block) = self
+            .blocks
+            .partition_point(|block| block.first_key <= key)
+            .checked_sub(1)
+            .map(|index| self.blocks[index])
+        else {
+            return Ok(None);
+        };
+        let descriptor = *self
+            .sections
+            .get(usize::try_from(block.section).map_err(|_| BucketError::LengthOverflow)?)
+            .ok_or(BucketError::Invalid {
+                reason: "bucket directory block references a missing section",
+            })?;
+        let entry_bytes =
+            u64::try_from(BUCKET_DIRECTORY_ENTRY_BYTES).map_err(|_| BucketError::LengthOverflow)?;
+        let offset = u64::from(block.first_entry)
+            .checked_mul(entry_bytes)
+            .and_then(|bytes| bytes.checked_add(BUCKET_SEGMENT_HEADER_BYTES_U64))
+            .ok_or(BucketError::LengthOverflow)?;
+        let length = usize::try_from(block.entries)
+            .map_err(|_| BucketError::LengthOverflow)?
+            .checked_mul(BUCKET_DIRECTORY_ENTRY_BYTES)
+            .ok_or(BucketError::LengthOverflow)?;
+        let bytes = layout.read_section_range(reader, descriptor, offset, length)?;
+        let actual = crc32(&bytes);
+        if actual != block.checksum {
+            return Err(BucketError::DirectoryChecksumMismatch {
+                expected: block.checksum,
+                actual,
+            });
+        }
+        let entries: Vec<&[u8]> = bytes.chunks_exact(BUCKET_DIRECTORY_ENTRY_BYTES).collect();
+        let mut low = 0;
+        let mut high = entries.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match entry_key(entries[middle])?.cmp(&key) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => {
+                    let entry = entries[middle];
+                    return Ok(Some(BucketLocation {
+                        key,
+                        section: descriptor,
+                        member_offset: read_u64_at(entry, 16)?,
+                        member_count: read_u32_at(entry, 24)?,
+                        member_checksum: read_u32_at(entry, 28)?,
+                    }));
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
+fn entry_key(entry: &[u8]) -> Result<BucketKey, BucketError> {
+    Ok(BucketKey {
+        band: read_u32_at(entry, 0)?,
+        hash: read_u64_at(entry, 8)?,
+    })
 }
 
 fn read_u16_at(bytes: &[u8], offset: usize) -> Result<u16, BucketError> {

@@ -16,8 +16,8 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use pari_core::{MinHash32, MinHash64, AFFINE32_SCHEME, AFFINE64_SCHEME};
 use pari_format::{
-    decode_bucket_segment, read_bucket_members, validate_global_bucket_order, FileLayout,
-    SectionKind, SignatureScheme,
+    decode_bucket_segment, read_bucket_members, BucketDirectory, FileLayout, SectionKind,
+    SignatureScheme,
 };
 use pari_index::{
     plan_lsh, BucketDistribution, DuplicateGroup, LshIndex32, LshIndex64, LshPlan, LshPlanOptions,
@@ -1472,43 +1472,49 @@ fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
         }
     }
     let bands = usize::try_from(layout.metadata().bands())?;
-    let mut locations = Vec::new();
-    let mut bucket_sections = 0_usize;
+    let mut descriptors = Vec::new();
     for descriptor in layout.sections().iter().copied() {
         let _ = layout.read_section(&mut file, descriptor)?;
         if descriptor.kind() == SectionKind::Buckets {
-            bucket_sections += 1;
-            locations.extend(decode_bucket_segment(
-                &layout, &mut file, descriptor, bands,
-            )?);
+            descriptors.push(descriptor);
         }
     }
-    validate_global_bucket_order(&locations)?;
+    let bucket_sections = descriptors.len();
+    // Validates every directory and the global key order without retaining
+    // one location per bucket; members are then checked a section at a time.
+    let total =
+        usize::try_from(BucketDirectory::read(&layout, &mut file, &descriptors, bands)?.len())?;
     let mut members_checked = 0_u64;
-    for (index, location) in locations.iter().copied().enumerate() {
-        let members = read_bucket_members(&layout, &mut file, location)?;
-        members_checked = members_checked
-            .checked_add(u64::try_from(members.len())?)
-            .ok_or("member count overflow")?;
-        if let Some(reporter) = &reporter {
-            let completed = index + 1;
-            if reporter.is_due(completed) {
-                reporter.emit(
-                    "verify",
-                    completed,
-                    Some(locations.len()),
-                    false,
-                    Some(members_checked),
-                    None,
-                )?;
+    let mut completed = 0_usize;
+    for descriptor in descriptors {
+        for location in decode_bucket_segment(&layout, &mut file, descriptor, bands)? {
+            let members = read_bucket_members(&layout, &mut file, location)?;
+            members_checked = members_checked
+                .checked_add(u64::try_from(members.len())?)
+                .ok_or("member count overflow")?;
+            completed += 1;
+            if let Some(reporter) = &reporter {
+                if reporter.is_due(completed) {
+                    reporter.emit(
+                        "verify",
+                        completed,
+                        Some(total),
+                        false,
+                        Some(members_checked),
+                        None,
+                    )?;
+                }
             }
         }
+    }
+    if completed != total {
+        return Err("bucket directory count changed while verifying".into());
     }
     if let Some(reporter) = &reporter {
         reporter.emit(
             "verify",
-            locations.len(),
-            Some(locations.len()),
+            total,
+            Some(total),
             true,
             Some(members_checked),
             None,
@@ -1518,7 +1524,7 @@ fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
         valid: true,
         sections: layout.sections().len(),
         bucket_sections,
-        buckets: locations.len(),
+        buckets: total,
         members_checked,
     };
     if args.json {
