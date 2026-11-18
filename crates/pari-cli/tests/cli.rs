@@ -3,6 +3,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -17,13 +18,19 @@ fn pari() -> Command {
     Command::new(env!("CARGO_BIN_EXE_pari"))
 }
 
+/// A path unique to this test process and call.
+///
+/// The counter keeps parallel tests apart even when the clock has not
+/// advanced between calls, which happens on Windows' 100 ns clock.
 fn temp_path(name: &str, extension: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "pari-cli-{name}-{}-{nonce}.{extension}",
+        "pari-cli-{name}-{}-{sequence}-{nonce}.{extension}",
         std::process::id()
     ))
 }
