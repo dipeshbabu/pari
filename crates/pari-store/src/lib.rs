@@ -3,9 +3,9 @@
 //!
 //! Committed snapshots keep keys and per-key LSH band hashes as stable metadata
 //! while bucket membership uses the canonical checksummed segments from
-//! `pari-format`. Reopening a current snapshot loads key metadata plus a sparse
-//! bucket directory (one key and checksum per 128 buckets). Directory blocks
-//! and candidate memberships remain on disk until queried.
+//! `pari-format`. Reopening a current snapshot loads key metadata plus a compact
+//! bucket directory (about 4.6 bytes per bucket). Directory entries and
+//! candidate memberships remain on disk until queried.
 //!
 //! Inserts and removals since the last successful commit live in an in-memory
 //! overlay. Removed committed generations are explicitly suppressed so

@@ -19,16 +19,17 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 ### Added
 
 - `pari_format::BucketDirectory`, a validated sparse index over a snapshot's
-  bucket directories that looks buckets up by reading one checksummed 4 KiB
-  directory block, and `BucketDistribution::from_size_counts` in `pari-index`.
+  bucket directories that rejects most absent buckets from memory and finds
+  present ones by reading one checksummed directory block of at most 2 KiB,
+  and `BucketDistribution::from_size_counts` in `pari-index`.
 
 ### Changed
 
 - Opened indexes keep bucket directories on disk. Persistent indexes,
   `ReadOnlyIndex`, `LazyIndex32`/`LazyIndex64`, and `pari verify` validate
-  every directory when they open a snapshot but retain one key and checksum
-  per 128 buckets instead of a 56-byte location per bucket, which was about
-  5 GB for a 10M-item snapshot. Snapshot bytes are unchanged.
+  every directory when they open a snapshot but retain about 4.6 bytes per
+  bucket instead of a 56-byte location per bucket, which was about 5 GB for a
+  10M-item snapshot. Snapshot bytes are unchanged.
 - Persistent indexes use less memory for uncommitted inserts: each overlay
   bucket keeps its first key inline and allocates a list only when it holds
   more than one key.

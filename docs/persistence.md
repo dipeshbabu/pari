@@ -110,11 +110,13 @@ The overlay stores the first key of each uncommitted bucket inline and allocates
 
 Opening a current snapshot, through a persistent index, `ReadOnlyIndex`,
 `LazyIndex32`/`LazyIndex64`, or `pari verify`, reads and validates every
-bucket directory but keeps only a sparse index in memory: the first key and a
-CRC32 of each block of 128 directory entries (4 KiB on disk), plus an exact
-histogram of bucket sizes for statistics. That is about a quarter of a byte
-per bucket. A query reads and checksums the one directory block that can hold
-each of its band keys, then reads that bucket's members. A persistent index
+bucket directory but keeps only a compact index in memory: the high 32 bits
+of every bucket hash, the first key and CRC32 of each block of up to 64
+same-band directory entries (at most 2 KiB on disk), and an exact histogram of
+bucket sizes for statistics. That is about 4.6 bytes per bucket instead of the
+56-byte in-memory location used before. Most band keys that match no bucket
+are rejected from memory; otherwise the query reads and checksums the one
+directory block that can hold the key, then reads that bucket's members. A persistent index
 additionally keeps every live key's band hashes in memory so it can remove
 keys and write the next snapshot.
 

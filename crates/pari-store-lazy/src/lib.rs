@@ -2,11 +2,12 @@
 //! Read-only affine32 and affine64 paged bucket storage for Pari similarity indexes.
 //!
 //! Lazy indexes use the canonical bucket-segment codec from `pari-format`.
-//! Reopening validates every bucket directory but keeps only a sparse
-//! [`pari_format::BucketDirectory`] in memory: one key and checksum per 128
-//! directory entries. Directory blocks and membership vectors stay on disk
-//! until a query touches the corresponding bucket. The same persisted files retain `BandHashes`, so mutable store
-//! implementations can reopen and compact them without format conversion.
+//! Reopening validates every bucket directory but keeps only a compact
+//! [`pari_format::BucketDirectory`] in memory, about 4.6 bytes per bucket.
+//! Directory entries and membership vectors stay on disk until a query
+//! touches the corresponding bucket. The same persisted files retain
+//! `BandHashes`, so mutable store implementations can reopen and compact them
+//! without format conversion.
 
 use std::{
     collections::{BTreeMap, HashSet},
