@@ -161,6 +161,13 @@ A copied committed target is self-contained. It does not depend on sidecar datab
 
 ## Bounded construction
 
+Mutable commits encode one metadata or bucket section at a time. They sort
+bucket memberships in batches of bands or hash ranges with at most 128 MiB of
+sorting scratch space. A bucket that exceeds the sort buffer is written on its
+own when its payload exceeds the normal segment target. The version-1 section
+size limit still applies. Total memory also includes the live key catalog,
+pending mutations, and any signatures gathered for recovery.
+
 `PersistentIndex32` and `PersistentIndex64` are optimized for incremental local mutation and compaction. For large initial builds, use `pari-store-build`, which spills fixed-width band-hash records into bounded sorted runs and externally merges them into the same canonical segmented format used by the local and lazy readers. Both the reference and bounded builders accept either supported signature family and preserve the source scheme and width exactly.
 
 The external builder's memory contract is bounded by the configured spill buffer, merge heap, one bounded segment directory, fixed copy buffers, and metadata rather than total bucket membership.

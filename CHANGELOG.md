@@ -6,6 +6,12 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Changed
+
+- Persistent commits cap bucket sorting scratch space at 128 MiB, encode
+  metadata one section at a time, and release the old mutation overlay before
+  reopening the published snapshot. Snapshot bytes remain identical.
+
 ## [0.3.0] - 2026-11-18
 
 ### Added
