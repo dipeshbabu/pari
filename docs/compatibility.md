@@ -19,6 +19,7 @@ Python:
 - `MinHash64`
 - `Index`
 - `Index64`
+- `ReadOnlyIndex`
 - `IndexStats`
 - `DedupeIndex`
 - `DuplicateGroup`
@@ -54,6 +55,7 @@ Rust:
 CLI:
 
 - the `index`, `search`, `dedup`, `stats`, `verify`, and `completion` command names
+- the `search --read-only` flag with the same output fields as normal search
 - documented command options in the 0.2.x line, including stderr-only progress
 - documented JSONL input fields in the 0.2.x line, including explicit
   `pari-affine64-v1` selection and optional precomputed-signature seed metadata

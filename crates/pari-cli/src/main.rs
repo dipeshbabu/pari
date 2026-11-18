@@ -27,6 +27,7 @@ use pari_store::{
     PersistentIndex32, PersistentIndex64, PersistentIndexOptions, ScoreFilter, ScoredCandidate,
     StoreStats,
 };
+use pari_store_lazy::LazyIndex;
 use same_file::{is_same_file, Handle};
 use serde::{Deserialize, Serialize};
 
@@ -104,6 +105,9 @@ struct SearchArgs {
     /// Existing `.pari` index file.
     #[arg(long)]
     index: PathBuf,
+    /// Open a committed index without loading metadata used for updates.
+    #[arg(long)]
+    read_only: bool,
     /// JSONL query path, or '-' for stdin.
     #[arg(short, long, default_value = "-")]
     input: String,
@@ -1068,20 +1072,68 @@ fn index_summary(current: &StoreStats) -> IndexSummary {
 }
 
 fn search(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
-    match index_signature_scheme(&args.index)? {
-        SignatureScheme::PariAffine32V1 => search32(args),
-        SignatureScheme::PariAffine64V1 => search64(args),
+    let reporter = ProgressReporter::new(&args.progress)?;
+    let filter = args.score_filter();
+
+    macro_rules! search_with {
+        ($store:expr, $make_sketch:ident) => {{
+            let mut store = $store;
+            store.set_observability(reporter.is_some());
+            search_rows(
+                args,
+                reporter.as_ref(),
+                filter,
+                store.len(),
+                store.stores_signatures(),
+                |query, filter| {
+                    let sketch = $make_sketch(
+                        query.values.as_deref(),
+                        query.signature.as_deref(),
+                        query.scheme.as_deref(),
+                        query.seed,
+                        store.num_perm(),
+                        store.seed(),
+                    )?;
+                    Ok(match filter {
+                        Some(filter) => split_scored(store.query_scored(&sketch, filter)?),
+                        None => (store.query(&sketch)?, None),
+                    })
+                },
+            )
+        }};
+    }
+
+    if args.read_only {
+        match LazyIndex::open(&args.index)? {
+            LazyIndex::Affine32(store) => search_with!(store, make_sketch32),
+            LazyIndex::Affine64(store) => search_with!(store, make_sketch64),
+        }
+    } else {
+        match index_signature_scheme(&args.index)? {
+            SignatureScheme::PariAffine32V1 => {
+                search_with!(PersistentIndex32::open(&args.index)?, make_sketch32)
+            }
+            SignatureScheme::PariAffine64V1 => {
+                search_with!(PersistentIndex64::open(&args.index)?, make_sketch64)
+            }
+        }
     }
 }
 
-fn search32(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
-    let reporter = ProgressReporter::new(&args.progress)?;
-    let mut store = PersistentIndex32::open(&args.index)?;
-    store.set_observability(reporter.is_some());
-    let filter = args.score_filter();
+fn search_rows(
+    args: &SearchArgs,
+    reporter: Option<&ProgressReporter>,
+    filter: Option<ScoreFilter>,
+    items: usize,
+    stores_signatures: bool,
+    mut query_index_row: impl FnMut(
+        &QueryRecord,
+        Option<ScoreFilter>,
+    ) -> Result<SearchRow, Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
     if let Some(filter) = filter {
         filter.validate()?;
-        if !store.stores_signatures() {
+        if !stores_signatures {
             return Err(
                 "--scores, --min-similarity, and --top-k need an index built with --store-signatures"
                     .into(),
@@ -1093,18 +1145,7 @@ fn search32(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
     let mut query_index = 0_usize;
     let mut candidate_count = 0_u64;
     for_json_lines(reader, |_line, query: QueryRecord| {
-        let sketch = make_sketch32(
-            query.values.as_deref(),
-            query.signature.as_deref(),
-            query.scheme.as_deref(),
-            query.seed,
-            store.num_perm(),
-            store.seed(),
-        )?;
-        let (candidates, scores) = match filter {
-            Some(filter) => split_scored(store.query_scored(&sketch, filter)?),
-            None => (store.query(&sketch)?, None),
-        };
+        let (candidates, scores) = query_index_row(&query, filter)?;
         if reporter.is_some() {
             candidate_count = candidate_count.saturating_add(u64::try_from(candidates.len())?);
         }
@@ -1125,9 +1166,9 @@ fn search32(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
             writeln!(writer, "{query_index}\t{id}\t{candidates}")?;
         }
         query_index += 1;
-        if let Some(reporter) = &reporter {
+        if let Some(reporter) = reporter {
             if reporter.is_due(query_index) {
-                let possible = query_index.saturating_mul(store.len());
+                let possible = query_index.saturating_mul(items);
                 reporter.emit(
                     "search",
                     query_index,
@@ -1141,89 +1182,8 @@ fn search32(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
         Ok(())
     })?;
     writer.flush()?;
-    if let Some(reporter) = &reporter {
-        let possible = query_index.saturating_mul(store.len());
-        reporter.emit(
-            "search",
-            query_index,
-            None,
-            true,
-            Some(candidate_count),
-            Some(ratio(candidate_count, possible)),
-        )?;
-    }
-    Ok(())
-}
-
-fn search64(args: &SearchArgs) -> Result<(), Box<dyn Error>> {
-    let reporter = ProgressReporter::new(&args.progress)?;
-    let mut store = PersistentIndex64::open(&args.index)?;
-    store.set_observability(reporter.is_some());
-    let filter = args.score_filter();
-    if let Some(filter) = filter {
-        filter.validate()?;
-        if !store.stores_signatures() {
-            return Err(
-                "--scores, --min-similarity, and --top-k need an index built with --store-signatures"
-                    .into(),
-            );
-        }
-    }
-    let reader = open_reader(&args.input)?;
-    let mut writer = BufWriter::new(io::stdout().lock());
-    let mut query_index = 0_usize;
-    let mut candidate_count = 0_u64;
-    for_json_lines(reader, |_line, query: QueryRecord| {
-        let sketch = make_sketch64(
-            query.values.as_deref(),
-            query.signature.as_deref(),
-            query.scheme.as_deref(),
-            query.seed,
-            store.num_perm(),
-            store.seed(),
-        )?;
-        let (candidates, scores) = match filter {
-            Some(filter) => split_scored(store.query_scored(&sketch, filter)?),
-            None => (store.query(&sketch)?, None),
-        };
-        if reporter.is_some() {
-            candidate_count = candidate_count.saturating_add(u64::try_from(candidates.len())?);
-        }
-        if args.json {
-            serde_json::to_writer(
-                &mut writer,
-                &SearchResult {
-                    query: query_index,
-                    id: &query.id,
-                    candidates,
-                    scores,
-                },
-            )?;
-            writeln!(writer)?;
-        } else {
-            let id = query.id.as_deref().unwrap_or("-").escape_debug();
-            let candidates = format_candidates(&candidates, scores.as_deref());
-            writeln!(writer, "{query_index}\t{id}\t{candidates}")?;
-        }
-        query_index += 1;
-        if let Some(reporter) = &reporter {
-            if reporter.is_due(query_index) {
-                let possible = query_index.saturating_mul(store.len());
-                reporter.emit(
-                    "search",
-                    query_index,
-                    None,
-                    false,
-                    Some(candidate_count),
-                    Some(ratio(candidate_count, possible)),
-                )?;
-            }
-        }
-        Ok(())
-    })?;
-    writer.flush()?;
-    if let Some(reporter) = &reporter {
-        let possible = query_index.saturating_mul(store.len());
+    if let Some(reporter) = reporter {
+        let possible = query_index.saturating_mul(items);
         reporter.emit(
             "search",
             query_index,

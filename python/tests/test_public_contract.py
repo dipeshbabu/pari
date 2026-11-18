@@ -24,6 +24,7 @@ PUBLIC_EXPORTS = {
     "PariError",
     "ProgressCancelledError",
     "ProgressEvent",
+    "ReadOnlyIndex",
     "StorageError",
     "__version__",
     "deduplicate",
@@ -59,6 +60,8 @@ class PublicContractTests(unittest.TestCase):
             "class Index64:",
             "def add(self, key: int, sketch: MinHash64) -> None:",
             "def search(self, sketch: MinHash64) -> list[int]:",
+            "class ReadOnlyIndex:",
+            "def search(self, sketch: MinHash | MinHash64) -> list[int]:",
         ):
             with self.subTest(declaration=declaration):
                 self.assertIn(declaration, stub)

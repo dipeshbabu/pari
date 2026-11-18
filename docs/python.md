@@ -28,7 +28,7 @@ with Index.open("documents.pari") as index:
 ## Install the published package
 
 ```bash
-python -m pip install "pari-similarity==0.3.0"
+python -m pip install "pari-similarity==0.3.1"
 ```
 
 The PyPI distribution is named `pari-similarity`; the import namespace is `pari`.
@@ -51,6 +51,33 @@ maturin develop
 ## Stability
 
 The 0.1 top-level Python export set is defined by `pari.__all__` and pinned by installed-wheel tests. Patch releases in 0.1.x must not intentionally break exports classified as supported or make a previously valid supported typed call invalid. Planner exports remain explicitly experimental. See [compatibility.md](compatibility.md) for the full v0.x policy, deprecation rules, signature compatibility, and persisted-format guarantees.
+
+## Search a read-only snapshot
+
+Use `ReadOnlyIndex` when a process only needs to query a committed `.pari`
+file. It keeps the key catalog and bucket directory in memory and reads
+matching bucket members from disk. The reader selects the signature width from
+the file and exposes the seed and permutation count needed to build a query.
+
+```python
+from pari import MinHash, MinHash64, ReadOnlyIndex, shingles
+
+with ReadOnlyIndex.open("products.pari") as index:
+    sketch_type = MinHash if index.signature_width == 32 else MinHash64
+    query = sketch_type.from_values(
+        shingles("aluminum travel mug"), num_perm=index.num_perm, seed=index.seed
+    )
+    candidates = index.search(query)
+    if index.stores_signatures:
+        ranked = index.search_scored(query, top_k=5, min_similarity=0.8)
+```
+
+`search_many` and `search_scored_many` return one result list per sketch in
+input order. Scored queries require a file created with
+`store_signatures=True`. A query with a different width, seed, or permutation
+count raises `CompatibilityError`. Open a new reader to see a later commit.
+For an older snapshot that lacks bucket sections, open and sync it with
+`Index` or `Index64` once to upgrade it.
 
 ## Deduplicate records
 
