@@ -6,6 +6,40 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Added
+
+- Persistent-index commits append small changes to the index file as a delta
+  generation (a checksummed record of inserted keys with their memberships and
+  signatures, plus removed keys) instead of rewriting the whole snapshot, so a
+  commit costs time proportional to the change. Queries, reopen, `ReadOnlyIndex`
+  and `pari verify` apply every generation. A commit rewrites the snapshot
+  automatically once 32 generations exist, the generations would exceed a
+  quarter of the snapshot, or hidden memberships of removed keys exceed a
+  quarter of the live keys. This covers `PersistentIndex32`/`PersistentIndex64`,
+  Python's `Index`/`Index64`, `DedupeIndex(backend="local")`, and batched
+  `pari index` builds.
+- `compact()` on persistent indexes and Python's `Index`/`Index64`, and
+  `pari compact --index PATH`, rewrite the file as one snapshot.
+- `StoreStats::delta_generations` and `StoreStats::delta_bytes`, the matching
+  Python `IndexStats` properties and `pari stats --json` fields,
+  `LazyStats::delta_generations`, and `delta_generations` in
+  `pari verify --json`.
+- `pari_format::FileLayout::read_with_generations`, `refresh_generations`,
+  `deltas`, `next_delta`, `base_length` and `uncommitted_bytes`,
+  `ContainerWriter::write_delta`, and the `DeltaLayout`, `NextDelta` and
+  `DeltaCommit` types for reading and writing appended generations.
+
+### Changed
+
+- `FileLayout::read_from` rejects a file with appended generations with the
+  new `FormatError::AppendedGenerations` instead of reading only its base;
+  damaged generations fail with `FormatError::InvalidGeneration`. Pari 0.3 and
+  earlier cannot open a file with appended generations; compact it first.
+  `StoreStats` and `LazyStats` gain fields, so code that builds them with
+  struct literals must add them.
+- `StoreStats::suppressed_base_keys` and `committed_buckets` now count every
+  committed generation.
+
 ## [0.3.2] - 2026-11-18
 
 ### Fixed

@@ -128,6 +128,17 @@ For a future `0.y.0` minor release after 0.1:
 - machine-readable output that removes fields, changes field types, or changes field meaning requires a new documented output revision
 - persisted data must never be silently reinterpreted under old format or signature identifiers
 
+## Appended commit generations
+
+Starting with 0.4, a local index commit may append a delta generation after
+the version-1 container instead of rewriting it; see
+[index-format.md](index-format.md#appended-commit-generations). The base
+container is unchanged and the format version stays 1, but Pari 0.3 and
+earlier reject a file with appended generations (they report trailing bytes)
+instead of returning stale results. `compact()` or `pari compact` rewrites the
+file as a plain container that every 0.x release reads. Snapshots written
+without appended generations are unchanged.
+
 ## Python surface
 
 `pari.__all__` is the pinned top-level import set for the 0.2 line. Adding a supported top-level name is backward compatible. Removing or renaming a supported name is not. Entries explicitly classified as experimental, currently `LshPlan` and `plan_lsh`, may change only at a future minor release with migration notes.

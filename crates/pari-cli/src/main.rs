@@ -66,6 +66,8 @@ enum Commands {
     Stats(StatsArgs),
     /// Validate index structure and all persisted checksums.
     Verify(VerifyArgs),
+    /// Rewrite an index as one snapshot, folding in appended commits.
+    Compact(CompactArgs),
     /// Generate shell completion from this command definition.
     Completion(CompletionArgs),
 }
@@ -230,6 +232,12 @@ struct StatsArgs {
     index: PathBuf,
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct CompactArgs {
+    #[arg(short, long)]
+    index: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]
@@ -413,6 +421,7 @@ struct VerifyResult {
     bucket_sections: usize,
     buckets: usize,
     members_checked: u64,
+    delta_generations: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -779,6 +788,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Commands::Explain(args) => explain(args),
         Commands::Stats(args) => stats(args),
         Commands::Verify(args) => verify(args),
+        Commands::Compact(args) => compact(args),
         Commands::Completion(args) => {
             let mut command = Cli::command();
             let name = command.get_name().to_owned();
@@ -1413,6 +1423,8 @@ fn print_stats(
                 "committed_buckets": current.committed_buckets,
                 "overlay_buckets": current.overlay_buckets,
                 "suppressed_base_keys": current.suppressed_base_keys,
+                "delta_generations": current.delta_generations,
+                "delta_bytes": current.delta_bytes,
                 "committed_bucket_distribution": bucket_distribution_json(current.committed_distribution),
                 "overlay_bucket_distribution": bucket_distribution_json(current.overlay_distribution),
                 "query_metrics": current.queries.map(query_metrics_json),
@@ -1433,6 +1445,11 @@ fn print_stats(
         outln!("committed buckets: {}", current.committed_buckets);
         outln!("overlay buckets: {}", current.overlay_buckets);
         outln!("suppressed base keys: {}", current.suppressed_base_keys);
+        outln!(
+            "delta generations: {} ({} bytes)",
+            current.delta_generations,
+            current.delta_bytes
+        );
         outln!(
             "committed bucket members: {} total, min {}, p50 {}, p95 {}, p99 {}, max {}, average {:.3}",
             current.committed_distribution.memberships,
@@ -1459,10 +1476,19 @@ fn print_stats(
     Ok(())
 }
 
+fn compact(args: &CompactArgs) -> Result<(), Box<dyn Error>> {
+    match index_signature_scheme(&args.index)? {
+        SignatureScheme::PariAffine32V1 => PersistentIndex32::open(&args.index)?.compact()?,
+        SignatureScheme::PariAffine64V1 => PersistentIndex64::open(&args.index)?.compact()?,
+    }
+    Ok(())
+}
+
 fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
     let reporter = ProgressReporter::new(&args.progress)?;
     let mut file = File::open(&args.index)?;
-    let layout = FileLayout::read_from(&mut file)?;
+    let layout = FileLayout::read_with_generations(&mut file)?;
+    // Opening applies every delta generation and checks its key changes.
     match layout.metadata().signature_scheme() {
         SignatureScheme::PariAffine32V1 => {
             PersistentIndex32::open(&args.index)?;
@@ -1472,21 +1498,40 @@ fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
         }
     }
     let bands = usize::try_from(layout.metadata().bands())?;
-    let mut descriptors = Vec::new();
-    for descriptor in layout.sections().iter().copied() {
-        let _ = layout.read_section(&mut file, descriptor)?;
-        if descriptor.kind() == SectionKind::Buckets {
-            descriptors.push(descriptor);
+    // The base snapshot, then each delta generation, in commit order.
+    let generations: Vec<&[pari_format::SectionDescriptor]> = std::iter::once(layout.sections())
+        .chain(
+            layout
+                .deltas()
+                .iter()
+                .map(pari_format::DeltaLayout::sections),
+        )
+        .collect();
+    let mut sections = 0_usize;
+    let mut bucket_descriptors = Vec::with_capacity(generations.len());
+    for generation in &generations {
+        let mut descriptors = Vec::new();
+        for descriptor in generation.iter().copied() {
+            let _ = layout.read_section(&mut file, descriptor)?;
+            if descriptor.kind() == SectionKind::Buckets {
+                descriptors.push(descriptor);
+            }
         }
+        sections += generation.len();
+        bucket_descriptors.push(descriptors);
     }
-    let bucket_sections = descriptors.len();
-    // Validates every directory and the global key order without retaining
-    // one location per bucket; members are then checked a section at a time.
-    let total =
-        usize::try_from(BucketDirectory::read(&layout, &mut file, &descriptors, bands)?.len())?;
+    let bucket_sections = bucket_descriptors.iter().map(Vec::len).sum();
+    // Validates every directory and each generation's key order without
+    // retaining one location per bucket; members are then checked a section
+    // at a time.
+    let mut total = 0_usize;
+    for descriptors in &bucket_descriptors {
+        total +=
+            usize::try_from(BucketDirectory::read(&layout, &mut file, descriptors, bands)?.len())?;
+    }
     let mut members_checked = 0_u64;
     let mut completed = 0_usize;
-    for descriptor in descriptors {
+    for descriptor in bucket_descriptors.into_iter().flatten() {
         for location in decode_bucket_segment(&layout, &mut file, descriptor, bands)? {
             let members = read_bucket_members(&layout, &mut file, location)?;
             members_checked = members_checked
@@ -1522,20 +1567,22 @@ fn verify(args: &VerifyArgs) -> Result<(), Box<dyn Error>> {
     }
     let result = VerifyResult {
         valid: true,
-        sections: layout.sections().len(),
+        sections,
         bucket_sections,
         buckets: total,
         members_checked,
+        delta_generations: layout.deltas().len(),
     };
     if args.json {
         outln!("{}", serde_json::to_string(&result)?);
     } else {
         outln!(
-            "valid: {} sections, {} bucket sections, {} buckets, {} members checked",
+            "valid: {} sections, {} bucket sections, {} buckets, {} members checked, {} delta generations",
             result.sections,
             result.bucket_sections,
             result.buckets,
-            result.members_checked
+            result.members_checked,
+            result.delta_generations
         );
     }
     Ok(())
@@ -1662,7 +1709,7 @@ fn validate_signature_seed(actual: Option<u64>, expected: u64) -> Result<(), Box
 
 fn index_signature_scheme(path: &Path) -> Result<SignatureScheme, Box<dyn Error>> {
     let mut file = File::open(path)?;
-    let layout = FileLayout::read_from(&mut file)?;
+    let layout = FileLayout::read_with_generations(&mut file)?;
     Ok(layout.metadata().signature_scheme())
 }
 

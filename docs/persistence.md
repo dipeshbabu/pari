@@ -106,6 +106,37 @@ Inserts and removals are visible immediately through the writer that performed t
 
 The overlay stores the first key of each uncommitted bucket inline and allocates a list only for buckets that hold more than one key, so a singleton bucket costs one hash-map entry.
 
+## Delta commits and compaction
+
+A commit appends the changes since the last commit (inserted keys with their
+band hashes, signatures and bucket memberships, plus the keys removed) as a
+delta generation at the end of the file, instead of rewriting the snapshot.
+The cost of a small commit is therefore proportional to the change, not to
+the index. Queries look up each band in the snapshot and in every generation
+and accept a member only from the generation that holds the key's current
+entry, so results are identical to a rewritten snapshot.
+
+A commit rewrites the whole snapshot instead (the original commit path, now
+also called compaction) when:
+
+- 32 delta generations already exist;
+- the appended generations would exceed a quarter of the snapshot's size;
+- removed or re-inserted keys leave more hidden memberships than a quarter of
+  the live keys;
+- the file holds a legacy or empty snapshot, or the previous commit's outcome
+  was uncertain.
+
+`compact()` rewrites on demand, folding every generation into one snapshot and
+dropping removed keys' memberships. `stats()` reports `delta_generations` and
+`delta_bytes`; `suppressed_base_keys` counts the hidden memberships a
+compaction would drop. `pari compact --index PATH` does the same from the
+command line.
+
+The format of delta records is specified in
+[index-format.md](index-format.md#appended-commit-generations). Pari 0.3 and
+earlier cannot open a file with delta generations; compact it first if an older
+release must read it.
+
 ## Memory after open
 
 Opening a current snapshot, through a persistent index, `ReadOnlyIndex`,
@@ -124,6 +155,10 @@ keys and write the next snapshot.
 
 An opened local index owns a file handle to the committed generation it opened. A separate reader does not automatically observe a generation committed later by another process. Reopen the index to observe the latest committed target.
 
+An appended commit only adds bytes after the data an open reader already
+validated, so readers keep answering from the generations they opened. A
+compaction replaces the file by atomic rename, like any full snapshot commit.
+
 Atomic replacement behavior while unrelated processes hold the target open is ultimately subject to operating-system and filesystem semantics. Pari does not currently promise portable lock-free concurrent writer plus reader replacement on every filesystem. Deployments that require that guarantee should coordinate reader refreshes at the application level.
 
 ## Creation
@@ -132,7 +167,21 @@ Atomic replacement behavior while unrelated processes hold the target open is ul
 
 ## `flush`
 
-`flush()` commits dirty state in this order:
+When `flush()` appends a delta generation, it:
+
+1. discards any bytes left after the last committed generation by an
+   interrupted commit;
+2. writes the delta record header and sections and syncs the file;
+3. writes the commit trailer and syncs the file;
+4. reads the new generation back, checks it holds exactly the pending changes,
+   and makes it part of the handle's committed state.
+
+The commit point is the synced trailer. If writing fails before it, the
+changes stay pending in memory and the next commit tries again. If the outcome
+is uncertain, the handle keeps whatever is committed on disk, reports the
+error, and its next commit rewrites the snapshot.
+
+When `flush()` rewrites the snapshot, it:
 
 1. encode the next complete snapshot;
 2. atomically claim a uniquely named sibling temporary file and write into it;
@@ -163,7 +212,13 @@ Dropping a dirty `PersistentIndex32` or `PersistentIndex64` without calling `flu
 
 ## Crash and interrupted-write behavior
 
-The target path is the only committed generation. Transaction-owned sibling temporary files are never treated as committed state.
+The target path is the only committed state. Transaction-owned sibling temporary files are never treated as committed state.
+
+If a process stops while appending a delta generation, the record has no valid
+commit trailer: readers ignore it and reopen the previous generation, and the
+next commit overwrites it. A record whose trailer is valid was made durable
+before the trailer was written, so any damage to it is reported as
+corruption.
 
 If a process stops while writing the temporary file, reopening the target uses the previous committed generation. The same rule applies even when the temporary file contains a complete, valid, fsynced newer snapshot but the atomic rename never happened.
 
@@ -182,7 +237,8 @@ Directory corruption is detected during open. A corrupt member range that was no
 For a consistent portable backup:
 
 1. stop mutations or otherwise quiesce the writer;
-2. call `sync()` or `close()` successfully;
+2. call `sync()` or `close()` successfully, or `compact()` if the copy must be
+   readable by Pari 0.3 or earlier;
 3. copy the committed target file.
 
 Do not copy the `.tmp` file as an index generation. Avoid racing a backup copy with a writer commit because the copy can observe platform-dependent replacement behavior.
@@ -198,7 +254,7 @@ own when its payload exceeds the normal segment target. The version-1 section
 size limit still applies. Total memory also includes the live key catalog,
 pending mutations, and any signatures gathered for recovery.
 
-`PersistentIndex32` and `PersistentIndex64` are optimized for incremental local mutation and compaction. For large initial builds, use `pari-store-build`, which spills fixed-width band-hash records into bounded sorted runs and externally merges them into the same canonical segmented format used by the local and lazy readers. Both the reference and bounded builders accept either supported signature family and preserve the source scheme and width exactly.
+`PersistentIndex32` and `PersistentIndex64` are optimized for incremental local mutation: small commits append delta generations, and the snapshot is rewritten only when the generations grow. For large initial builds, use `pari-store-build`, which spills fixed-width band-hash records into bounded sorted runs and externally merges them into the same canonical segmented format used by the local and lazy readers. Both the reference and bounded builders accept either supported signature family and preserve the source scheme and width exactly.
 
 The external builder's memory contract is bounded by the configured spill buffer, merge heap, one bounded segment directory, fixed copy buffers, and metadata rather than total bucket membership.
 

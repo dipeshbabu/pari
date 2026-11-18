@@ -1167,3 +1167,102 @@ fn dedup_min_similarity_filters_pairs_and_groups() {
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("--min-similarity"));
     let _ = fs::remove_file(input);
 }
+
+#[test]
+fn batched_index_builds_append_generations_that_verify_and_compact() {
+    let records = temp_path("delta-records", "jsonl");
+    let index = temp_path("delta-index", "pari");
+    let queries = temp_path("delta-queries", "jsonl");
+    let mut text = String::new();
+    let mut query_text = String::new();
+    for key in 0..1_500_u64 {
+        let group = key / 3;
+        let values: Vec<String> = (0..12)
+            .map(|token| format!("g{group}-t{token}"))
+            .chain([format!("item-{key}")])
+            .collect();
+        text.push_str(&serde_json::json!({"key": key, "values": values}).to_string());
+        text.push('\n');
+        if key % 7 == 0 {
+            query_text.push_str(
+                &serde_json::json!({"id": format!("q{key}"), "values": values}).to_string(),
+            );
+            query_text.push('\n');
+        }
+    }
+    fs::write(&records, text).expect("records");
+    fs::write(&queries, query_text).expect("queries");
+    let output = pari()
+        .args([
+            "index",
+            "--input",
+            records.to_str().expect("path"),
+            "--output",
+            index.to_str().expect("path"),
+            "--batch-size",
+            "100",
+            "--threshold",
+            "0.5",
+        ])
+        .output()
+        .expect("index command");
+    assert_success(&output);
+
+    let verify = |index: &Path| -> serde_json::Value {
+        let output = pari()
+            .args(["verify", "--index", index.to_str().expect("path"), "--json"])
+            .output()
+            .expect("verify command");
+        assert_success(&output);
+        serde_json::from_slice(&output.stdout).expect("verify JSON")
+    };
+    let stats = |index: &Path| -> serde_json::Value {
+        let output = pari()
+            .args(["stats", "--index", index.to_str().expect("path"), "--json"])
+            .output()
+            .expect("stats command");
+        assert_success(&output);
+        serde_json::from_slice(&output.stdout).expect("stats JSON")
+    };
+    let before = verify(&index);
+    let generations = before["delta_generations"].as_u64().expect("generations");
+    assert!(generations > 0, "small batches append delta generations");
+    assert_eq!(stats(&index)["delta_generations"], generations);
+    assert_eq!(stats(&index)["items"], 1_500);
+
+    let search = |index: &Path, read_only: bool| -> Vec<u8> {
+        let mut command = pari();
+        command.args([
+            "search",
+            "--index",
+            index.to_str().expect("path"),
+            "--input",
+        ]);
+        command.arg(&queries);
+        if read_only {
+            command.arg("--read-only");
+        }
+        let output = command.output().expect("search command");
+        assert_success(&output);
+        output.stdout
+    };
+    let results = search(&index, false);
+    assert_eq!(search(&index, true), results);
+
+    let output = pari()
+        .args(["compact", "--index", index.to_str().expect("path")])
+        .output()
+        .expect("compact command");
+    assert_success(&output);
+    let after = verify(&index);
+    assert_eq!(after["delta_generations"], 0);
+    // A bucket stored by several generations is one record after compaction.
+    assert!(after["buckets"].as_u64() <= before["buckets"].as_u64());
+    assert_eq!(stats(&index)["delta_bytes"], 0);
+    assert_eq!(search(&index, false), results);
+    assert_eq!(search(&index, true), results);
+
+    let _ = fs::remove_file(records);
+    let _ = fs::remove_file(queries);
+    let _ = fs::remove_file(index);
+}

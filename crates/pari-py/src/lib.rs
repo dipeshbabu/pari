@@ -624,6 +624,10 @@ struct PyIndexStats {
     #[pyo3(get)]
     suppressed_base_keys: usize,
     #[pyo3(get)]
+    delta_generations: usize,
+    #[pyo3(get)]
+    delta_bytes: u64,
+    #[pyo3(get)]
     committed_memberships: u64,
     #[pyo3(get)]
     committed_bucket_minimum: u64,
@@ -666,6 +670,8 @@ impl From<StoreStats> for PyIndexStats {
             committed_buckets: stats.committed_buckets,
             overlay_buckets: stats.overlay_buckets,
             suppressed_base_keys: stats.suppressed_base_keys,
+            delta_generations: stats.delta_generations,
+            delta_bytes: stats.delta_bytes,
             committed_memberships: stats.committed_distribution.memberships,
             committed_bucket_minimum: stats.committed_distribution.minimum,
             committed_bucket_p50: stats.committed_distribution.p50,
@@ -1152,6 +1158,11 @@ impl PyIndex {
         self.run_write(py, |store| store.sync().map_err(BindingError::from))
     }
 
+    /// Commit pending changes and rewrite the file as one snapshot.
+    fn compact(&self, py: Python<'_>) -> PyResult<()> {
+        self.run_write(py, |store| store.compact().map_err(BindingError::from))
+    }
+
     /// Sync pending changes and close only after a successful commit.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let inner = Arc::clone(&self.inner);
@@ -1434,6 +1445,11 @@ impl PyIndex64 {
 
     fn sync(&self, py: Python<'_>) -> PyResult<()> {
         self.run_write(py, |store| store.sync().map_err(BindingError::from))
+    }
+
+    /// Commit pending changes and rewrite the file as one snapshot.
+    fn compact(&self, py: Python<'_>) -> PyResult<()> {
+        self.run_write(py, |store| store.compact().map_err(BindingError::from))
     }
 
     fn close(&self, py: Python<'_>) -> PyResult<()> {

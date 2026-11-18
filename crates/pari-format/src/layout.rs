@@ -6,7 +6,10 @@ use std::{
 
 use crc32fast::{hash as crc32, Hasher};
 
-use crate::{Algorithm, CodecId, FormatError, IndexMetadata, SectionKind, SignatureScheme};
+use crate::{
+    deltas::{scan_deltas, DeltaLayout, NextDelta, DELTA_MAGIC},
+    Algorithm, CodecId, FormatError, IndexMetadata, SectionKind, SignatureScheme,
+};
 
 const MAGIC: [u8; 8] = *b"PARIIDX\0";
 const FORMAT_VERSION: u16 = 1;
@@ -90,6 +93,22 @@ pub struct SectionDescriptor {
 }
 
 impl SectionDescriptor {
+    pub(crate) const fn new(
+        kind: SectionKind,
+        required: bool,
+        payload_offset: u64,
+        payload_length: u64,
+        checksum: u32,
+    ) -> Self {
+        Self {
+            kind,
+            required,
+            payload_offset,
+            payload_length,
+            checksum,
+        }
+    }
+
     /// Return the known section kind.
     #[must_use]
     pub const fn kind(self) -> SectionKind {
@@ -122,11 +141,20 @@ impl SectionDescriptor {
 }
 
 /// Validated file metadata and section locations without materialized payloads.
+///
+/// [`Self::sections`] describes the base container. A layout read with
+/// [`Self::read_with_generations`] also describes the committed delta records
+/// appended after it, in generation order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileLayout {
     metadata: IndexMetadata,
     sections: Vec<SectionDescriptor>,
+    /// End of the committed data: the base, then every committed delta.
     file_length: u64,
+    base_length: u64,
+    base_digest: u32,
+    deltas: Vec<DeltaLayout>,
+    uncommitted_bytes: u64,
 }
 
 impl FileLayout {
@@ -136,13 +164,59 @@ impl FileLayout {
     /// than the file size. Required known payloads are read on demand. Optional
     /// payloads are streamed to verify their checksums before being skipped;
     /// unknown required sections are rejected.
+    ///
+    /// The file must end with the base container. A file with appended commit
+    /// generations fails with [`FormatError::AppendedGenerations`], so a
+    /// reader that only understands the base never silently ignores later
+    /// commits; use [`Self::read_with_generations`] to read those files.
     pub fn read_from<R: Read + Seek>(reader: &mut R) -> Result<Self, LayoutError> {
+        Self::scan(reader, false)
+    }
+
+    /// Scan a container and every committed delta record appended after it.
+    ///
+    /// Bytes after the last committed record belong to an interrupted commit
+    /// and are ignored; [`Self::uncommitted_bytes`] reports their length. A
+    /// damaged committed record is an error.
+    pub fn read_with_generations<R: Read + Seek>(reader: &mut R) -> Result<Self, LayoutError> {
+        Self::scan(reader, true)
+    }
+
+    /// Read delta records committed after this layout was read.
+    ///
+    /// Returns how many new generations were found. The base and the already
+    /// known records are not read again.
+    pub fn refresh_generations<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+    ) -> Result<usize, LayoutError> {
+        let file_length = reader.seek(SeekFrom::End(0))?;
+        if file_length < self.file_length {
+            return Err(FormatError::Truncated {
+                context: "committed delta records",
+            }
+            .into());
+        }
+        let (records, committed) =
+            scan_deltas(reader, self.file_length, file_length, self.next_delta())?;
+        let found = records.len();
+        self.deltas.extend(records);
+        self.file_length = committed;
+        self.uncommitted_bytes = file_length - committed;
+        Ok(found)
+    }
+
+    fn scan<R: Read + Seek>(reader: &mut R, generations: bool) -> Result<Self, LayoutError> {
         let file_length = reader.seek(SeekFrom::End(0))?;
         reader.seek(SeekFrom::Start(0))?;
 
         let mut header = [0_u8; HEADER_SIZE];
         read_exact_format(reader, &mut header, "file header")?;
         let (metadata, section_count) = decode_header(&header)?;
+        // Hash the header without its own checksum: a CRC32 run over bytes
+        // that end in their CRC32 yields the same value for every input.
+        let mut digest = Hasher::new();
+        digest.update(&header[..64]);
         let section_count =
             usize::try_from(section_count).map_err(|_| FormatError::LengthOverflow)?;
         if section_count > MAX_SECTION_COUNT {
@@ -169,6 +243,7 @@ impl FileLayout {
             reader.seek(SeekFrom::Start(cursor))?;
             let mut section_header = [0_u8; SECTION_HEADER_SIZE];
             read_exact_format(reader, &mut section_header, "section header")?;
+            digest.update(&section_header);
             let kind_raw = read_u16(&section_header, 0)?;
             let flags = read_u16(&section_header, 2)?;
             let payload_length = read_u64(&section_header, 4)?;
@@ -212,19 +287,32 @@ impl FileLayout {
             cursor = payload_end;
         }
 
-        if cursor != file_length {
-            let remaining = file_length
-                .checked_sub(cursor)
-                .ok_or(FormatError::LengthOverflow)?;
-            let remaining = usize::try_from(remaining).map_err(|_| FormatError::LengthOverflow)?;
-            return Err(FormatError::TrailingBytes { remaining }.into());
-        }
-
-        Ok(Self {
+        let mut layout = Self {
             metadata,
             sections,
-            file_length,
-        })
+            file_length: cursor,
+            base_length: cursor,
+            base_digest: digest.finalize(),
+            deltas: Vec::new(),
+            uncommitted_bytes: 0,
+        };
+        if cursor == file_length {
+            return Ok(layout);
+        }
+        if generations {
+            layout.refresh_generations(reader)?;
+            return Ok(layout);
+        }
+        let mut magic = [0_u8; 8];
+        reader.seek(SeekFrom::Start(cursor))?;
+        if reader.read_exact(&mut magic).is_ok() && magic == DELTA_MAGIC {
+            return Err(FormatError::AppendedGenerations.into());
+        }
+        let remaining = file_length
+            .checked_sub(cursor)
+            .ok_or(FormatError::LengthOverflow)?;
+        let remaining = usize::try_from(remaining).map_err(|_| FormatError::LengthOverflow)?;
+        Err(FormatError::TrailingBytes { remaining }.into())
     }
 
     /// Return validated index metadata from the file header.
@@ -239,10 +327,43 @@ impl FileLayout {
         &self.sections
     }
 
-    /// Return the validated total file length.
+    /// Return the length of the committed data: the base container and every
+    /// committed delta record.
     #[must_use]
     pub const fn file_length(&self) -> u64 {
         self.file_length
+    }
+
+    /// Return the length of the base container.
+    #[must_use]
+    pub const fn base_length(&self) -> u64 {
+        self.base_length
+    }
+
+    /// Return the committed delta records in generation order.
+    #[must_use]
+    pub fn deltas(&self) -> &[DeltaLayout] {
+        &self.deltas
+    }
+
+    /// Return the length of an interrupted commit after the committed data.
+    #[must_use]
+    pub const fn uncommitted_bytes(&self) -> u64 {
+        self.uncommitted_bytes
+    }
+
+    /// Return where and as which generation the next delta record is written.
+    #[must_use]
+    pub fn next_delta(&self) -> NextDelta {
+        let (generation, previous_digest) =
+            self.deltas.last().map_or((1, self.base_digest), |last| {
+                (last.generation().saturating_add(1), last.digest())
+            });
+        NextDelta {
+            generation,
+            offset: self.file_length,
+            previous_digest,
+        }
     }
 
     /// Return the first understood section of `kind`, if present.
@@ -318,7 +439,7 @@ impl FileLayout {
     }
 }
 
-fn read_exact_format<R: Read>(
+pub(crate) fn read_exact_format<R: Read>(
     reader: &mut R,
     output: &mut [u8],
     context: &'static str,
@@ -332,7 +453,7 @@ fn read_exact_format<R: Read>(
     }
 }
 
-fn verify_skipped_payload(
+pub(crate) fn verify_skipped_payload(
     reader: &mut impl Read,
     mut remaining: u64,
     expected: u32,
@@ -440,7 +561,7 @@ const fn signature_scheme_from_raw(value: u16) -> Option<SignatureScheme> {
     }
 }
 
-const fn section_kind_from_raw(value: u16) -> Option<SectionKind> {
+pub(crate) const fn section_kind_from_raw(value: u16) -> Option<SectionKind> {
     match value {
         1 => Some(SectionKind::Keys),
         2 => Some(SectionKind::BandHashes),

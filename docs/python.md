@@ -306,9 +306,16 @@ See [persistence.md](persistence.md) for the local backend's writer, reader, dur
 ```python
 index.add(400, signature)
 removed = index.remove(200)
-index.flush()  # atomic committed generation
+index.flush()  # commit: append a delta generation or rewrite the snapshot
 index.sync()   # also sync the parent directory
+index.compact()  # rewrite as one snapshot, dropping removed keys
 ```
+
+Small commits append the changes to the file as a delta generation, so their
+cost follows the size of the change rather than the index. Pari rewrites the
+file as one snapshot automatically when the generations grow; `stats()`
+reports `delta_generations` and `delta_bytes`. See
+[persistence](persistence.md#delta-commits-and-compaction).
 
 Mutations are visible through the same Python handle immediately. `flush`, `sync`, and `close` delegate to the production `PersistentIndex32` implementation rather than duplicating persistence logic in the binding.
 

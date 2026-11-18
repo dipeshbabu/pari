@@ -8,18 +8,20 @@
 //! candidate memberships remain on disk until queried.
 //!
 //! Inserts and removals since the last successful commit live in an in-memory
-//! overlay. Removed committed generations are explicitly suppressed so
-//! remove-then-reinsert semantics remain correct. `flush` and `sync` compact
-//! committed state plus the overlay into a fresh atomic snapshot. Phase-1
-//! snapshots without bucket segments remain readable and upgrade on next sync.
+//! overlay. Removed committed keys are explicitly suppressed so
+//! remove-then-reinsert semantics remain correct. `flush` and `sync` append the
+//! overlay to the file as a checksummed delta generation while generations stay
+//! small relative to the snapshot, and otherwise compact committed state plus
+//! the overlay into a fresh atomic snapshot. Phase-1 snapshots without bucket
+//! segments remain readable and upgrade on next sync.
 //! Width-specific public types reject snapshots from the other signature family.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, BufWriter, Seek, Write},
+    io::{self, BufWriter, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -43,8 +45,8 @@ use pari_format::{
 };
 use pari_format::{
     read_bucket_members, Algorithm, BucketDirectory, BucketError, BucketKey, CodecId, FileLayout,
-    FormatError, IndexMetadata, LayoutError, SectionDescriptor, SectionKind, SignatureScheme,
-    BUCKET_SEGMENT_TARGET_BYTES,
+    FormatError, IndexMetadata, LayoutError, NextDelta, SectionDescriptor, SectionKind,
+    SignatureScheme, BUCKET_SEGMENT_TARGET_BYTES,
 };
 use pari_format::{ContainerWriteError, ContainerWriter};
 use pari_index::{
@@ -205,7 +207,7 @@ impl From<LshError> for StoreError {
 pub struct StoreStats {
     /// Number of live external keys.
     pub items: usize,
-    /// Size of the currently committed snapshot on disk.
+    /// Size of the index file on disk, including appended delta generations.
     pub file_bytes: u64,
     /// Whether memory contains changes that have not been fully committed.
     pub dirty: bool,
@@ -217,8 +219,14 @@ pub struct StoreStats {
     pub committed_buckets: usize,
     /// Number of overlay bucket records holding uncommitted insertions.
     pub overlay_buckets: usize,
-    /// Number of committed key generations hidden until the next compaction.
+    /// Number of committed key memberships hidden until the next compaction:
+    /// keys removed since they were committed, and keys a later generation
+    /// stores again.
     pub suppressed_base_keys: usize,
+    /// Number of delta generations appended since the last full snapshot.
+    pub delta_generations: usize,
+    /// Bytes of committed delta generations after the full snapshot.
+    pub delta_bytes: u64,
     /// Exact distribution of stored committed bucket memberships. Suppressed
     /// generations remain counted until compaction.
     pub committed_distribution: BucketDistribution,
@@ -267,74 +275,65 @@ impl PersistentIndexOptions {
 }
 
 /// Stored-signature state for an index created with signatures enabled.
+///
+/// Committed signatures stay on disk in each generation; see [`Generation`].
 #[derive(Debug, Default)]
 struct SignatureState {
-    /// Committed `(key, row)` pairs sorted by key; rows index the base file.
-    base_rows: Vec<(u64, u64)>,
-    /// Committed signature segments ordered by first row.
-    base_segments: Vec<SignatureSegment>,
     /// Signatures inserted since the last commit, widened to `u64`.
     overlay: HashMap<u64, Vec<u64>>,
 }
 
-impl SignatureState {
-    fn base_row(&self, key: u64) -> Option<u64> {
-        self.base_rows
+/// One committed generation: the base snapshot (index 0) or an appended delta.
+#[derive(Debug)]
+struct Generation {
+    directory: BucketDirectory,
+    /// Number of keys whose memberships this generation stores.
+    keys: usize,
+    /// `(key, row)` pairs sorted by key; rows index `signature_segments`.
+    signature_rows: Vec<(u64, u64)>,
+    /// Signature segments ordered by first row; empty without signatures.
+    signature_segments: Vec<SignatureSegment>,
+}
+
+impl Generation {
+    fn signature_location(&self, key: u64) -> Option<(SignatureSegment, u64)> {
+        let row = self
+            .signature_rows
             .binary_search_by_key(&key, |(candidate, _)| *candidate)
             .ok()
-            .map(|index| self.base_rows[index].1)
-    }
-
-    fn segment_for_row(&self, row: u64) -> Option<SignatureSegment> {
+            .map(|index| self.signature_rows[index].1)?;
         let index = self
-            .base_segments
+            .signature_segments
             .partition_point(|segment| segment.first_row() <= row);
-        index
-            .checked_sub(1)
-            .map(|index| self.base_segments[index])
-            .filter(|segment| segment.contains_row(row))
-    }
-
-    /// Drop committed rows when the committed base file is no longer readable.
-    fn forget_base(&mut self) {
-        self.base_rows = Vec::new();
-        self.base_segments = Vec::new();
+        let segment = *self.signature_segments.get(index.checked_sub(1)?)?;
+        segment.contains_row(row).then_some((segment, row))
     }
 }
 
+/// The committed file: its base snapshot and appended delta generations.
 #[derive(Debug)]
-struct LazyBase {
+struct Committed {
     file: Mutex<File>,
     layout: FileLayout,
-    directory: BucketDirectory,
+    generations: Vec<Generation>,
 }
 
-impl LazyBase {
-    fn collect_candidates(
-        &self,
-        hashes: &[u64],
-        live_keys: &BTreeMap<u64, Vec<u64>>,
-        suppressed: &HashSet<u64>,
-        output: &mut HashSet<u64>,
-    ) -> Result<(), StoreError> {
-        let mut file = self.file.lock().map_err(|_| StoreError::PoisonedFileLock)?;
-        for (band, hash) in hashes.iter().copied().enumerate() {
-            let key = BucketKey::new(
-                u32::try_from(band).map_err(|_| StoreError::LengthOverflow)?,
-                hash,
-            );
-            let Some(location) = self.directory.find(&self.layout, &mut *file, key)? else {
-                continue;
-            };
-            for member in read_bucket_members(&self.layout, &mut *file, location)? {
-                if live_keys.contains_key(&member) && !suppressed.contains(&member) {
-                    output.insert(member);
-                }
-            }
-        }
-        Ok(())
-    }
+/// What one delta record stores, in file order.
+struct DeltaContents {
+    keys: Vec<u64>,
+    rows: Vec<Vec<u64>>,
+    tombstones: Vec<u64>,
 }
+
+/// Appended delta generations at most, before a commit compacts the file.
+const MAX_DELTA_GENERATIONS: usize = 32;
+/// Deltas may grow to `1 / DELTA_BYTES_DIVISOR` of the base snapshot, and
+/// committed generations may hide up to `1 / DEAD_KEYS_DIVISOR` as many dead
+/// key memberships as there are live keys, before a commit compacts the file.
+const DELTA_BYTES_DIVISOR: u64 = 4;
+const DEAD_KEYS_DIVISOR: usize = 4;
+/// Fixed bytes of a delta record beyond its per-key and per-tombstone data.
+const DELTA_OVERHEAD_BYTES: u64 = 4_096;
 
 #[derive(Debug)]
 struct PersistentIndexCore {
@@ -344,10 +343,21 @@ struct PersistentIndexCore {
     seed: u64,
     params: LshParams,
     scheme: SignatureScheme,
-    base: Option<LazyBase>,
+    committed: Option<Committed>,
     overlay_buckets: Vec<OverlayTable>,
     overlay_keys: HashSet<u64>,
+    /// Base-snapshot keys whose base memberships are not live: removed, or
+    /// reinserted into a later generation or the overlay.
     suppressed_base_keys: HashSet<u64>,
+    /// Committed delta generation (index into `Committed::generations`) of
+    /// each live key that a delta stores. Other committed keys live in the base.
+    homes: HashMap<u64, u32>,
+    /// Committed keys removed since the last commit, written as tombstones.
+    pending_tombstones: BTreeSet<u64>,
+    /// Total keys stored by committed delta generations, live or not.
+    delta_keys: usize,
+    /// The next commit rewrites the whole snapshot instead of appending.
+    force_rewrite: bool,
     key_hashes: BTreeMap<u64, Vec<u64>>,
     dirty: bool,
     query_metrics: Option<Mutex<QueryMetrics>>,
@@ -407,7 +417,7 @@ impl PersistentIndexCore {
         let path = path.to_path_buf();
         let mut file = File::open(&path)?;
         let generation = FileGeneration::of(&file).ok();
-        let layout = FileLayout::read_from(&mut file)?;
+        let layout = FileLayout::read_with_generations(&mut file)?;
         validate_store_metadata(layout.metadata(), scheme)?;
         let num_perm = usize::try_from(layout.metadata().num_perm())
             .map_err(|_| StoreError::LengthOverflow)?;
@@ -421,13 +431,18 @@ impl PersistentIndexCore {
         validate_lsh_configuration(scheme, threshold, num_perm, seed, params)?;
 
         let (file_keys, key_hashes) = read_key_metadata(&layout, &mut file, bands)?;
-        let signature_segments = read_signature_segments(&layout, &mut file, file_keys.len())?;
-        let bucket_descriptors = collect_bucket_descriptors(&layout)?;
+        let signature_segments =
+            read_signature_segments(&layout, layout.sections(), &mut file, file_keys.len())?;
+        let bucket_descriptors = collect_bucket_descriptors(layout.sections(), false)?;
         if bucket_descriptors.is_empty() {
+            if !layout.deltas().is_empty() {
+                return Err(StoreError::InvalidSnapshot {
+                    reason: "appended generations require a snapshot with bucket sections",
+                });
+            }
             let signatures = match signature_segments {
                 Some(segments) => Some(SignatureState {
                     overlay: read_all_signatures(&layout, &mut file, &segments, &file_keys)?,
-                    ..SignatureState::default()
                 }),
                 None => None,
             };
@@ -437,35 +452,112 @@ impl PersistentIndexCore {
             store.generation = generation;
             return Ok(store);
         }
-        let signatures = signature_segments.map(|segments| SignatureState {
-            base_rows: sorted_rows(&file_keys),
-            base_segments: segments,
-            overlay: HashMap::new(),
-        });
+        let stores_signatures = signature_segments.is_some();
+        let base = Generation {
+            directory: BucketDirectory::read(&layout, &mut file, &bucket_descriptors, bands)?,
+            keys: file_keys.len(),
+            signature_rows: if stores_signatures {
+                sorted_rows(&file_keys)
+            } else {
+                Vec::new()
+            },
+            signature_segments: signature_segments.unwrap_or_default(),
+        };
 
-        let directory = BucketDirectory::read(&layout, &mut file, &bucket_descriptors, bands)?;
-
-        Ok(Self {
+        let mut store = Self {
             path,
             threshold,
             num_perm,
             seed,
             params,
             scheme,
-            base: Some(LazyBase {
+            committed: Some(Committed {
                 file: Mutex::new(file),
                 layout,
-                directory,
+                generations: vec![base],
             }),
             overlay_buckets: Vec::new(),
             overlay_keys: HashSet::new(),
             suppressed_base_keys: HashSet::new(),
+            homes: HashMap::new(),
+            pending_tombstones: BTreeSet::new(),
+            delta_keys: 0,
+            force_rewrite: false,
             key_hashes,
             dirty: false,
             query_metrics: None,
-            signatures,
+            signatures: stores_signatures.then(SignatureState::default),
             generation,
-        })
+        };
+        store.replay_deltas()?;
+        Ok(store)
+    }
+
+    /// Load and apply every committed delta the layout lists, in order.
+    fn replay_deltas(&mut self) -> Result<(), StoreError> {
+        let Some(committed) = &mut self.committed else {
+            return Ok(());
+        };
+        let file = committed
+            .file
+            .get_mut()
+            .map_err(|_| StoreError::PoisonedFileLock)?;
+        let stores_signatures = self.signatures.is_some();
+        for index in committed.generations.len()..=committed.layout.deltas().len() {
+            let sections = committed.layout.deltas()[index - 1].sections().to_vec();
+            let (generation, contents) = read_delta_generation(
+                &committed.layout,
+                file,
+                &sections,
+                self.params.bands,
+                stores_signatures,
+            )?;
+            let home = u32::try_from(index).map_err(|_| StoreError::LengthOverflow)?;
+            for key in contents.tombstones {
+                if self.key_hashes.remove(&key).is_none() {
+                    return Err(StoreError::InvalidSnapshot {
+                        reason: "delta removes a key that is not live",
+                    });
+                }
+                if self.homes.remove(&key).is_none() {
+                    self.suppressed_base_keys.insert(key);
+                }
+            }
+            for (key, hashes) in contents.keys.into_iter().zip(contents.rows) {
+                if self.key_hashes.insert(key, hashes).is_some() {
+                    return Err(StoreError::InvalidSnapshot {
+                        reason: "delta inserts a key that is already live",
+                    });
+                }
+                self.homes.insert(key, home);
+            }
+            self.delta_keys = self
+                .delta_keys
+                .checked_add(generation.keys)
+                .ok_or(StoreError::LengthOverflow)?;
+            committed.generations.push(generation);
+        }
+        Ok(())
+    }
+
+    /// Return whether `key`'s live memberships are stored by committed
+    /// generation `index`.
+    fn is_live_in(&self, index: usize, key: u64) -> bool {
+        if index == 0 {
+            self.key_hashes.contains_key(&key) && !self.suppressed_base_keys.contains(&key)
+        } else {
+            self.homes
+                .get(&key)
+                .is_some_and(|home| usize::try_from(*home).is_ok_and(|home| home == index))
+        }
+    }
+
+    /// Return the committed generation that stores `key`'s live memberships.
+    fn home_of(&self, key: u64) -> Option<usize> {
+        match self.homes.get(&key) {
+            Some(home) => usize::try_from(*home).ok(),
+            None => self.is_live_in(0, key).then_some(0),
+        }
     }
 
     fn insert_hashes_many(&mut self, prepared: Vec<PreparedItem>) -> Result<(), StoreError> {
@@ -497,8 +589,13 @@ impl PersistentIndexCore {
         if let Some(state) = &mut self.signatures {
             state.overlay.remove(&key);
         }
-        if self.base.is_some() && !was_overlay {
-            self.suppressed_base_keys.insert(key);
+        if self.committed.is_some() && !was_overlay {
+            // A committed key: hide its committed memberships and record the
+            // removal for the next commit.
+            if self.homes.remove(&key).is_none() {
+                self.suppressed_base_keys.insert(key);
+            }
+            self.pending_tombstones.insert(key);
         }
         self.dirty = true;
         true
@@ -615,28 +712,26 @@ impl PersistentIndexCore {
                 output.push(values.clone());
                 continue;
             }
-            let row =
-                if self.key_hashes.contains_key(key) && !self.suppressed_base_keys.contains(key) {
-                    state.base_row(*key)
-                } else {
-                    None
-                };
-            let (Some(row), Some(base)) = (row, self.base.as_ref()) else {
+            let location = self.committed.as_ref().and_then(|committed| {
+                let generation = committed.generations.get(self.home_of(*key)?)?;
+                Some((committed, generation.signature_location(*key)?))
+            });
+            let Some((committed, (segment, row))) = location else {
                 return Err(StoreError::InvalidSnapshot {
                     reason: "live key has no stored signature",
                 });
             };
-            let segment = state
-                .segment_for_row(row)
-                .ok_or(StoreError::InvalidSnapshot {
-                    reason: "stored signature row is outside every segment",
-                })?;
             if file.is_none() {
-                file = Some(base.file.lock().map_err(|_| StoreError::PoisonedFileLock)?);
+                file = Some(
+                    committed
+                        .file
+                        .lock()
+                        .map_err(|_| StoreError::PoisonedFileLock)?,
+                );
             }
             let handle = file.as_mut().ok_or(StoreError::PoisonedFileLock)?;
             output.push(read_signature_row(
-                &base.layout,
+                &committed.layout,
                 &mut **handle,
                 segment,
                 row,
@@ -659,18 +754,22 @@ impl PersistentIndexCore {
             return Ok(None);
         };
         let mut live = Vec::with_capacity(self.key_hashes.len());
-        if let Some(base) = &self.base {
-            if !state.base_segments.is_empty() {
-                let mut row_keys = vec![0_u64; state.base_rows.len()];
-                for (key, row) in &state.base_rows {
+        if let Some(committed) = &self.committed {
+            let mut file = committed
+                .file
+                .lock()
+                .map_err(|_| StoreError::PoisonedFileLock)?;
+            for (index, generation) in committed.generations.iter().enumerate() {
+                let mut row_keys = vec![0_u64; generation.signature_rows.len()];
+                for (key, row) in &generation.signature_rows {
                     let row = usize::try_from(*row).map_err(|_| StoreError::LengthOverflow)?;
                     *row_keys.get_mut(row).ok_or(StoreError::InvalidSnapshot {
                         reason: "stored signature row is out of range",
                     })? = *key;
                 }
-                let mut file = base.file.lock().map_err(|_| StoreError::PoisonedFileLock)?;
-                for segment in &state.base_segments {
-                    let values = read_signature_segment_values(&base.layout, &mut *file, *segment)?;
+                for segment in &generation.signature_segments {
+                    let values =
+                        read_signature_segment_values(&committed.layout, &mut *file, *segment)?;
                     let first = usize::try_from(segment.first_row())
                         .map_err(|_| StoreError::LengthOverflow)?;
                     for (offset, row) in values.chunks_exact(self.num_perm).enumerate() {
@@ -680,10 +779,7 @@ impl PersistentIndexCore {
                                 .ok_or(StoreError::InvalidSnapshot {
                                     reason: "stored signature row is out of range",
                                 })?;
-                        if self.key_hashes.contains_key(&key)
-                            && !self.suppressed_base_keys.contains(&key)
-                            && !state.overlay.contains_key(&key)
-                        {
+                        if self.is_live_in(index, key) && !state.overlay.contains_key(&key) {
                             live.push((key, row.to_vec()));
                         }
                     }
@@ -709,7 +805,6 @@ impl PersistentIndexCore {
     /// Keep signatures in memory after the committed base becomes unreadable.
     fn restore_signatures(&mut self, live: Option<LiveSignatures>) {
         if let (Some(state), Some(live)) = (&mut self.signatures, live) {
-            state.forget_base();
             state.overlay = live.into_iter().collect();
         }
     }
@@ -753,8 +848,12 @@ impl PersistentIndexCore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
             Err(error) => return Err(StoreError::Io(error)),
         };
-        let committed_buckets = self.base.as_ref().map_or(0, |base| {
-            usize::try_from(base.directory.len()).unwrap_or(usize::MAX)
+        let generations = self
+            .committed
+            .as_ref()
+            .map_or(&[][..], |committed| committed.generations.as_slice());
+        let committed_buckets = generations.iter().fold(0_usize, |total, generation| {
+            total.saturating_add(usize::try_from(generation.directory.len()).unwrap_or(usize::MAX))
         });
         let overlay_buckets = self
             .overlay_buckets
@@ -762,15 +861,19 @@ impl PersistentIndexCore {
             .map(OverlayTable::len)
             .sum::<usize>();
         let committed_distribution =
-            self.base
-                .as_ref()
-                .map_or_else(BucketDistribution::default, |base| {
-                    BucketDistribution::from_size_counts(
-                        base.directory
-                            .size_counts()
-                            .map(|(size, count)| (u64::from(size), count)),
-                    )
-                });
+            BucketDistribution::from_size_counts(generations.iter().flat_map(|generation| {
+                generation
+                    .directory
+                    .size_counts()
+                    .map(|(size, count)| (u64::from(size), count))
+            }));
+        let (delta_generations, delta_bytes) =
+            self.committed.as_ref().map_or((0, 0), |committed| {
+                (
+                    committed.generations.len().saturating_sub(1),
+                    committed.layout.file_length() - committed.layout.base_length(),
+                )
+            });
         let overlay_distribution = BucketDistribution::from_sizes(
             self.overlay_buckets
                 .iter()
@@ -784,7 +887,9 @@ impl PersistentIndexCore {
             rows: self.params.rows,
             committed_buckets,
             overlay_buckets,
-            suppressed_base_keys: self.suppressed_base_keys.len(),
+            suppressed_base_keys: self.dead_committed_keys(),
+            delta_generations,
+            delta_bytes,
             committed_distribution,
             overlay_distribution,
             queries: self
@@ -810,10 +915,14 @@ impl PersistentIndexCore {
             seed,
             params,
             scheme,
-            base: None,
+            committed: None,
             overlay_buckets: Vec::new(),
             overlay_keys: HashSet::new(),
             suppressed_base_keys: HashSet::new(),
+            homes: HashMap::new(),
+            pending_tombstones: BTreeSet::new(),
+            delta_keys: 0,
+            force_rewrite: false,
             key_hashes: BTreeMap::new(),
             dirty: true,
             query_metrics: None,
@@ -871,8 +980,31 @@ impl PersistentIndexCore {
         hashes: &[u64],
         output: &mut HashSet<u64>,
     ) -> Result<(), StoreError> {
-        if let Some(base) = &self.base {
-            base.collect_candidates(hashes, &self.key_hashes, &self.suppressed_base_keys, output)?;
+        if let Some(committed) = &self.committed {
+            let mut file = committed
+                .file
+                .lock()
+                .map_err(|_| StoreError::PoisonedFileLock)?;
+            for (band, hash) in hashes.iter().copied().enumerate() {
+                let key = BucketKey::new(
+                    u32::try_from(band).map_err(|_| StoreError::LengthOverflow)?,
+                    hash,
+                );
+                for (index, generation) in committed.generations.iter().enumerate() {
+                    let Some(location) =
+                        generation
+                            .directory
+                            .find(&committed.layout, &mut *file, key)?
+                    else {
+                        continue;
+                    };
+                    for member in read_bucket_members(&committed.layout, &mut *file, location)? {
+                        if self.is_live_in(index, member) {
+                            output.insert(member);
+                        }
+                    }
+                }
+            }
         }
         collect_overlay_candidates(&self.overlay_buckets, hashes, output);
         output.retain(|key| self.key_hashes.contains_key(key));
@@ -898,10 +1030,10 @@ impl PersistentIndexCore {
         self.overlay_buckets = overlay;
         self.overlay_keys = overlay_keys;
         self.suppressed_base_keys.clear();
-        self.base = None;
-        if let Some(state) = &mut self.signatures {
-            state.forget_base();
-        }
+        self.homes.clear();
+        self.pending_tombstones.clear();
+        self.delta_keys = 0;
+        self.committed = None;
         Ok(())
     }
 
@@ -919,15 +1051,35 @@ impl PersistentIndexCore {
         let _lock = CommitLock::acquire(&self.path)?;
         self.ensure_unchanged_on_disk()?;
 
+        if self.committed.is_some()
+            && !self.force_rewrite
+            && self.overlay_keys.is_empty()
+            && self.pending_tombstones.is_empty()
+        {
+            // Every change since the last commit cancelled out.
+            self.dirty = false;
+            if sync_parent {
+                sync_parent_directory(&self.path)?;
+            }
+            return Ok(());
+        }
+        if self.should_append() {
+            self.append_delta()?;
+            if sync_parent {
+                sync_parent_directory(&self.path)?;
+            }
+            return Ok(());
+        }
+
         // Signatures are materialized once: they are encoded into the
         // snapshot and kept to recover in memory if publication fails after
         // the committed base has been closed.
         let signatures = self.collect_live_signatures()?;
         let temporary = self.stage_snapshot(signatures.as_deref())?;
 
-        // Close the committed base before replacing the file. This is required
-        // on Windows and avoids retaining a handle to the old generation.
-        self.base = None;
+        // Close the committed file before replacing it. This is required on
+        // Windows and avoids retaining a handle to the old generation.
+        self.committed = None;
         if let Err(error) = temporary.publish_replace(&self.path) {
             self.rebuild_overlay_all()?;
             self.restore_signatures(signatures);
@@ -942,6 +1094,228 @@ impl PersistentIndexCore {
             None
         };
         self.refresh_after_commit(parent_error, signatures)
+    }
+
+    /// Rewrite the committed file as one snapshot without delta generations.
+    fn compact(&mut self) -> Result<(), StoreError> {
+        let appended = self.committed.as_ref().is_some_and(|committed| {
+            committed.generations.len() > 1 || committed.layout.uncommitted_bytes() > 0
+        });
+        if appended || self.dead_committed_keys() > 0 || self.dirty {
+            self.force_rewrite = true;
+            self.dirty = true;
+        }
+        self.commit(true)
+    }
+
+    /// Committed key memberships that queries skip: removed keys and keys a
+    /// later generation stores again.
+    fn dead_committed_keys(&self) -> usize {
+        self.suppressed_base_keys
+            .len()
+            .saturating_add(self.delta_keys.saturating_sub(self.homes.len()))
+    }
+
+    /// Return whether this commit should append a delta generation instead of
+    /// rewriting the snapshot.
+    ///
+    /// Deltas are appended while they stay small relative to the base and
+    /// few dead memberships accumulate; otherwise the commit compacts.
+    fn should_append(&self) -> bool {
+        let Some(committed) = &self.committed else {
+            return false;
+        };
+        if self.force_rewrite || committed.generations.len() > MAX_DELTA_GENERATIONS {
+            return false;
+        }
+        let layout = &committed.layout;
+        let appended = layout.file_length() - layout.base_length();
+        let Some(total) = appended.checked_add(self.projected_delta_bytes()) else {
+            return false;
+        };
+        total <= layout.base_length() / DELTA_BYTES_DIVISOR
+            && self.dead_committed_keys() <= self.key_hashes.len() / DEAD_KEYS_DIVISOR
+    }
+
+    /// Upper estimate of the delta record the pending changes would write.
+    fn projected_delta_bytes(&self) -> u64 {
+        let bands = u64::try_from(self.params.bands).unwrap_or(u64::MAX);
+        let signature = if self.signatures.is_some() {
+            let width = match self.scheme {
+                SignatureScheme::PariAffine32V1 => 4,
+                SignatureScheme::PariAffine64V1 => 8,
+            };
+            u64::try_from(self.num_perm)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(width)
+        } else {
+            0
+        };
+        // Key, band hashes, then one directory entry and member per band.
+        let per_key = 8_u64
+            .saturating_add(bands.saturating_mul(8 + 32 + 8))
+            .saturating_add(signature);
+        let keys = u64::try_from(self.overlay_keys.len()).unwrap_or(u64::MAX);
+        let tombstones = u64::try_from(self.pending_tombstones.len()).unwrap_or(u64::MAX);
+        keys.saturating_mul(per_key)
+            .saturating_add(tombstones.saturating_mul(8))
+            .saturating_add(DELTA_OVERHEAD_BYTES)
+    }
+
+    /// Append the changes since the last commit as a new delta generation.
+    ///
+    /// Must run under the commit lock. If the write fails before the
+    /// generation commits, the changes stay pending in memory. If the outcome
+    /// is uncertain, the next commit rewrites the snapshot.
+    fn append_delta(&mut self) -> Result<(), StoreError> {
+        let mut delta_keys = BTreeMap::new();
+        for key in &self.overlay_keys {
+            let hashes = self
+                .key_hashes
+                .get(key)
+                .ok_or(StoreError::InvalidSnapshot {
+                    reason: "uncommitted key has no band hashes",
+                })?;
+            delta_keys.insert(*key, hashes.clone());
+        }
+        let tombstones: Vec<u64> = self.pending_tombstones.iter().copied().collect();
+        let signatures = match &self.signatures {
+            Some(state) => Some(
+                delta_keys
+                    .keys()
+                    .map(|key| {
+                        state
+                            .overlay
+                            .get(key)
+                            .map(|values| (*key, values.clone()))
+                            .ok_or(StoreError::InvalidSnapshot {
+                                reason: "uncommitted key has no stored signature",
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            None => None,
+        };
+        let committed = self.committed.as_mut().ok_or(StoreError::InvalidSnapshot {
+            reason: "no committed snapshot to append to",
+        })?;
+        let written = write_delta_record(
+            &self.path,
+            committed.layout.next_delta(),
+            &DeltaRecord {
+                keys: &delta_keys,
+                tombstones: &tombstones,
+                signatures: signatures.as_deref(),
+                bands: self.params.bands,
+                scheme: self.scheme,
+                num_perm: self.num_perm,
+            },
+        );
+
+        // Still under the commit lock: learn what is committed now, whatever
+        // the write reported.
+        let found = {
+            let mut file = committed
+                .file
+                .lock()
+                .map_err(|_| StoreError::PoisonedFileLock)?;
+            committed.layout.refresh_generations(&mut *file)
+        };
+        self.generation = FileGeneration::at(&self.path).ok();
+        let found = match found {
+            Ok(found) => found,
+            Err(error) => {
+                self.force_rewrite = true;
+                return Err(written.err().unwrap_or_else(|| error.into()));
+            }
+        };
+        if found == 0 {
+            // Nothing was committed, so the changes stay pending.
+            return Err(written.err().unwrap_or(StoreError::InvalidSnapshot {
+                reason: "appended generation was not committed",
+            }));
+        }
+        if found != 1 {
+            self.force_rewrite = true;
+            return Err(StoreError::InvalidSnapshot {
+                reason: "another writer appended generations during this commit",
+            });
+        }
+        if let Err(error) = self.adopt_delta(&delta_keys, &tombstones) {
+            self.force_rewrite = true;
+            return Err(error);
+        }
+        if let Err(error) = written {
+            // The generation is visible, but its durability is unconfirmed.
+            self.force_rewrite = true;
+            self.dirty = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Make the generation this handle just appended part of its committed
+    /// state, after checking it holds exactly the pending changes.
+    fn adopt_delta(
+        &mut self,
+        delta_keys: &BTreeMap<u64, Vec<u64>>,
+        tombstones: &[u64],
+    ) -> Result<(), StoreError> {
+        let stores_signatures = self.signatures.is_some();
+        let committed = self.committed.as_mut().ok_or(StoreError::InvalidSnapshot {
+            reason: "no committed snapshot to append to",
+        })?;
+        let index = committed.generations.len();
+        let sections = committed
+            .layout
+            .deltas()
+            .get(index - 1)
+            .ok_or(StoreError::InvalidSnapshot {
+                reason: "appended generation is missing from the layout",
+            })?
+            .sections()
+            .to_vec();
+        let file = committed
+            .file
+            .get_mut()
+            .map_err(|_| StoreError::PoisonedFileLock)?;
+        let (generation, contents) = read_delta_generation(
+            &committed.layout,
+            file,
+            &sections,
+            self.params.bands,
+            stores_signatures,
+        )?;
+        let matches = contents.tombstones == tombstones
+            && contents.keys.len() == delta_keys.len()
+            && contents
+                .keys
+                .iter()
+                .zip(&contents.rows)
+                .zip(delta_keys)
+                .all(|((key, row), (expected, hashes))| key == expected && row == hashes);
+        if !matches {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "appended generation differs from the committed changes",
+            });
+        }
+        let home = u32::try_from(index).map_err(|_| StoreError::LengthOverflow)?;
+        for key in contents.keys {
+            self.homes.insert(key, home);
+        }
+        self.delta_keys = self
+            .delta_keys
+            .checked_add(generation.keys)
+            .ok_or(StoreError::LengthOverflow)?;
+        committed.generations.push(generation);
+        self.overlay_buckets = Vec::new();
+        self.overlay_keys = HashSet::new();
+        self.pending_tombstones.clear();
+        if let Some(state) = &mut self.signatures {
+            state.overlay = HashMap::new();
+        }
+        self.dirty = false;
+        Ok(())
     }
 
     /// Refuse to publish over a snapshot another handle committed after this
@@ -959,9 +1333,12 @@ impl PersistentIndexCore {
         };
         let mut unchanged = current == expected;
         if unchanged {
-            if let Some(base) = &self.base {
+            if let Some(committed) = &self.committed {
                 // Exact file identity where a committed handle is open.
-                let file = base.file.lock().map_err(|_| StoreError::PoisonedFileLock)?;
+                let file = committed
+                    .file
+                    .lock()
+                    .map_err(|_| StoreError::PoisonedFileLock)?;
                 unchanged = Handle::from_file(file.try_clone()?)? == Handle::from_path(&self.path)?;
             }
         }
@@ -980,7 +1357,7 @@ impl PersistentIndexCore {
         let temporary = self.stage_snapshot(signatures.as_deref())?;
         before_publish()?;
 
-        self.base = None;
+        self.committed = None;
         if let Err(error) = temporary.publish_no_replace(&self.path) {
             self.rebuild_overlay_all()?;
             self.restore_signatures(signatures);
@@ -1019,7 +1396,9 @@ impl PersistentIndexCore {
         match Self::open(&self.path, self.scheme) {
             Ok(mut refreshed) => {
                 if parent_error.is_some() {
+                    // Durability is unconfirmed: the next commit rewrites.
                     refreshed.dirty = true;
+                    refreshed.force_rewrite = true;
                 }
                 // Observation belongs to this handle, not the file generation.
                 refreshed.query_metrics = self.query_metrics.take();
@@ -1390,12 +1769,26 @@ macro_rules! impl_persistent_index {
                 self.inner.set_observability(enabled);
             }
 
-            /// Commit dirty state to an atomic snapshot.
+            /// Commit dirty state.
             ///
-            /// The snapshot file itself is synced before rename. Use [`Self::sync`] for
-            /// the strongest post-rename durability step the current platform supports.
+            /// Small changes are appended to the file as a delta generation:
+            /// the record is synced, then a commit trailer is written and
+            /// synced. Larger changes, or deltas that have grown large relative
+            /// to the snapshot, rewrite the file as one snapshot that is synced
+            /// and then atomically renamed into place. Use [`Self::sync`] for the
+            /// strongest post-commit durability step the current platform
+            /// supports, and [`Self::compact`] to rewrite on demand.
             pub fn flush(&mut self) -> Result<(), StoreError> {
                 self.inner.flush()
+            }
+
+            /// Commit dirty state and rewrite the file as one snapshot.
+            ///
+            /// This folds appended delta generations into the snapshot and
+            /// drops the memberships of removed keys. It is a no-op on a clean
+            /// index that has neither. Durability matches [`Self::sync`].
+            pub fn compact(&mut self) -> Result<(), StoreError> {
+                self.inner.compact()
             }
 
             /// Commit dirty state and apply the platform-supported post-rename
@@ -1933,20 +2326,7 @@ fn read_key_metadata(
     file: &mut File,
     bands: usize,
 ) -> Result<KeyMetadata, StoreError> {
-    let mut keys = Vec::new();
-    let mut rows_by_key = Vec::new();
-    for (keys_descriptor, hashes_descriptor) in key_metadata_pairs(layout)? {
-        let chunk_keys = decode_keys(&layout.read_section(file, keys_descriptor)?)?;
-        let chunk_rows = decode_band_hashes(&layout.read_section(file, hashes_descriptor)?, bands)?;
-        if chunk_keys.len() != chunk_rows.len() {
-            return Err(StoreError::InvalidSnapshot {
-                reason: "key and band-hash record counts differ",
-            });
-        }
-        keys.extend(chunk_keys);
-        rows_by_key.extend(chunk_rows);
-    }
-
+    let (keys, rows_by_key) = read_key_rows(layout, layout.sections(), file, bands)?;
     let mut key_hashes = BTreeMap::new();
     for (key, hashes) in keys.iter().copied().zip(rows_by_key) {
         if key_hashes.insert(key, hashes).is_some() {
@@ -1958,16 +2338,38 @@ fn read_key_metadata(
     Ok((keys, key_hashes))
 }
 
+/// Read the keys and band-hash rows of `sections`, in file order.
+fn read_key_rows(
+    layout: &FileLayout,
+    sections: &[SectionDescriptor],
+    file: &mut File,
+    bands: usize,
+) -> Result<(Vec<u64>, Vec<Vec<u64>>), StoreError> {
+    let mut keys = Vec::new();
+    let mut rows_by_key = Vec::new();
+    for (keys_descriptor, hashes_descriptor) in key_metadata_pairs(sections)? {
+        let chunk_keys = decode_keys(&layout.read_section(file, keys_descriptor)?)?;
+        let chunk_rows = decode_band_hashes(&layout.read_section(file, hashes_descriptor)?, bands)?;
+        if chunk_keys.len() != chunk_rows.len() {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "key and band-hash record counts differ",
+            });
+        }
+        keys.extend(chunk_keys);
+        rows_by_key.extend(chunk_rows);
+    }
+    Ok((keys, rows_by_key))
+}
+
 /// Return the row-aligned `Keys`/`BandHashes` section pairs in file order.
 ///
 /// Small catalogs use one pair. Larger ones are split into several pairs whose
 /// `n`-th `Keys` section and `n`-th `BandHashes` section hold the same rows.
 fn key_metadata_pairs(
-    layout: &FileLayout,
+    sections: &[SectionDescriptor],
 ) -> Result<Vec<(SectionDescriptor, SectionDescriptor)>, StoreError> {
     let of_kind = |kind| -> Result<Vec<SectionDescriptor>, StoreError> {
-        let sections: Vec<_> = layout
-            .sections()
+        let sections: Vec<_> = sections
             .iter()
             .copied()
             .filter(|descriptor| descriptor.kind() == kind)
@@ -2053,11 +2455,12 @@ fn append_key_metadata_sections(
 /// section, even when it has no keys, so presence alone records the setting.
 fn read_signature_segments(
     layout: &FileLayout,
+    sections: &[SectionDescriptor],
     file: &mut File,
     rows: usize,
 ) -> Result<Option<Vec<SignatureSegment>>, StoreError> {
     let mut segments = Vec::new();
-    for descriptor in layout.sections() {
+    for descriptor in sections {
         if descriptor.kind() != SectionKind::Signatures {
             continue;
         }
@@ -2149,6 +2552,131 @@ impl From<ContainerWriteError> for StoreError {
     }
 }
 
+/// Read one committed delta record: its generation and what it stores.
+fn read_delta_generation(
+    layout: &FileLayout,
+    file: &mut File,
+    sections: &[SectionDescriptor],
+    bands: usize,
+    stores_signatures: bool,
+) -> Result<(Generation, DeltaContents), StoreError> {
+    let (keys, rows) = read_key_rows(layout, sections, file, bands)?;
+    let mut tombstone_sections = sections
+        .iter()
+        .filter(|descriptor| descriptor.kind() == SectionKind::Tombstones);
+    let (Some(tombstone_section), None) = (tombstone_sections.next(), tombstone_sections.next())
+    else {
+        return Err(StoreError::InvalidSnapshot {
+            reason: "delta must have exactly one tombstone section",
+        });
+    };
+    let tombstones = decode_keys(&layout.read_section(file, *tombstone_section)?)?;
+    if tombstones.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(StoreError::InvalidSnapshot {
+            reason: "delta tombstones are not strictly ascending",
+        });
+    }
+    let signature_segments = read_signature_segments(layout, sections, file, keys.len())?;
+    if signature_segments.is_some() != stores_signatures {
+        return Err(StoreError::InvalidSnapshot {
+            reason: "delta signature sections do not match the snapshot",
+        });
+    }
+    let buckets = collect_bucket_descriptors(sections, true)?;
+    let directory = BucketDirectory::read(layout, file, &buckets, bands)?;
+    if keys.is_empty() != directory.is_empty() {
+        return Err(StoreError::InvalidSnapshot {
+            reason: "delta bucket memberships do not match its keys",
+        });
+    }
+    let generation = Generation {
+        directory,
+        keys: keys.len(),
+        signature_rows: if stores_signatures {
+            sorted_rows(&keys)
+        } else {
+            Vec::new()
+        },
+        signature_segments: signature_segments.unwrap_or_default(),
+    };
+    Ok((
+        generation,
+        DeltaContents {
+            keys,
+            rows,
+            tombstones,
+        },
+    ))
+}
+
+/// The pending changes a delta record stores.
+struct DeltaRecord<'a> {
+    keys: &'a BTreeMap<u64, Vec<u64>>,
+    tombstones: &'a [u64],
+    signatures: Option<&'a [(u64, Vec<u64>)]>,
+    bands: usize,
+    scheme: SignatureScheme,
+    num_perm: usize,
+}
+
+/// Append and commit one delta record at `next`.
+///
+/// Bytes after the committed data belong to an interrupted commit and are
+/// discarded first. The record is made durable before its commit trailer is
+/// written, and the trailer is made durable before this returns.
+fn write_delta_record(
+    path: &Path,
+    next: NextDelta,
+    record: &DeltaRecord<'_>,
+) -> Result<(), StoreError> {
+    let mut file = OpenOptions::new().write(true).open(path)?;
+    let length = file.metadata()?.len();
+    if length < next.offset() {
+        return Err(StoreError::InvalidSnapshot {
+            reason: "index file is shorter than its committed data",
+        });
+    }
+    if length > next.offset() {
+        file.set_len(next.offset())?;
+    }
+    file.seek(SeekFrom::Start(next.offset()))?;
+    let (writer, commit) =
+        ContainerWriter::write_delta(BufWriter::with_capacity(1 << 20, file), next, |writer| {
+            let mut emit = |kind, required, payload: Vec<u8>| {
+                writer.write_section(kind, required, &payload)?;
+                Ok(())
+            };
+            emit_key_metadata_sections(
+                record.keys,
+                record.bands,
+                METADATA_SECTION_TARGET_BYTES,
+                &mut emit,
+            )?;
+            emit(
+                SectionKind::Tombstones,
+                true,
+                encode_keys(record.tombstones.iter().copied())?,
+            )?;
+            if let Some(signatures) = record.signatures {
+                emit_signature_sections(signatures, record.scheme, record.num_perm, emit)?;
+            }
+            write_bucket_sections(
+                writer,
+                record.keys,
+                record.bands,
+                BUCKET_SEGMENT_TARGET_BYTES,
+                SORT_RECORD_LIMIT,
+            )
+        })?;
+    let mut file = writer
+        .into_inner()
+        .map_err(|error| StoreError::Io(error.into_error()))?;
+    file.sync_data()?;
+    file.write_all(&commit.trailer())?;
+    file.sync_data()?;
+    Ok(())
+}
+
 /// One validated insertion: key, band hashes, and the signature to store.
 struct PreparedItem {
     key: u64,
@@ -2156,9 +2684,14 @@ struct PreparedItem {
     signature: Vec<u64>,
 }
 
-fn collect_bucket_descriptors(layout: &FileLayout) -> Result<Vec<SectionDescriptor>, StoreError> {
+/// Return the bucket sections of a base snapshot, or of a delta record when
+/// `delta` is set; only delta records carry (required) tombstone sections.
+fn collect_bucket_descriptors(
+    sections: &[SectionDescriptor],
+    delta: bool,
+) -> Result<Vec<SectionDescriptor>, StoreError> {
     let mut descriptors = Vec::new();
-    for descriptor in layout.sections() {
+    for descriptor in sections {
         match descriptor.kind() {
             SectionKind::Buckets => {
                 if !descriptor.required() {
@@ -2168,9 +2701,13 @@ fn collect_bucket_descriptors(layout: &FileLayout) -> Result<Vec<SectionDescript
                 }
                 descriptors.push(*descriptor);
             }
-            SectionKind::Tombstones if descriptor.required() => {
+            SectionKind::Tombstones if descriptor.required() != delta => {
                 return Err(StoreError::InvalidSnapshot {
-                    reason: "required tombstone sections are not supported",
+                    reason: if delta {
+                        "delta tombstone sections must be required"
+                    } else {
+                        "required tombstone sections are not supported"
+                    },
                 });
             }
             SectionKind::Keys
@@ -3157,7 +3694,7 @@ mod tests {
             .inner
             .collect_live_signatures()
             .expect("live signatures");
-        store.inner.base = None;
+        store.inner.committed = None;
         store.inner.path = directory.join("missing.pari");
         store
             .inner
@@ -3205,7 +3742,7 @@ mod tests {
         store.close().expect("close store");
 
         let mut reopened = PersistentIndex32::open(&path).expect("reopen snapshot");
-        assert!(reopened.inner.base.is_some());
+        assert!(reopened.inner.committed.is_some());
         assert!(reopened
             .inner
             .overlay_buckets
@@ -3307,14 +3844,14 @@ mod tests {
         phase1_snapshot(&path, &[(10, first.clone()), (20, second.clone())]);
 
         let mut legacy = PersistentIndex32::open(&path).expect("open phase1");
-        assert!(legacy.inner.base.is_none());
+        assert!(legacy.inner.committed.is_none());
         assert!(legacy.stats().expect("legacy stats").dirty);
         assert!(legacy.query(&first).expect("legacy query").contains(&10));
         legacy.sync().expect("upgrade sync");
         drop(legacy);
 
         let upgraded = PersistentIndex32::open(&path).expect("open upgraded");
-        assert!(upgraded.inner.base.is_some());
+        assert!(upgraded.inner.committed.is_some());
         assert!(!upgraded.stats().expect("upgraded stats").dirty);
         let mut reference = LshIndex32::new(0.8, 128, 7).expect("reference");
         reference.insert(10, &first).expect("reference first");
@@ -3719,10 +4256,11 @@ mod tests {
         store.insert(10, &query).expect("insert");
         store.sync().expect("sync");
         let location = {
-            let base = store.inner.base.as_ref().expect("lazy base");
+            let base = store.inner.committed.as_ref().expect("committed file");
             let hash = store.inner.key_hashes[&10][0];
             let mut file = base.file.lock().expect("committed file");
-            base.directory
+            base.generations[0]
+                .directory
                 .find(
                     &base.layout,
                     &mut *file,
@@ -3808,7 +4346,7 @@ mod tests {
         let stats = store.stats().expect("stats");
         assert_eq!(stats.items, 0);
         assert_eq!(stats.committed_buckets, 0);
-        assert!(store.inner.base.is_some());
+        assert!(store.inner.committed.is_some());
         cleanup(&path);
     }
 

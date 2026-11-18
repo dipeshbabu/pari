@@ -145,6 +145,8 @@ fn assert_stats_contract(fixture: &Fixture) {
             "bands",
             "committed_buckets",
             "committed_bucket_distribution",
+            "delta_bytes",
+            "delta_generations",
             "dirty",
             "file_bytes",
             "items",
@@ -252,6 +254,7 @@ fn assert_verify_contract(fixture: &Fixture) {
         &[
             "bucket_sections",
             "buckets",
+            "delta_generations",
             "members_checked",
             "sections",
             "valid",
