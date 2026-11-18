@@ -86,7 +86,21 @@ signature sections return `LazyStoreError::SignaturesUnavailable`.
 
 Use one persistent-index writer for an index path at a time.
 
-Pari does not take a hidden global or cross-process lock. Two writers targeting the same path can race and are unsupported. If several processes need to mutate one logical index, coordinate ownership outside Pari or use a shared backend designed for that purpose.
+Pari never lets one handle silently overwrite another handle's commit. Every
+commit with changes takes an exclusive operating-system lock on a sibling
+`<index>.lock` file, waiting while another commit to the same path finishes,
+and then checks that the snapshot on disk is still the one this handle opened
+or last committed. If another handle, in this or any other process, committed
+in between, the commit fails with an I/O error stating that the index was
+committed by another handle. The refused handle keeps its uncommitted changes
+in memory and keeps refusing; reopen the index and reapply them. A handle with
+nothing to commit never takes the lock.
+
+Each commit removes the `<index>.lock` file and releases the lock before it
+returns, so the file exists only while a commit is running. This is conflict detection, not a
+multi-writer transaction: if several processes need to mutate one logical
+index, coordinate ownership outside Pari or use a shared backend designed for
+that purpose. Pari releases earlier than this one do not take the lock.
 
 Inserts and removals are visible immediately through the writer that performed them because queries merge the committed generation with the in-memory mutation overlay. They are not durable until a successful commit.
 
@@ -178,4 +192,4 @@ Mutable commits and lazy snapshot creation sync the complete temporary file befo
 
 ## Current limitations
 
-The v1 local backend intentionally does not provide multi-writer transactions, cross-process locking, remote replication, TTL, or automatic reader refresh. Those belong in pluggable/shared storage backends rather than being hidden inside the local file format.
+The v1 local backend intentionally does not provide multi-writer transactions, merging of concurrent commits, remote replication, TTL, or automatic reader refresh. Those belong in pluggable/shared storage backends rather than being hidden inside the local file format.

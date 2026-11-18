@@ -6,6 +6,16 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Fixed
+
+- A persistent-index commit no longer silently overwrites a snapshot that
+  another handle or process committed after this handle opened it. Commits
+  serialize on an operating-system lock on a sibling `<index>.lock` file, which
+  exists only while a commit runs, and fail with an I/O error, keeping the uncommitted changes in memory, when the
+  file on disk has changed. This covers `PersistentIndex32`,
+  `PersistentIndex64`, Python's `Index`/`Index64`,
+  `DedupeIndex(backend="local")`, and `pari index`.
+
 ### Changed
 
 - Persistent indexes use less memory for uncommitted inserts: each overlay

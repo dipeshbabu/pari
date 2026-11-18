@@ -24,9 +24,10 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Mutex,
     },
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
+use fs4::FileExt;
 use pari_core::{MinHash32, MinHash64};
 #[cfg(test)]
 use pari_format::{
@@ -353,6 +354,8 @@ struct PersistentIndexCore {
     dirty: bool,
     query_metrics: Option<Mutex<QueryMetrics>>,
     signatures: Option<SignatureState>,
+    /// The committed file generation this handle last read or published.
+    generation: Option<FileGeneration>,
 }
 
 /// Live keys' signatures in key order, materialized for a commit.
@@ -405,6 +408,7 @@ impl PersistentIndexCore {
     fn open(path: &Path, scheme: SignatureScheme) -> Result<Self, StoreError> {
         let path = path.to_path_buf();
         let mut file = File::open(&path)?;
+        let generation = FileGeneration::of(&file).ok();
         let layout = FileLayout::read_from(&mut file)?;
         validate_store_metadata(layout.metadata(), scheme)?;
         let num_perm = usize::try_from(layout.metadata().num_perm())
@@ -429,9 +433,11 @@ impl PersistentIndexCore {
                 }),
                 None => None,
             };
-            return Self::open_legacy(
+            let mut store = Self::open_legacy(
                 path, threshold, num_perm, seed, params, scheme, key_hashes, signatures,
-            );
+            )?;
+            store.generation = generation;
+            return Ok(store);
         }
         let signatures = signature_segments.map(|segments| SignatureState {
             base_rows: sorted_rows(&file_keys),
@@ -466,6 +472,7 @@ impl PersistentIndexCore {
             dirty: false,
             query_metrics: None,
             signatures,
+            generation,
         })
     }
 
@@ -817,6 +824,7 @@ impl PersistentIndexCore {
             dirty: true,
             query_metrics: None,
             signatures: None,
+            generation: None,
         }
     }
 
@@ -911,6 +919,12 @@ impl PersistentIndexCore {
             return Ok(());
         }
 
+        // Fail fast before waiting, then hold the commit lock so no other
+        // handle can publish between the check and this handle's rename.
+        self.ensure_unchanged_on_disk()?;
+        let _lock = CommitLock::acquire(&self.path)?;
+        self.ensure_unchanged_on_disk()?;
+
         // Signatures are materialized once: they are encoded into the
         // snapshot and kept to recover in memory if publication fails after
         // the committed base has been closed.
@@ -925,6 +939,8 @@ impl PersistentIndexCore {
             self.restore_signatures(signatures);
             return Err(error);
         }
+        // The lock is still held, so the published file is this handle's own.
+        self.generation = FileGeneration::at(&self.path).ok();
 
         let parent_error = if sync_parent {
             sync_parent_directory(&self.path).err().map(StoreError::Io)
@@ -932,6 +948,34 @@ impl PersistentIndexCore {
             None
         };
         self.refresh_after_commit(parent_error, signatures)
+    }
+
+    /// Refuse to publish over a snapshot another handle committed after this
+    /// handle read its own, which would silently discard that commit.
+    fn ensure_unchanged_on_disk(&self) -> Result<(), StoreError> {
+        let Some(expected) = self.generation else {
+            return Ok(());
+        };
+        let current = match FileGeneration::at(&self.path) {
+            Ok(current) => current,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(concurrent_commit_error(&self.path));
+            }
+            Err(error) => return Err(StoreError::Io(error)),
+        };
+        let mut unchanged = current == expected;
+        if unchanged {
+            if let Some(base) = &self.base {
+                // Exact file identity where a committed handle is open.
+                let file = base.file.lock().map_err(|_| StoreError::PoisonedFileLock)?;
+                unchanged = Handle::from_file(file.try_clone()?)? == Handle::from_path(&self.path)?;
+            }
+        }
+        if unchanged {
+            Ok(())
+        } else {
+            Err(concurrent_commit_error(&self.path))
+        }
     }
 
     fn commit_initial(
@@ -1429,6 +1473,113 @@ fn create_parent_if_needed(path: &Path) -> Result<(), StoreError> {
         fs::create_dir_all(parent)?;
     }
     Ok(())
+}
+
+/// Size and timestamps identifying one committed snapshot file.
+///
+/// Every commit publishes a freshly written file, so a different generation
+/// means another handle committed. The committed handle's file identity is
+/// compared as well when one is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileGeneration {
+    len: u64,
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+}
+
+impl FileGeneration {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            created: metadata.created().ok(),
+        }
+    }
+
+    fn of(file: &File) -> io::Result<Self> {
+        file.metadata()
+            .map(|metadata| Self::from_metadata(&metadata))
+    }
+
+    fn at(path: &Path) -> io::Result<Self> {
+        fs::metadata(path).map(|metadata| Self::from_metadata(&metadata))
+    }
+}
+
+fn concurrent_commit_error(path: &Path) -> StoreError {
+    StoreError::Io(io::Error::other(format!(
+        "index {} was committed by another handle after this one opened it; \
+             uncommitted changes are kept in memory, reopen the index to continue",
+        path.display()
+    )))
+}
+
+/// Path of the advisory lock file that serializes commits to `path`.
+fn commit_lock_path(path: &Path) -> Result<PathBuf, StoreError> {
+    let mut name = path
+        .file_name()
+        .ok_or(StoreError::InvalidPath)?
+        .to_os_string();
+    name.push(".lock");
+    Ok(path.with_file_name(name))
+}
+
+/// An exclusive operating-system lock held while one commit publishes.
+///
+/// The lock file exists only while a commit holds or waits for it. The holder
+/// removes it before unlocking, so a waiter may wake holding a lock on a file
+/// that is no longer at the lock path; it then retries with the current file.
+/// Only the holder of the file currently at the path holds the commit lock.
+#[derive(Debug)]
+struct CommitLock {
+    path: PathBuf,
+    file: File,
+}
+
+/// Retries while a removed lock file is still pending deletion on Windows.
+const COMMIT_LOCK_OPEN_ATTEMPTS: u32 = 2_000;
+const COMMIT_LOCK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+
+impl CommitLock {
+    fn acquire(path: &Path) -> Result<Self, StoreError> {
+        let path = commit_lock_path(path)?;
+        let mut failed_opens = 0_u32;
+        loop {
+            let file = match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+            {
+                Ok(file) => file,
+                // Windows refuses to open a file whose deletion is pending.
+                Err(error)
+                    if error.kind() == io::ErrorKind::PermissionDenied
+                        && failed_opens < COMMIT_LOCK_OPEN_ATTEMPTS =>
+                {
+                    failed_opens += 1;
+                    std::thread::sleep(COMMIT_LOCK_RETRY_DELAY);
+                    continue;
+                }
+                Err(error) => return Err(StoreError::Io(error)),
+            };
+            FileExt::lock(&file)?;
+            let current = Handle::from_path(&path);
+            if matches!(current, Ok(current) if Handle::from_file(file.try_clone()?)? == current) {
+                return Ok(Self { path, file });
+            }
+            // The previous holder removed this file; dropping it unlocks it.
+        }
+    }
+}
+
+impl Drop for CommitLock {
+    fn drop(&mut self) {
+        // Remove while still locked so no waiter can claim this file again.
+        let _ = fs::remove_file(&self.path);
+        let _ = FileExt::unlock(&self.file);
+    }
 }
 
 fn ensure_destination_absent(path: &Path) -> Result<(), StoreError> {
@@ -2404,8 +2555,9 @@ mod tests {
     use pari_index::{LshIndex32, LshIndex64, LshParams};
 
     use super::{
-        append_key_metadata_sections, encode_band_hashes, encode_keys, OwnedTemporaryFile,
-        PersistentIndex32, PersistentIndex64, PersistentIndexCore, StoreError,
+        append_key_metadata_sections, commit_lock_path, encode_band_hashes, encode_keys,
+        CommitLock, OwnedTemporaryFile, PersistentIndex32, PersistentIndex64, PersistentIndexCore,
+        StoreError,
     };
 
     /// Rewrite a committed snapshot with its key metadata split into pairs of
@@ -2809,6 +2961,9 @@ mod tests {
     fn cleanup(path: &PathBuf) {
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(legacy_temporary_path(path));
+        if let Ok(lock) = commit_lock_path(path) {
+            let _ = fs::remove_file(lock);
+        }
     }
 
     fn test_directory(name: &str) -> PathBuf {
@@ -3784,5 +3939,178 @@ mod tests {
         ));
         cleanup(&path32);
         cleanup(&path64);
+    }
+
+    fn assert_concurrent_commit(error: StoreError) {
+        match error {
+            StoreError::Io(error) => {
+                assert_eq!(error.kind(), io::ErrorKind::Other);
+                assert!(
+                    error.to_string().contains("committed by another handle"),
+                    "unexpected message: {error}"
+                );
+            }
+            other => panic!("expected a concurrent-commit error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn commits_refuse_to_overwrite_another_handles_commit() {
+        let path = test_path("concurrent-commit");
+        cleanup(&path);
+        PersistentIndex32::create(&path, 0.8, 128, 7)
+            .expect("create")
+            .close()
+            .expect("close");
+        let mut first = PersistentIndex32::open(&path).expect("open first");
+        let mut second = PersistentIndex32::open(&path).expect("open second");
+        let one = sketch(0..40);
+        let two = sketch(100..140);
+
+        first.insert(1, &one).expect("insert first");
+        first.sync().expect("first commit wins");
+        second.insert(2, &two).expect("insert second");
+        assert_concurrent_commit(second.sync().expect_err("stale commit is refused"));
+        // The refused handle keeps its changes and keeps refusing.
+        assert!(second.contains(2));
+        assert!(second.stats().expect("stats").dirty);
+        assert_concurrent_commit(second.flush().expect_err("still stale"));
+        drop(second);
+
+        // The first handle may keep committing its own generations.
+        first.remove(1);
+        first.insert(3, &one).expect("insert again");
+        first.sync().expect("second commit by the same handle");
+        drop(first);
+
+        let reopened = PersistentIndex32::open(&path).expect("reopen");
+        assert!(reopened.contains(3));
+        assert!(!reopened.contains(1));
+        assert!(!reopened.contains(2));
+        drop(reopened);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn commits_after_reopening_see_the_latest_generation() {
+        let path = test_path("sequential-commit");
+        cleanup(&path);
+        let mut writer = PersistentIndex64::create(&path, 0.8, 128, 7).expect("create");
+        writer.insert(1, &sketch64(0..40)).expect("insert");
+        writer.sync().expect("commit");
+        let mut reader = PersistentIndex64::open(&path).expect("open after commit");
+        writer.insert(2, &sketch64(50..90)).expect("insert");
+        writer.close().expect("close commits");
+
+        reader.insert(3, &sketch64(200..240)).expect("insert");
+        assert_concurrent_commit(reader.close().expect_err("stale on close"));
+
+        let mut fresh = PersistentIndex64::open(&path).expect("reopen");
+        fresh.insert(3, &sketch64(200..240)).expect("insert");
+        fresh.sync().expect("fresh handle commits");
+        drop(fresh);
+        let reopened = PersistentIndex64::open(&path).expect("reopen");
+        assert_eq!(reopened.len(), 3);
+        drop(reopened);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn commits_wait_for_the_commit_lock_and_release_it() {
+        use std::{sync::mpsc, thread, time::Duration};
+
+        let path = test_path("commit-lock");
+        cleanup(&path);
+        let mut store = PersistentIndex32::create(&path, 0.8, 128, 7).expect("create");
+        store.insert(1, &sketch(0..40)).expect("insert");
+
+        let held = CommitLock::acquire(&path).expect("hold the commit lock");
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = store.sync();
+            sender.send(result.is_ok()).expect("report");
+            store
+        });
+        assert!(
+            matches!(
+                receiver.recv_timeout(Duration::from_millis(300)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "commit must wait while another handle holds the lock"
+        );
+        drop(held);
+        assert!(receiver
+            .recv_timeout(Duration::from_secs(30))
+            .expect("commit finishes after release"));
+        let store = worker.join().expect("worker");
+        assert!(store.contains(1));
+
+        // The lock file is gone and the lock is immediately available again.
+        let lock_path = commit_lock_path(&path).expect("lock path");
+        assert!(!lock_path.exists(), "commits leave no lock file behind");
+        drop(CommitLock::acquire(&path).expect("lock released after commit"));
+        assert!(!lock_path.exists());
+        drop(store);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn commit_lock_is_mutually_exclusive_across_handles() {
+        use std::{
+            sync::{
+                atomic::{AtomicBool, AtomicUsize},
+                Arc,
+            },
+            thread,
+        };
+
+        let path = test_path("commit-lock-contention");
+        cleanup(&path);
+        let inside = Arc::new(AtomicBool::new(false));
+        let entries = Arc::new(AtomicUsize::new(0));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let (path, inside, entries) = (path.clone(), inside.clone(), entries.clone());
+                thread::spawn(move || {
+                    for _ in 0..25 {
+                        let lock = CommitLock::acquire(&path).expect("acquire");
+                        assert!(
+                            !inside.swap(true, Ordering::SeqCst),
+                            "two handles held the commit lock at once"
+                        );
+                        entries.fetch_add(1, Ordering::SeqCst);
+                        thread::yield_now();
+                        inside.store(false, Ordering::SeqCst);
+                        drop(lock);
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().expect("worker");
+        }
+        assert_eq!(entries.load(Ordering::SeqCst), 200);
+        assert!(!commit_lock_path(&path).expect("lock path").exists());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn clean_handles_skip_the_commit_lock() {
+        let path = test_path("clean-commit");
+        cleanup(&path);
+        PersistentIndex32::create(&path, 0.8, 128, 7)
+            .expect("create")
+            .close()
+            .expect("close");
+        let mut stale = PersistentIndex32::open(&path).expect("open");
+        let mut writer = PersistentIndex32::open(&path).expect("open");
+        writer.insert(1, &sketch(0..40)).expect("insert");
+        writer.sync().expect("commit");
+        // A handle with nothing to commit neither waits nor fails.
+        let held = CommitLock::acquire(&path).expect("hold");
+        stale.sync().expect("nothing to commit");
+        drop(held);
+        drop((stale, writer));
+        cleanup(&path);
     }
 }
