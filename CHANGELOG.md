@@ -6,6 +6,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-18
+
 ### Fixed
 
 - A persistent-index commit no longer silently overwrites a snapshot that
