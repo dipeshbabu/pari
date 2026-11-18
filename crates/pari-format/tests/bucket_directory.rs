@@ -76,7 +76,7 @@ fn open(bytes: &[u8]) -> (FileLayout, Cursor<&[u8]>, Vec<SectionDescriptor>) {
 
 #[test]
 fn finds_every_bucket_exactly_like_the_full_decoder() {
-    // Section sizes straddle the 128-entry block boundary in different ways.
+    // Section sizes straddle the 64-entry block boundary in different ways.
     let segments = vec![
         segment(0, 0, 300),
         segment(0, 10_000, 1),
@@ -233,5 +233,55 @@ fn opening_rejects_unsorted_keys_across_sections() {
                 reason: "bucket directory contains duplicate or unsorted bucket keys"
             })
         ));
+    }
+}
+
+#[test]
+fn blocks_split_at_bands_and_resolve_prefix_collisions() {
+    // One section holding three bands, with hashes that share their high 32
+    // bits so the in-memory prefix filter cannot distinguish them.
+    let mut records: Segment = Vec::new();
+    for band in [0_u32, 2] {
+        for index in 0..150_u64 {
+            let hash = ((index / 3) << 32) | ((index % 3) * 4);
+            records.push((
+                BucketKey::new(band, hash),
+                vec![u64::from(band) * 1_000 + index],
+            ));
+        }
+    }
+    let bytes = container(&[records.clone()]);
+    let (layout, mut reader, sections) = open(&bytes);
+    let directory = BucketDirectory::read(&layout, &mut reader, &sections, 3).expect("directory");
+    assert_eq!(directory.len(), 300);
+    for (key, members) in &records {
+        let location = directory
+            .find(&layout, &mut reader, *key)
+            .expect("lookup")
+            .expect("present");
+        assert_eq!(location.key(), *key);
+        assert_eq!(
+            &read_bucket_members(&layout, &mut reader, location).expect("members"),
+            members
+        );
+    }
+    for missing in [
+        // Same prefix as stored buckets, different low bits.
+        BucketKey::new(0, (7 << 32) | 1),
+        BucketKey::new(2, (49 << 32) | 9),
+        // A band with no buckets, between and after populated bands.
+        BucketKey::new(1, 0),
+        BucketKey::new(1, 7 << 32),
+        // Beyond the last prefix of a band.
+        BucketKey::new(0, 50 << 32),
+        BucketKey::new(2, u64::MAX),
+    ] {
+        assert_eq!(
+            directory
+                .find(&layout, &mut reader, missing)
+                .expect("lookup"),
+            None,
+            "{missing:?}"
+        );
     }
 }

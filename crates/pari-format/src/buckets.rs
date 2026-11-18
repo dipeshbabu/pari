@@ -502,23 +502,25 @@ fn visit_directory_entries(
     Ok(())
 }
 
-/// Directory entries summarized by one in-memory fence: 4 KiB of directory.
-const DIRECTORY_BLOCK_ENTRIES: usize = 128;
-const DIRECTORY_BLOCK_BYTES: usize = DIRECTORY_BLOCK_ENTRIES * BUCKET_DIRECTORY_ENTRY_BYTES;
+/// Maximum directory entries summarized by one in-memory fence (2 KiB on disk).
+const DIRECTORY_BLOCK_ENTRIES: usize = 64;
 
-/// Sparse, checksummed index over every bucket directory in a snapshot.
+/// Compact, checksummed index over every bucket directory in a snapshot.
 ///
 /// [`BucketDirectory::read`] validates every directory exactly as
 /// [`decode_bucket_segment`] and [`validate_global_bucket_order`] do, but keeps
-/// only the first key and CRC32 of each block of 128 directory entries plus
-/// an exact histogram of bucket sizes. That is about 0.25 bytes per bucket
-/// instead of a full [`BucketLocation`] per bucket. [`BucketDirectory::find`]
-/// reads the one 4 KiB block that can hold a key and verifies its checksum
-/// before using it.
+/// only the high 32 bits of each bucket's hash, the first key and CRC32 of each
+/// block of up to 64 same-band directory entries, and an exact histogram of
+/// bucket sizes: about 4.6 bytes per bucket instead of a full
+/// [`BucketLocation`]. [`BucketDirectory::find`] answers most absent keys from
+/// memory and otherwise reads the one directory block that can hold the key,
+/// verifying its checksum before using it.
 #[derive(Debug, Clone)]
 pub struct BucketDirectory {
     sections: Vec<SectionDescriptor>,
     blocks: Vec<DirectoryBlock>,
+    /// High 32 bits of every bucket hash, in directory order.
+    prefixes: Vec<u32>,
     buckets: u64,
     size_counts: Vec<(u32, u64)>,
 }
@@ -530,6 +532,12 @@ struct DirectoryBlock {
     first_entry: u32,
     entries: u32,
     checksum: u32,
+    /// Index of the block's first bucket in `prefixes`.
+    first_prefix: u64,
+}
+
+fn hash_prefix(hash: u64) -> u32 {
+    u32::try_from(hash >> 32).unwrap_or(u32::MAX)
 }
 
 impl BucketDirectory {
@@ -544,6 +552,7 @@ impl BucketDirectory {
         bands: usize,
     ) -> Result<Self, BucketError> {
         let mut blocks = Vec::new();
+        let mut prefixes = Vec::new();
         let mut buckets = 0_u64;
         let mut sizes = BTreeMap::<u32, u64>::new();
         let mut previous: Option<BucketKey> = None;
@@ -561,16 +570,37 @@ impl BucketDirectory {
                 Ok(())
             })?;
             let section = u32::try_from(section_index).map_err(|_| BucketError::LengthOverflow)?;
-            for (block_index, block) in directory.bytes.chunks(DIRECTORY_BLOCK_BYTES).enumerate() {
+            // Blocks never span a band, so the hash prefixes of one block are
+            // sorted and an absent key can be rejected without reading it.
+            let entries: Vec<&[u8]> = directory
+                .bytes
+                .chunks_exact(BUCKET_DIRECTORY_ENTRY_BYTES)
+                .collect();
+            let mut start = 0;
+            while start < entries.len() {
+                let band = read_u32_at(entries[start], 0)?;
+                let mut end = start + 1;
+                while end < entries.len()
+                    && end - start < DIRECTORY_BLOCK_ENTRIES
+                    && read_u32_at(entries[end], 0)? == band
+                {
+                    end += 1;
+                }
+                let bytes = &directory.bytes
+                    [start * BUCKET_DIRECTORY_ENTRY_BYTES..end * BUCKET_DIRECTORY_ENTRY_BYTES];
                 blocks.push(DirectoryBlock {
-                    first_key: entry_key(block)?,
+                    first_key: entry_key(bytes)?,
                     section,
-                    first_entry: u32::try_from(block_index * DIRECTORY_BLOCK_ENTRIES)
+                    first_entry: u32::try_from(start).map_err(|_| BucketError::LengthOverflow)?,
+                    entries: u32::try_from(end - start).map_err(|_| BucketError::LengthOverflow)?,
+                    checksum: crc32(bytes),
+                    first_prefix: u64::try_from(prefixes.len())
                         .map_err(|_| BucketError::LengthOverflow)?,
-                    entries: u32::try_from(block.len() / BUCKET_DIRECTORY_ENTRY_BYTES)
-                        .map_err(|_| BucketError::LengthOverflow)?,
-                    checksum: crc32(block),
                 });
+                for entry in &entries[start..end] {
+                    prefixes.push(hash_prefix(read_u64_at(entry, 8)?));
+                }
+                start = end;
             }
             buckets = buckets
                 .checked_add(
@@ -579,9 +609,11 @@ impl BucketDirectory {
                 .ok_or(BucketError::LengthOverflow)?;
         }
         blocks.shrink_to_fit();
+        prefixes.shrink_to_fit();
         Ok(Self {
             sections: descriptors.to_vec(),
             blocks,
+            prefixes,
             buckets,
             size_counts: sizes.into_iter().collect(),
         })
@@ -619,6 +651,26 @@ impl BucketDirectory {
         else {
             return Ok(None);
         };
+        if block.first_key.band != key.band {
+            return Ok(None);
+        }
+        let first = usize::try_from(block.first_prefix).map_err(|_| BucketError::LengthOverflow)?;
+        let entries = usize::try_from(block.entries).map_err(|_| BucketError::LengthOverflow)?;
+        let prefixes = self
+            .prefixes
+            .get(
+                first
+                    ..first
+                        .checked_add(entries)
+                        .ok_or(BucketError::LengthOverflow)?,
+            )
+            .ok_or(BucketError::Invalid {
+                reason: "bucket directory block references missing hash prefixes",
+            })?;
+        let prefix = hash_prefix(key.hash);
+        if prefixes.binary_search(&prefix).is_err() {
+            return Ok(None);
+        }
         let descriptor = *self
             .sections
             .get(usize::try_from(block.section).map_err(|_| BucketError::LengthOverflow)?)
