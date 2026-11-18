@@ -16,8 +16,8 @@ mod writer;
 pub use bucket_stream::{write_bucket_segment, BucketWriteRecord, StreamedBucketSegment};
 pub use buckets::{
     bucket_record_size, decode_bucket_segment, encode_bucket_segment, read_bucket_members,
-    validate_global_bucket_order, BucketError, BucketKey, BucketLocation, BucketRecord,
-    BUCKET_SEGMENT_HEADER_BYTES, BUCKET_SEGMENT_TARGET_BYTES,
+    validate_global_bucket_order, BucketDirectory, BucketError, BucketKey, BucketLocation,
+    BucketRecord, BUCKET_SEGMENT_HEADER_BYTES, BUCKET_SEGMENT_TARGET_BYTES,
 };
 pub use codec::{
     BytesCodec, CodecError, CodecId, I64Codec, JsonValueCodec, KeyCodec, U64Codec, Utf8Codec,

@@ -11,13 +11,25 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - A persistent-index commit no longer silently overwrites a snapshot that
   another handle or process committed after this handle opened it. Commits
   serialize on an operating-system lock on a sibling `<index>.lock` file, which
-  exists only while a commit runs, and fail with an I/O error, keeping the uncommitted changes in memory, when the
-  file on disk has changed. This covers `PersistentIndex32`,
-  `PersistentIndex64`, Python's `Index`/`Index64`,
+  exists only while a commit runs, and fail with an I/O error, keeping the
+  uncommitted changes in memory, when the file on disk has changed. This
+  covers `PersistentIndex32`, `PersistentIndex64`, Python's `Index`/`Index64`,
   `DedupeIndex(backend="local")`, and `pari index`.
+
+### Added
+
+- `pari_format::BucketDirectory`, a validated sparse index over a snapshot's
+  bucket directories that rejects most absent buckets from memory and finds
+  present ones by reading one checksummed directory block of at most 2 KiB,
+  and `BucketDistribution::from_size_counts` in `pari-index`.
 
 ### Changed
 
+- Opened indexes keep bucket directories on disk. Persistent indexes,
+  `ReadOnlyIndex`, `LazyIndex32`/`LazyIndex64`, and `pari verify` validate
+  every directory when they open a snapshot but retain about 4.6 bytes per
+  bucket instead of a 56-byte location per bucket, which was about 5 GB for a
+  10M-item snapshot. Snapshot bytes are unchanged.
 - Persistent indexes use less memory for uncommitted inserts: each overlay
   bucket keeps its first key inline and allocates a list only when it holds
   more than one key.

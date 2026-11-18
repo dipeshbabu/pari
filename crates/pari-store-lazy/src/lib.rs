@@ -2,10 +2,12 @@
 //! Read-only affine32 and affine64 paged bucket storage for Pari similarity indexes.
 //!
 //! Lazy indexes use the canonical bucket-segment codec from `pari-format`.
-//! Reopening reads validated metadata and compact bucket locations only;
-//! membership vectors stay on disk until a query touches the corresponding
-//! bucket. The same persisted files retain `BandHashes`, so mutable store
-//! implementations can reopen and compact them without format conversion.
+//! Reopening validates every bucket directory but keeps only a compact
+//! [`pari_format::BucketDirectory`] in memory, about 4.6 bytes per bucket.
+//! Directory entries and membership vectors stay on disk until a query
+//! touches the corresponding bucket. The same persisted files retain
+//! `BandHashes`, so mutable store implementations can reopen and compact them
+//! without format conversion.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -23,11 +25,10 @@ use std::{
 use crc32fast::Hasher;
 use pari_core::{MinHash32, MinHash64};
 use pari_format::{
-    bucket_record_size, decode_bucket_segment, encode_bucket_segment, read_bucket_members,
-    validate_global_bucket_order, Algorithm, BucketError, BucketKey, BucketLocation, BucketRecord,
-    CodecId, FileLayout, FormatError, IndexFile, IndexMetadata, LayoutError, Section,
-    SectionDescriptor, SectionKind, SignatureScheme, BUCKET_SEGMENT_HEADER_BYTES,
-    BUCKET_SEGMENT_TARGET_BYTES,
+    bucket_record_size, encode_bucket_segment, read_bucket_members, Algorithm, BucketDirectory,
+    BucketError, BucketKey, BucketRecord, CodecId, FileLayout, FormatError, IndexFile,
+    IndexMetadata, LayoutError, Section, SectionDescriptor, SectionKind, SignatureScheme,
+    BUCKET_SEGMENT_HEADER_BYTES, BUCKET_SEGMENT_TARGET_BYTES,
 };
 use pari_format::{
     decode_signature_segment, read_signature_row, validate_signature_coverage, SignatureError,
@@ -178,7 +179,7 @@ impl From<LshError> for LazyStoreError {
 pub struct LazyStats {
     /// Number of live keys encoded by the source snapshot.
     pub items: usize,
-    /// Number of distinct bucket descriptors retained in memory.
+    /// Number of distinct buckets in the snapshot.
     pub buckets: usize,
     /// Number of LSH bands.
     pub bands: usize,
@@ -197,7 +198,7 @@ struct LazyIndexCore {
     file: File,
     layout: FileLayout,
     bucket_sections: Vec<SectionDescriptor>,
-    directory: Vec<BucketLocation>,
+    directory: BucketDirectory,
     keys: Vec<u64>,
     item_count: usize,
     num_perm: usize,
@@ -277,16 +278,7 @@ impl LazyIndexCore {
             params,
         )?;
 
-        let mut directory = Vec::new();
-        for descriptor in &bucket_sections {
-            directory.extend(decode_bucket_segment(
-                &layout,
-                &mut file,
-                *descriptor,
-                bands,
-            )?);
-        }
-        validate_global_bucket_order(&directory)?;
+        let directory = BucketDirectory::read(&layout, &mut file, &bucket_sections, bands)?;
 
         Ok(Self {
             file,
@@ -403,14 +395,14 @@ impl LazyIndexCore {
     fn stats(&self) -> LazyStats {
         LazyStats {
             items: self.item_count,
-            buckets: self.directory.len(),
+            buckets: usize::try_from(self.directory.len()).unwrap_or(usize::MAX),
             bands: self.params.bands,
             rows: self.params.rows,
             file_bytes: self.layout.file_length(),
-            distribution: BucketDistribution::from_sizes(
+            distribution: BucketDistribution::from_size_counts(
                 self.directory
-                    .iter()
-                    .map(|bucket| usize::try_from(bucket.member_count()).unwrap_or(usize::MAX)),
+                    .size_counts()
+                    .map(|(size, count)| (u64::from(size), count)),
             ),
             queries: self.query_metrics,
         }
@@ -433,13 +425,8 @@ impl LazyIndexCore {
                 u32::try_from(band).map_err(|_| LazyStoreError::LengthOverflow)?,
                 hash,
             );
-            if let Ok(index) = self
-                .directory
-                .binary_search_by_key(&key, |location| location.key())
-            {
-                for member in
-                    read_bucket_members(&self.layout, &mut self.file, self.directory[index])?
-                {
+            if let Some(location) = self.directory.find(&self.layout, &mut self.file, key)? {
+                for member in read_bucket_members(&self.layout, &mut self.file, location)? {
                     if !output.contains(&member) && self.keys.binary_search(&member).is_ok() {
                         output.insert(member);
                     }

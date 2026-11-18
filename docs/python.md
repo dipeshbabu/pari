@@ -55,8 +55,9 @@ The 0.1 top-level Python export set is defined by `pari.__all__` and pinned by i
 ## Search a read-only snapshot
 
 Use `ReadOnlyIndex` when a process only needs to query a committed `.pari`
-file. It keeps the key catalog and bucket directory in memory and reads
-matching bucket members from disk. The reader selects the signature width from
+file. It keeps the key catalog and a compact bucket directory (about 4.6 bytes
+per bucket) in memory and reads the matching directory entries and bucket
+members from disk. The reader selects the signature width from
 the file and exposes the seed and permutation count needed to build a query.
 
 ```python
