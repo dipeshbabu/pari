@@ -73,11 +73,13 @@ mod redis_tests {
     }
 
     fn namespace(label: &str) -> String {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock after epoch")
             .as_nanos();
-        format!("test-{label}-{}-{nanos}", process::id())
+        format!("test-{label}-{}-{sequence}-{nanos}", process::id())
     }
 
     fn clean_backend(url: &str, namespace: &str) -> RedisBackend {
