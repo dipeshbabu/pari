@@ -6,6 +6,12 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Changed
+
+- Persistent indexes use less memory for uncommitted inserts: each overlay
+  bucket keeps its first key inline and allocates a list only when it holds
+  more than one key.
+
 ## [0.3.1] - 2026-11-18
 
 ### Added

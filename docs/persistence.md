@@ -90,6 +90,8 @@ Pari does not take a hidden global or cross-process lock. Two writers targeting 
 
 Inserts and removals are visible immediately through the writer that performed them because queries merge the committed generation with the in-memory mutation overlay. They are not durable until a successful commit.
 
+The overlay stores the first key of each uncommitted bucket inline and allocates a list only for buckets that hold more than one key, so a singleton bucket costs one hash-map entry.
+
 ## Reader model and file lifetime
 
 An opened local index owns a file handle to the committed generation it opened. A separate reader does not automatically observe a generation committed later by another process. Reopen the index to observe the latest committed target.
