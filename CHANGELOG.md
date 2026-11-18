@@ -6,6 +6,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-18
+
 ### Added
 
 - In-memory `LshIndex32`/`LshIndex64` can store signatures
@@ -22,7 +24,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   by `pari-store`), and `ScoreFilter::validate` now returns
   `ScoreFilterError`. `LshError` gains `SignaturesUnavailable` and
   `InvalidScoreFilter`, and `LazyStoreError` gains signature variants. These
-  public-type changes require the next minor release.
+  public-type changes are why this is a minor release; the Python API is
+  unchanged.
 - Persistent commits stream the snapshot instead of building it in memory:
   bucket memberships are sorted in parallel and written one segment at a time
   through the new `pari_format::ContainerWriter`. Snapshot bytes are unchanged
