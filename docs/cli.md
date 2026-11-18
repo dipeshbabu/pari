@@ -4,14 +4,14 @@ The `pari` binary is a thin operational layer over the same Rust APIs used by th
 
 ## Install a published binary
 
-Pari 0.3.0 CLI archives are published to the [GitHub Release](https://github.com/dipeshbabu/pari/releases/tag/v0.3.0) after the tagged workflow succeeds:
+Pari 0.3.1 CLI archives are published to the [GitHub Release](https://github.com/dipeshbabu/pari/releases/tag/v0.3.1) after the tagged workflow succeeds:
 
-- [Linux x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-linux.tar.gz)
-- [Linux arm64](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-linux-arm64.tar.gz)
-- [macOS arm64](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-macos.tar.gz)
-- [Windows x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/pari-0.3.0-windows.zip)
+- [Linux x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.3.1/pari-0.3.1-linux.tar.gz)
+- [Linux arm64](https://github.com/dipeshbabu/pari/releases/download/v0.3.1/pari-0.3.1-linux-arm64.tar.gz)
+- [macOS arm64](https://github.com/dipeshbabu/pari/releases/download/v0.3.1/pari-0.3.1-macos.tar.gz)
+- [Windows x86_64](https://github.com/dipeshbabu/pari/releases/download/v0.3.1/pari-0.3.1-windows.zip)
 
-Each archive contains `LICENSE`, `NOTICE`, `README.md`, and the `pari` executable (`pari.exe` on Windows). Verify the archive against the release's [`SHA256SUMS`](https://github.com/dipeshbabu/pari/releases/download/v0.3.0/SHA256SUMS), extract it, and move the executable to a directory on `PATH` if desired.
+Each archive contains `LICENSE`, `NOTICE`, `README.md`, and the `pari` executable (`pari.exe` on Windows). Verify the archive against the release's [`SHA256SUMS`](https://github.com/dipeshbabu/pari/releases/download/v0.3.1/SHA256SUMS), extract it, and move the executable to a directory on `PATH` if desired.
 
 ## Build from source for contributors
 
@@ -172,6 +172,17 @@ affine64). Searching an index built without them with any scoring flag exits
 with status 2. `stats` reports `stores_signatures`.
 
 Search progress is emitted every 1,000 queries by default. Use `--progress-every N` to change the interval. Final JSON progress includes the exact process-local candidate count and rate.
+
+Use `--read-only` to search a committed index without loading the per-key
+band hashes used for updates. It supports raw values, precomputed signatures,
+score filters, and the same text and JSONL output:
+
+```bash
+pari search --index documents.pari --input queries.jsonl --read-only --json
+```
+
+Snapshots from older writers that lack bucket sections need a one-time sync
+through the writable Python or Rust index before using this flag.
 
 ## Deduplicate
 

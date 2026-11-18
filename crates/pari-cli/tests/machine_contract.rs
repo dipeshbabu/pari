@@ -338,6 +338,14 @@ fn scored_search_adds_aligned_scores_only_when_requested() {
         let limited = search(&["--top-k", "1", "--min-similarity", "0.5"]);
         assert_eq!(limited["candidates"], serde_json::json!([1]));
         assert_eq!(limited["scores"], serde_json::json!([1.0]));
+        let snapshot = fs::read(&fixture.index).expect("index bytes");
+        assert_eq!(search(&["--read-only"]), plain);
+        assert_eq!(search(&["--read-only", "--scores"]), scored);
+        assert_eq!(
+            search(&["--read-only", "--top-k", "1", "--min-similarity", "0.5"]),
+            limited,
+        );
+        assert_eq!(fs::read(&fixture.index).expect("index bytes"), snapshot);
 
         let stats = pari()
             .args([
@@ -360,6 +368,7 @@ fn scored_search_requires_stored_signatures_and_valid_filters() {
     for (extra, message) in [
         (&["--scores"][..], "--store-signatures"),
         (&["--top-k", "1"][..], "--store-signatures"),
+        (&["--read-only", "--scores"][..], "--store-signatures"),
     ] {
         let output = pari()
             .args([

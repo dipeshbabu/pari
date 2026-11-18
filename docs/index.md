@@ -52,7 +52,7 @@ links each figure to its validated bundle, and the
 
 ## Getting started
 
-Pari 0.3.0 is an alpha release. It targets Python 3.10+ and Rust 1.81+ for the
+Pari 0.3.1 is an alpha release. It targets Python 3.10+ and Rust 1.81+ for the
 public crates; building the Python extension from source requires Rust 1.83.
 The project is pre-1.0, so read the [compatibility contract](compatibility.md)
 before depending on persisted formats.
@@ -60,7 +60,7 @@ before depending on persisted formats.
 === "Python"
 
     ```sh
-    python -m pip install "pari-similarity==0.3.0"
+    python -m pip install "pari-similarity==0.3.1"
     ```
 
     The distribution name is `pari-similarity`; the import name is `pari`.
@@ -68,7 +68,7 @@ before depending on persisted formats.
 === "Rust"
 
     ```sh
-    cargo add pari-core@0.3.0 pari-index@0.3.0 pari-store@0.3.0
+    cargo add pari-core@0.3.1 pari-index@0.3.1 pari-store@0.3.1
     ```
 
     Use only the layers your application needs, and keep every public crate on
@@ -77,7 +77,7 @@ before depending on persisted formats.
 === "CLI"
 
     Download an archive from the
-    [0.3.0 release](https://github.com/dipeshbabu/pari/releases/tag/v0.3.0),
+    [0.3.1 release](https://github.com/dipeshbabu/pari/releases/tag/v0.3.1),
     verify it against `SHA256SUMS`, extract it, and put `pari` on your `PATH`.
     See [platform support](platforms.md) for the published targets.
 

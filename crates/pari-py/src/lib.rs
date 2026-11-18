@@ -16,12 +16,15 @@ use pari_store::{
     PersistentIndex32, PersistentIndex64, PersistentIndexOptions, ScoreFilter, ScoredCandidate,
     StoreError, StoreStats,
 };
+use pari_store_lazy::LazyStoreError;
 use pyo3::{
     create_exception,
     exceptions::{PyException, PyTypeError},
     prelude::*,
     types::{PyAny, PyByteArray, PyBytes, PyMemoryView, PyModule},
 };
+
+mod read_only;
 
 create_exception!(_native, PariError, PyException);
 create_exception!(_native, ConfigurationError, PariError);
@@ -48,6 +51,7 @@ enum BindingError {
     Plan(LshPlanError),
     MinHash(MinHashError),
     Store(StoreError),
+    LazyStore(LazyStoreError),
 }
 
 impl BindingError {
@@ -70,6 +74,10 @@ impl BindingError {
                 | StoreError::InvalidSnapshot {
                     reason: "snapshot signature scheme does not match the persistent index type",
                 },
+            )
+            | Self::LazyStore(
+                LazyStoreError::IncompatibleSeed { .. }
+                | LazyStoreError::IncompatiblePermutationCount { .. },
             ) => BindingErrorKind::Compatibility,
             Self::Index(LshError::DuplicateKey { .. })
             | Self::Store(StoreError::DuplicateKey { .. }) => BindingErrorKind::DuplicateKey,
@@ -89,12 +97,16 @@ impl BindingError {
                 | StoreError::SignaturesUnavailable
                 | StoreError::InvalidScoreFilter { .. },
             )
+            | Self::LazyStore(
+                LazyStoreError::SignaturesUnavailable | LazyStoreError::InvalidScoreFilter { .. },
+            )
             | Self::Plan(_) => BindingErrorKind::Configuration,
             Self::Busy
             | Self::Poisoned
             | Self::MinHash(MinHashError::BatchPoolUnavailable { .. })
             | Self::Index(_)
-            | Self::Store(_) => BindingErrorKind::Storage,
+            | Self::Store(_)
+            | Self::LazyStore(_) => BindingErrorKind::Storage,
         }
     }
 
@@ -107,6 +119,7 @@ impl BindingError {
             Self::Plan(error) => error.to_string(),
             Self::MinHash(error) => error.to_string(),
             Self::Store(error) => error.to_string(),
+            Self::LazyStore(error) => error.to_string(),
         }
     }
 }
@@ -1828,6 +1841,7 @@ fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMinHash64>()?;
     module.add_class::<PyIndex>()?;
     module.add_class::<PyIndex64>()?;
+    module.add_class::<read_only::PyReadOnlyIndex>()?;
     module.add_class::<PyIndexStats>()?;
     module.add_class::<PyLshPlan>()?;
     module.add_class::<PyDedupeEngine>()?;

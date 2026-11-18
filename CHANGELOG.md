@@ -6,6 +6,14 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-18
+
+### Added
+
+- Open committed snapshots through Python's `ReadOnlyIndex` or
+  `pari search --read-only`. Both select the signature width from the file and
+  support scored queries when the snapshot stores signatures.
+
 ### Changed
 
 - Persistent commits cap bucket sorting scratch space at 128 MiB, encode

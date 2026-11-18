@@ -233,16 +233,16 @@ impl LazySignatures {
 impl LazyIndexCore {
     fn open(
         path: impl AsRef<Path>,
-        expected_scheme: SignatureScheme,
+        expected_scheme: Option<SignatureScheme>,
     ) -> Result<Self, LazyStoreError> {
         let mut file = File::open(path)?;
         let layout = FileLayout::read_from(&mut file)?;
-        validate_metadata(layout.metadata(), Some(expected_scheme))?;
+        validate_metadata(layout.metadata(), expected_scheme)?;
         let keys_sections = key_sections(&layout)?;
         let bucket_sections = collect_bucket_sections(&layout)?;
         if bucket_sections.is_empty() {
             return Err(LazyStoreError::InvalidSnapshot {
-                reason: "missing required bucket sections",
+                reason: "missing required bucket sections; open and sync an older snapshot with a writable index to upgrade it",
             });
         }
 
@@ -269,7 +269,13 @@ impl LazyIndexCore {
         let seed = layout.metadata().seed();
         let threshold = layout.metadata().threshold();
         let params = LshParams::new(bands, rows);
-        validate_lsh_configuration(expected_scheme, threshold, num_perm, seed, params)?;
+        validate_lsh_configuration(
+            layout.metadata().signature_scheme(),
+            threshold,
+            num_perm,
+            seed,
+            params,
+        )?;
 
         let mut directory = Vec::new();
         for descriptor in &bucket_sections {
@@ -459,13 +465,33 @@ pub struct LazyIndex64 {
     inner: LazyIndexCore,
 }
 
+/// Read-only index whose signature family is selected from the snapshot.
+#[derive(Debug)]
+pub enum LazyIndex {
+    /// Affine32 snapshot.
+    Affine32(LazyIndex32),
+    /// Affine64 snapshot.
+    Affine64(LazyIndex64),
+}
+
+impl LazyIndex {
+    /// Validate and open a snapshot using one file handle.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, LazyStoreError> {
+        let inner = LazyIndexCore::open(path, None)?;
+        Ok(match inner.layout.metadata().signature_scheme() {
+            SignatureScheme::PariAffine32V1 => Self::Affine32(LazyIndex32 { inner }),
+            SignatureScheme::PariAffine64V1 => Self::Affine64(LazyIndex64 { inner }),
+        })
+    }
+}
+
 macro_rules! impl_lazy_index {
     ($index:ident, $sketch:ty, $scheme:expr, $hash_band:ident) => {
         impl $index {
             /// Open a lazy index without materializing bucket memberships.
             pub fn open(path: impl AsRef<Path>) -> Result<Self, LazyStoreError> {
                 Ok(Self {
-                    inner: LazyIndexCore::open(path, $scheme)?,
+                    inner: LazyIndexCore::open(path, Some($scheme))?,
                 })
             }
 
@@ -525,6 +551,30 @@ macro_rules! impl_lazy_index {
             #[must_use]
             pub const fn stores_signatures(&self) -> bool {
                 self.inner.signatures.is_some()
+            }
+
+            /// Number of live keys in the snapshot.
+            #[must_use]
+            pub const fn len(&self) -> usize {
+                self.inner.item_count
+            }
+
+            /// Whether the snapshot contains no live keys.
+            #[must_use]
+            pub const fn is_empty(&self) -> bool {
+                self.len() == 0
+            }
+
+            /// Permutation count required for queries.
+            #[must_use]
+            pub const fn num_perm(&self) -> usize {
+                self.inner.num_perm
+            }
+
+            /// `MinHash` seed required for queries.
+            #[must_use]
+            pub const fn seed(&self) -> u64 {
+                self.inner.seed
             }
 
             /// Enable or disable process-local query observation.
