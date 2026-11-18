@@ -23,6 +23,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   `ScoreFilterError`. `LshError` gains `SignaturesUnavailable` and
   `InvalidScoreFilter`, and `LazyStoreError` gains signature variants. These
   public-type changes require the next minor release.
+- Persistent commits stream the snapshot instead of building it in memory:
+  bucket memberships are sorted in parallel and written one segment at a time
+  through the new `pari_format::ContainerWriter`. Snapshot bytes are unchanged
+  (issue #235).
 
 ## [0.2.2] - 2026-11-18
 
