@@ -1506,10 +1506,16 @@ impl PyIndex64 {
     }
 }
 
+/// Uncommitted local-mirror keys that make the next ingest batch commit them
+/// first, as one appended delta generation.
+const MIRROR_COMMIT_KEYS: usize = 1 << 16;
+
 #[derive(Debug)]
 struct DedupeState {
     index: LshIndex32,
     store: Option<PersistentIndex32>,
+    /// Keys inserted into the local mirror since its last commit.
+    mirror_pending: usize,
     /// Signatures by ingestion key, kept only for `min_similarity` checks.
     signatures: Option<Vec<Box<[u32]>>>,
 }
@@ -1624,6 +1630,7 @@ impl PyDedupeEngine {
                 Ok::<_, BindingError>(DedupeState {
                     index,
                     store,
+                    mirror_pending: 0,
                     signatures: min_similarity.map(|_| Vec::new()),
                 })
             })
@@ -1666,6 +1673,15 @@ impl PyDedupeEngine {
             .map_err(binding_error)?;
 
         self.run_write(py, move |state| {
+            if let Some(store) = &mut state.store {
+                if state.mirror_pending >= MIRROR_COMMIT_KEYS {
+                    // Commit earlier batches before inserting this one, so a
+                    // failed commit leaves the whole call without effect. Each
+                    // commit appends a delta; `close` compacts the file once.
+                    store.flush_delta().map_err(BindingError::from)?;
+                    state.mirror_pending = 0;
+                }
+            }
             if let Some(signatures) = &state.signatures {
                 if u64::try_from(signatures.len()).ok() != Some(start_key) {
                     return Err(BindingError::Store(StoreError::InvalidSnapshot {
@@ -1693,6 +1709,7 @@ impl PyDedupeEngine {
                     }
                     return Err(BindingError::from(error));
                 }
+                state.mirror_pending = state.mirror_pending.saturating_add(keys.len());
             }
             if let Some(signatures) = &mut state.signatures {
                 signatures.extend(
@@ -1788,11 +1805,18 @@ impl PyDedupeEngine {
         self.run_write(py, |state| {
             if let Some(store) = &mut state.store {
                 store.sync().map_err(BindingError::from)?;
+                state.mirror_pending = 0;
             }
             Ok(())
         })
     }
 
+    /// Commit the local mirror, release the in-memory index, then compact.
+    ///
+    /// If the commit fails the handle stays open with every record. Once it
+    /// succeeds every record is on disk, so the in-memory index is released
+    /// before the mirror is rewritten as one snapshot; a failed rewrite leaves
+    /// the committed generations readable and still closes the handle.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let inner = Arc::clone(&self.inner);
         py.detach(move || {
@@ -1801,9 +1825,16 @@ impl PyDedupeEngine {
                 return Ok(());
             };
             if let Some(store) = &mut state.store {
-                store.sync().map_err(BindingError::from)?;
+                store.flush_delta().map_err(BindingError::from)?;
             }
-            *guard = None;
+            let Some(state) = guard.take() else {
+                return Ok(());
+            };
+            let DedupeState { index, store, .. } = state;
+            drop(index);
+            if let Some(mut store) = store {
+                store.compact().map_err(BindingError::from)?;
+            }
             Ok(())
         })
         .map_err(binding_error)

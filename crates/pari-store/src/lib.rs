@@ -327,6 +327,9 @@ struct DeltaContents {
 
 /// Appended delta generations at most, before a commit compacts the file.
 const MAX_DELTA_GENERATIONS: usize = 32;
+/// Appended delta generations at most before a bulk-ingest commit
+/// ([`PersistentIndex32::flush_delta`]) compacts the file.
+const MAX_BULK_DELTA_GENERATIONS: usize = 1_024;
 /// Deltas may grow to `1 / DELTA_BYTES_DIVISOR` of the base snapshot, and
 /// committed generations may hide up to `1 / DEAD_KEYS_DIVISOR` as many dead
 /// key memberships as there are live keys, before a commit compacts the file.
@@ -334,6 +337,15 @@ const DELTA_BYTES_DIVISOR: u64 = 4;
 const DEAD_KEYS_DIVISOR: usize = 4;
 /// Fixed bytes of a delta record beyond its per-key and per-tombstone data.
 const DELTA_OVERHEAD_BYTES: u64 = 4_096;
+
+/// How a commit chooses between appending a delta and rewriting the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitPolicy {
+    /// Append while deltas stay small relative to the snapshot.
+    Automatic,
+    /// Append regardless of delta size, for bulk ingest that compacts later.
+    Bulk,
+}
 
 #[derive(Debug)]
 struct PersistentIndexCore {
@@ -345,7 +357,13 @@ struct PersistentIndexCore {
     scheme: SignatureScheme,
     committed: Option<Committed>,
     overlay_buckets: Vec<OverlayTable>,
-    overlay_keys: HashSet<u64>,
+    /// Band hashes of live keys that no committed generation stores yet.
+    ///
+    /// Committed keys' band hashes stay on disk: a snapshot rewrite reads them
+    /// back from their generations, so memory holds them only for the overlay.
+    overlay_hashes: BTreeMap<u64, Vec<u64>>,
+    /// Every live key, committed or not.
+    live_keys: HashSet<u64>,
     /// Base-snapshot keys whose base memberships are not live: removed, or
     /// reinserted into a later generation or the overlay.
     suppressed_base_keys: HashSet<u64>,
@@ -358,7 +376,6 @@ struct PersistentIndexCore {
     delta_keys: usize,
     /// The next commit rewrites the whole snapshot instead of appending.
     force_rewrite: bool,
-    key_hashes: BTreeMap<u64, Vec<u64>>,
     dirty: bool,
     query_metrics: Option<Mutex<QueryMetrics>>,
     signatures: Option<SignatureState>,
@@ -430,11 +447,13 @@ impl PersistentIndexCore {
         let params = LshParams::new(bands, rows);
         validate_lsh_configuration(scheme, threshold, num_perm, seed, params)?;
 
-        let (file_keys, key_hashes) = read_key_metadata(&layout, &mut file, bands)?;
-        let signature_segments =
-            read_signature_segments(&layout, layout.sections(), &mut file, file_keys.len())?;
         let bucket_descriptors = collect_bucket_descriptors(layout.sections(), false)?;
         if bucket_descriptors.is_empty() {
+            // A phase-1 snapshot has no bucket sections: every key moves to
+            // the overlay with its band hashes, and the next commit upgrades it.
+            let (file_keys, key_hashes) = read_key_metadata(&layout, &mut file, bands)?;
+            let signature_segments =
+                read_signature_segments(&layout, layout.sections(), &mut file, file_keys.len())?;
             if !layout.deltas().is_empty() {
                 return Err(StoreError::InvalidSnapshot {
                     reason: "appended generations require a snapshot with bucket sections",
@@ -452,6 +471,10 @@ impl PersistentIndexCore {
             store.generation = generation;
             return Ok(store);
         }
+        let (file_keys, live_keys) =
+            read_key_catalog(&layout, layout.sections(), &mut file, bands)?;
+        let signature_segments =
+            read_signature_segments(&layout, layout.sections(), &mut file, file_keys.len())?;
         let stores_signatures = signature_segments.is_some();
         let base = Generation {
             directory: BucketDirectory::read(&layout, &mut file, &bucket_descriptors, bands)?,
@@ -477,13 +500,13 @@ impl PersistentIndexCore {
                 generations: vec![base],
             }),
             overlay_buckets: Vec::new(),
-            overlay_keys: HashSet::new(),
+            overlay_hashes: BTreeMap::new(),
+            live_keys,
             suppressed_base_keys: HashSet::new(),
             homes: HashMap::new(),
             pending_tombstones: BTreeSet::new(),
             delta_keys: 0,
             force_rewrite: false,
-            key_hashes,
             dirty: false,
             query_metrics: None,
             signatures: stores_signatures.then(SignatureState::default),
@@ -514,7 +537,7 @@ impl PersistentIndexCore {
             )?;
             let home = u32::try_from(index).map_err(|_| StoreError::LengthOverflow)?;
             for key in contents.tombstones {
-                if self.key_hashes.remove(&key).is_none() {
+                if !self.live_keys.remove(&key) {
                     return Err(StoreError::InvalidSnapshot {
                         reason: "delta removes a key that is not live",
                     });
@@ -523,8 +546,8 @@ impl PersistentIndexCore {
                     self.suppressed_base_keys.insert(key);
                 }
             }
-            for (key, hashes) in contents.keys.into_iter().zip(contents.rows) {
-                if self.key_hashes.insert(key, hashes).is_some() {
+            for key in contents.keys {
+                if !self.live_keys.insert(key) {
                     return Err(StoreError::InvalidSnapshot {
                         reason: "delta inserts a key that is already live",
                     });
@@ -544,7 +567,7 @@ impl PersistentIndexCore {
     /// generation `index`.
     fn is_live_in(&self, index: usize, key: u64) -> bool {
         if index == 0 {
-            self.key_hashes.contains_key(&key) && !self.suppressed_base_keys.contains(&key)
+            self.live_keys.contains(&key) && !self.suppressed_base_keys.contains(&key)
         } else {
             self.homes
                 .get(&key)
@@ -563,7 +586,7 @@ impl PersistentIndexCore {
     fn insert_hashes_many(&mut self, prepared: Vec<PreparedItem>) -> Result<(), StoreError> {
         let mut batch_keys = HashSet::new();
         for item in &prepared {
-            if self.key_hashes.contains_key(&item.key) || !batch_keys.insert(item.key) {
+            if self.live_keys.contains(&item.key) || !batch_keys.insert(item.key) {
                 return Err(StoreError::DuplicateKey { key: item.key });
             }
         }
@@ -581,11 +604,14 @@ impl PersistentIndexCore {
     }
 
     fn remove(&mut self, key: u64) -> bool {
-        let Some(hashes) = self.key_hashes.remove(&key) else {
+        if !self.live_keys.remove(&key) {
             return false;
-        };
-        let was_overlay = self.overlay_keys.remove(&key);
-        remove_overlay_key(&mut self.overlay_buckets, key, &hashes);
+        }
+        let overlay_hashes = self.overlay_hashes.remove(&key);
+        let was_overlay = overlay_hashes.is_some();
+        if let Some(hashes) = overlay_hashes {
+            remove_overlay_key(&mut self.overlay_buckets, key, &hashes);
+        }
         if let Some(state) = &mut self.signatures {
             state.overlay.remove(&key);
         }
@@ -742,7 +768,7 @@ impl PersistentIndexCore {
 
     /// Return one live key's stored signature, if signatures are enabled.
     fn stored_signature(&self, key: u64) -> Result<Option<Vec<u64>>, StoreError> {
-        if self.signatures.is_none() || !self.key_hashes.contains_key(&key) {
+        if self.signatures.is_none() || !self.live_keys.contains(&key) {
             return Ok(None);
         }
         Ok(self.stored_signatures(&[key])?.pop())
@@ -753,7 +779,7 @@ impl PersistentIndexCore {
         let Some(state) = &self.signatures else {
             return Ok(None);
         };
-        let mut live = Vec::with_capacity(self.key_hashes.len());
+        let mut live = Vec::with_capacity(self.live_keys.len());
         if let Some(committed) = &self.committed {
             let mut file = committed
                 .file
@@ -790,11 +816,11 @@ impl PersistentIndexCore {
             state
                 .overlay
                 .iter()
-                .filter(|(key, _)| self.key_hashes.contains_key(key))
+                .filter(|(key, _)| self.live_keys.contains(key))
                 .map(|(key, values)| (*key, values.clone())),
         );
         live.sort_unstable_by_key(|(key, _)| *key);
-        if live.len() != self.key_hashes.len() {
+        if live.len() != self.live_keys.len() {
             return Err(StoreError::InvalidSnapshot {
                 reason: "stored signatures do not cover every live key",
             });
@@ -810,7 +836,56 @@ impl PersistentIndexCore {
     }
 
     fn len(&self) -> usize {
-        self.key_hashes.len()
+        self.live_keys.len()
+    }
+
+    /// Materialize every live key's band hashes in key order for a snapshot
+    /// rewrite, reading committed keys' rows back from their generations.
+    fn collect_live_hashes(&self) -> Result<BTreeMap<u64, Vec<u64>>, StoreError> {
+        let mut live = BTreeMap::new();
+        if let Some(committed) = &self.committed {
+            let mut file = committed
+                .file
+                .lock()
+                .map_err(|_| StoreError::PoisonedFileLock)?;
+            for index in 0..committed.generations.len() {
+                let sections = if index == 0 {
+                    committed.layout.sections()
+                } else {
+                    committed
+                        .layout
+                        .deltas()
+                        .get(index - 1)
+                        .ok_or(StoreError::InvalidSnapshot {
+                            reason: "committed generation is missing from the layout",
+                        })?
+                        .sections()
+                };
+                for_each_key_row(
+                    &committed.layout,
+                    sections,
+                    &mut file,
+                    self.params.bands,
+                    |key, hashes| {
+                        if self.is_live_in(index, key) && !self.overlay_hashes.contains_key(&key) {
+                            live.insert(key, hashes);
+                        }
+                        Ok(())
+                    },
+                )?;
+            }
+        }
+        live.extend(
+            self.overlay_hashes
+                .iter()
+                .map(|(key, hashes)| (*key, hashes.clone())),
+        );
+        if live.len() != self.live_keys.len() {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "stored band hashes do not cover every live key",
+            });
+        }
+        Ok(live)
     }
 
     fn explain(&self) -> Result<LshPlan, LshPlanError> {
@@ -831,11 +906,15 @@ impl PersistentIndexCore {
     }
 
     fn flush(&mut self) -> Result<(), StoreError> {
-        self.commit(false)
+        self.commit(false, CommitPolicy::Automatic)
+    }
+
+    fn flush_delta(&mut self) -> Result<(), StoreError> {
+        self.commit(false, CommitPolicy::Bulk)
     }
 
     fn sync(&mut self) -> Result<(), StoreError> {
-        self.commit(true)
+        self.commit(true, CommitPolicy::Automatic)
     }
 
     fn close(mut self) -> Result<(), StoreError> {
@@ -917,13 +996,13 @@ impl PersistentIndexCore {
             scheme,
             committed: None,
             overlay_buckets: Vec::new(),
-            overlay_keys: HashSet::new(),
+            overlay_hashes: BTreeMap::new(),
+            live_keys: HashSet::new(),
             suppressed_base_keys: HashSet::new(),
             homes: HashMap::new(),
             pending_tombstones: BTreeSet::new(),
             delta_keys: 0,
             force_rewrite: false,
-            key_hashes: BTreeMap::new(),
             dirty: true,
             query_metrics: None,
             signatures: None,
@@ -958,9 +1037,8 @@ impl PersistentIndexCore {
         signatures: Option<SignatureState>,
     ) -> Result<Self, StoreError> {
         let mut store = Self::empty(path, threshold, num_perm, seed, params, scheme);
-        store.key_hashes = key_hashes;
         store.signatures = signatures;
-        store.rebuild_overlay_all()?;
+        store.rebuild_overlay_all(key_hashes)?;
         store.dirty = true;
         Ok(store)
     }
@@ -971,8 +1049,8 @@ impl PersistentIndexCore {
             self.overlay_buckets = empty_bucket_tables(self.params.bands);
         }
         add_overlay_key(&mut self.overlay_buckets, key, &hashes);
-        self.overlay_keys.insert(key);
-        self.key_hashes.insert(key, hashes);
+        self.live_keys.insert(key);
+        self.overlay_hashes.insert(key, hashes);
     }
 
     fn collect_candidates(
@@ -1007,28 +1085,34 @@ impl PersistentIndexCore {
             }
         }
         collect_overlay_candidates(&self.overlay_buckets, hashes, output);
-        output.retain(|key| self.key_hashes.contains_key(key));
+        output.retain(|key| self.live_keys.contains(key));
         Ok(())
     }
 
-    fn rebuild_overlay_all(&mut self) -> Result<(), StoreError> {
-        let mut overlay = if self.key_hashes.is_empty() {
+    /// Move every live key into the overlay, given all live band hashes, and
+    /// forget the committed file.
+    fn rebuild_overlay_all(
+        &mut self,
+        key_hashes: BTreeMap<u64, Vec<u64>>,
+    ) -> Result<(), StoreError> {
+        let mut overlay = if key_hashes.is_empty() {
             Vec::new()
         } else {
             empty_bucket_tables(self.params.bands)
         };
-        let mut overlay_keys = HashSet::with_capacity(self.key_hashes.len());
-        for (key, hashes) in &self.key_hashes {
+        let mut live_keys = HashSet::with_capacity(key_hashes.len());
+        for (key, hashes) in &key_hashes {
             if hashes.len() != self.params.bands {
                 return Err(StoreError::InvalidSnapshot {
                     reason: "in-memory band-hash row has the wrong width",
                 });
             }
             add_overlay_key(&mut overlay, *key, hashes);
-            overlay_keys.insert(*key);
+            live_keys.insert(*key);
         }
         self.overlay_buckets = overlay;
-        self.overlay_keys = overlay_keys;
+        self.overlay_hashes = key_hashes;
+        self.live_keys = live_keys;
         self.suppressed_base_keys.clear();
         self.homes.clear();
         self.pending_tombstones.clear();
@@ -1037,7 +1121,7 @@ impl PersistentIndexCore {
         Ok(())
     }
 
-    fn commit(&mut self, sync_parent: bool) -> Result<(), StoreError> {
+    fn commit(&mut self, sync_parent: bool, policy: CommitPolicy) -> Result<(), StoreError> {
         if !self.dirty {
             if sync_parent {
                 sync_parent_directory(&self.path)?;
@@ -1053,7 +1137,7 @@ impl PersistentIndexCore {
 
         if self.committed.is_some()
             && !self.force_rewrite
-            && self.overlay_keys.is_empty()
+            && self.overlay_hashes.is_empty()
             && self.pending_tombstones.is_empty()
         {
             // Every change since the last commit cancelled out.
@@ -1063,7 +1147,7 @@ impl PersistentIndexCore {
             }
             return Ok(());
         }
-        if self.should_append() {
+        if self.should_append(policy) {
             self.append_delta()?;
             if sync_parent {
                 sync_parent_directory(&self.path)?;
@@ -1071,17 +1155,18 @@ impl PersistentIndexCore {
             return Ok(());
         }
 
-        // Signatures are materialized once: they are encoded into the
-        // snapshot and kept to recover in memory if publication fails after
-        // the committed base has been closed.
+        // Band hashes and signatures are materialized once: they are encoded
+        // into the snapshot and kept to recover in memory if publication fails
+        // after the committed file has been closed.
+        let key_hashes = self.collect_live_hashes()?;
         let signatures = self.collect_live_signatures()?;
-        let temporary = self.stage_snapshot(signatures.as_deref())?;
+        let temporary = self.stage_snapshot(&key_hashes, signatures.as_deref())?;
 
         // Close the committed file before replacing it. This is required on
         // Windows and avoids retaining a handle to the old generation.
         self.committed = None;
         if let Err(error) = temporary.publish_replace(&self.path) {
-            self.rebuild_overlay_all()?;
+            self.rebuild_overlay_all(key_hashes)?;
             self.restore_signatures(signatures);
             return Err(error);
         }
@@ -1093,7 +1178,7 @@ impl PersistentIndexCore {
         } else {
             None
         };
-        self.refresh_after_commit(parent_error, signatures)
+        self.refresh_after_commit(parent_error, key_hashes, signatures)
     }
 
     /// Rewrite the committed file as one snapshot without delta generations.
@@ -1105,7 +1190,7 @@ impl PersistentIndexCore {
             self.force_rewrite = true;
             self.dirty = true;
         }
-        self.commit(true)
+        self.commit(true, CommitPolicy::Automatic)
     }
 
     /// Committed key memberships that queries skip: removed keys and keys a
@@ -1120,21 +1205,29 @@ impl PersistentIndexCore {
     /// rewriting the snapshot.
     ///
     /// Deltas are appended while they stay small relative to the base and
-    /// few dead memberships accumulate; otherwise the commit compacts.
-    fn should_append(&self) -> bool {
+    /// few dead memberships accumulate; otherwise the commit compacts. A bulk
+    /// commit ignores delta size and allows many more generations.
+    fn should_append(&self, policy: CommitPolicy) -> bool {
         let Some(committed) = &self.committed else {
             return false;
         };
-        if self.force_rewrite || committed.generations.len() > MAX_DELTA_GENERATIONS {
+        let max_generations = match policy {
+            CommitPolicy::Automatic => MAX_DELTA_GENERATIONS,
+            CommitPolicy::Bulk => MAX_BULK_DELTA_GENERATIONS,
+        };
+        if self.force_rewrite || committed.generations.len() > max_generations {
             return false;
+        }
+        let few_dead = self.dead_committed_keys() <= self.live_keys.len() / DEAD_KEYS_DIVISOR;
+        if policy == CommitPolicy::Bulk {
+            return few_dead;
         }
         let layout = &committed.layout;
         let appended = layout.file_length() - layout.base_length();
         let Some(total) = appended.checked_add(self.projected_delta_bytes()) else {
             return false;
         };
-        total <= layout.base_length() / DELTA_BYTES_DIVISOR
-            && self.dead_committed_keys() <= self.key_hashes.len() / DEAD_KEYS_DIVISOR
+        total <= layout.base_length() / DELTA_BYTES_DIVISOR && few_dead
     }
 
     /// Upper estimate of the delta record the pending changes would write.
@@ -1155,7 +1248,7 @@ impl PersistentIndexCore {
         let per_key = 8_u64
             .saturating_add(bands.saturating_mul(8 + 32 + 8))
             .saturating_add(signature);
-        let keys = u64::try_from(self.overlay_keys.len()).unwrap_or(u64::MAX);
+        let keys = u64::try_from(self.overlay_hashes.len()).unwrap_or(u64::MAX);
         let tombstones = u64::try_from(self.pending_tombstones.len()).unwrap_or(u64::MAX);
         keys.saturating_mul(per_key)
             .saturating_add(tombstones.saturating_mul(8))
@@ -1168,16 +1261,8 @@ impl PersistentIndexCore {
     /// generation commits, the changes stay pending in memory. If the outcome
     /// is uncertain, the next commit rewrites the snapshot.
     fn append_delta(&mut self) -> Result<(), StoreError> {
-        let mut delta_keys = BTreeMap::new();
-        for key in &self.overlay_keys {
-            let hashes = self
-                .key_hashes
-                .get(key)
-                .ok_or(StoreError::InvalidSnapshot {
-                    reason: "uncommitted key has no band hashes",
-                })?;
-            delta_keys.insert(*key, hashes.clone());
-        }
+        // Copied, not taken: the changes stay pending if the append fails.
+        let delta_keys = self.overlay_hashes.clone();
         let tombstones: Vec<u64> = self.pending_tombstones.iter().copied().collect();
         let signatures = match &self.signatures {
             Some(state) => Some(
@@ -1309,7 +1394,7 @@ impl PersistentIndexCore {
             .ok_or(StoreError::LengthOverflow)?;
         committed.generations.push(generation);
         self.overlay_buckets = Vec::new();
-        self.overlay_keys = HashSet::new();
+        self.overlay_hashes = BTreeMap::new();
         self.pending_tombstones.clear();
         if let Some(state) = &mut self.signatures {
             state.overlay = HashMap::new();
@@ -1353,27 +1438,29 @@ impl PersistentIndexCore {
         &mut self,
         before_publish: impl FnOnce() -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
+        let key_hashes = self.collect_live_hashes()?;
         let signatures = self.collect_live_signatures()?;
-        let temporary = self.stage_snapshot(signatures.as_deref())?;
+        let temporary = self.stage_snapshot(&key_hashes, signatures.as_deref())?;
         before_publish()?;
 
         self.committed = None;
         if let Err(error) = temporary.publish_no_replace(&self.path) {
-            self.rebuild_overlay_all()?;
+            self.rebuild_overlay_all(key_hashes)?;
             self.restore_signatures(signatures);
             return Err(error);
         }
-        self.refresh_after_commit(None, signatures)
+        self.refresh_after_commit(None, key_hashes, signatures)
     }
 
     fn stage_snapshot(
         &self,
+        key_hashes: &BTreeMap<u64, Vec<u64>>,
         signatures: Option<&[(u64, Vec<u64>)]>,
     ) -> Result<OwnedTemporaryFile, StoreError> {
         create_parent_if_needed(&self.path)?;
         let mut temporary = OwnedTemporaryFile::allocate(&self.path)?;
         if let Err(error) =
-            temporary.write_streamed(|output| self.write_snapshot(output, signatures))
+            temporary.write_streamed(|output| self.write_snapshot(output, key_hashes, signatures))
         {
             return Err(temporary.cleanup_after_store(error));
         }
@@ -1383,12 +1470,14 @@ impl PersistentIndexCore {
     fn refresh_after_commit(
         &mut self,
         parent_error: Option<StoreError>,
+        key_hashes: BTreeMap<u64, Vec<u64>>,
         signatures: Option<LiveSignatures>,
     ) -> Result<(), StoreError> {
         // The file was published. Reopening can release the old overlay now:
-        // the live catalog and collected signatures suffice to rebuild it on error.
+        // the collected band hashes and signatures suffice to rebuild it on error.
         self.overlay_buckets = Vec::new();
-        self.overlay_keys = HashSet::new();
+        self.overlay_hashes = BTreeMap::new();
+        self.live_keys = HashSet::new();
         self.suppressed_base_keys = HashSet::new();
         if let Some(state) = &mut self.signatures {
             *state = SignatureState::default();
@@ -1405,7 +1494,7 @@ impl PersistentIndexCore {
                 *self = refreshed;
             }
             Err(error) => {
-                self.rebuild_overlay_all()?;
+                self.rebuild_overlay_all(key_hashes)?;
                 self.restore_signatures(signatures);
                 self.dirty = true;
                 return Err(error);
@@ -1435,10 +1524,12 @@ impl PersistentIndexCore {
     fn write_snapshot<W: Write + Seek>(
         &self,
         output: W,
+        key_hashes: &BTreeMap<u64, Vec<u64>>,
         signatures: Option<&[(u64, Vec<u64>)]>,
     ) -> Result<(), StoreError> {
         self.write_snapshot_with(
             output,
+            key_hashes,
             signatures,
             BUCKET_SEGMENT_TARGET_BYTES,
             SORT_RECORD_LIMIT,
@@ -1448,6 +1539,7 @@ impl PersistentIndexCore {
     fn write_snapshot_with<W: Write + Seek>(
         &self,
         output: W,
+        key_hashes: &BTreeMap<u64, Vec<u64>>,
         signatures: Option<&[(u64, Vec<u64>)]>,
         bucket_target_bytes: usize,
         sort_limit: usize,
@@ -1459,7 +1551,7 @@ impl PersistentIndexCore {
                 Ok(())
             };
             emit_key_metadata_sections(
-                &self.key_hashes,
+                key_hashes,
                 self.params.bands,
                 METADATA_SECTION_TARGET_BYTES,
                 &mut emit,
@@ -1469,7 +1561,7 @@ impl PersistentIndexCore {
             }
             write_bucket_sections(
                 writer,
-                &self.key_hashes,
+                key_hashes,
                 self.params.bands,
                 bucket_target_bytes,
                 sort_limit,
@@ -1494,10 +1586,11 @@ impl PersistentIndexCore {
             u32::try_from(self.params.rows).map_err(|_| StoreError::LengthOverflow)?,
             0,
         )?;
+        let key_hashes = self.collect_live_hashes()?;
         let mut sections = Vec::new();
         append_key_metadata_sections(
             &mut sections,
-            &self.key_hashes,
+            &key_hashes,
             self.params.bands,
             METADATA_SECTION_TARGET_BYTES,
         )?;
@@ -1512,7 +1605,7 @@ impl PersistentIndexCore {
                 },
             )?;
         }
-        append_bucket_sections(&mut sections, &self.key_hashes, self.params.bands)?;
+        append_bucket_sections(&mut sections, &key_hashes, self.params.bands)?;
         Ok(IndexFile::new(metadata, sections)?.encode()?)
     }
 }
@@ -1720,7 +1813,7 @@ macro_rules! impl_persistent_index {
             /// Return whether a live key exists.
             #[must_use]
             pub fn contains(&self, key: u64) -> bool {
-                self.inner.key_hashes.contains_key(&key)
+                self.inner.live_keys.contains(&key)
             }
 
             /// Return the number of live keys.
@@ -1732,7 +1825,7 @@ macro_rules! impl_persistent_index {
             /// Return whether no live keys are indexed.
             #[must_use]
             pub fn is_empty(&self) -> bool {
-                self.inner.key_hashes.is_empty()
+                self.inner.live_keys.is_empty()
             }
 
             /// Return the configured similarity threshold.
@@ -1780,6 +1873,21 @@ macro_rules! impl_persistent_index {
             /// supports, and [`Self::compact`] to rewrite on demand.
             pub fn flush(&mut self) -> Result<(), StoreError> {
                 self.inner.flush()
+            }
+
+            /// Commit dirty state as an appended delta generation, without the
+            /// size-based compaction that [`Self::flush`] applies.
+            ///
+            /// This is for bulk ingest that commits often: each call appends
+            /// only the changes since the last commit, so the total write cost
+            /// stays proportional to the data instead of rewriting a growing
+            /// snapshot. The file is still rewritten once it holds 1,024
+            /// generations or removed keys hide more than a quarter as many
+            /// memberships as there are live keys. Queries look up every
+            /// generation, so call [`Self::compact`] when the ingest finishes.
+            /// Durability matches [`Self::flush`].
+            pub fn flush_delta(&mut self) -> Result<(), StoreError> {
+                self.inner.flush_delta()
             }
 
             /// Commit dirty state and rewrite the file as one snapshot.
@@ -2336,6 +2444,52 @@ fn read_key_metadata(
         }
     }
     Ok((keys, key_hashes))
+}
+
+/// Read the keys of `sections` in file order, plus the set of them, checking
+/// every band-hash row without keeping it.
+fn read_key_catalog(
+    layout: &FileLayout,
+    sections: &[SectionDescriptor],
+    file: &mut File,
+    bands: usize,
+) -> Result<(Vec<u64>, HashSet<u64>), StoreError> {
+    let mut keys = Vec::new();
+    let mut catalog = HashSet::new();
+    for_each_key_row(layout, sections, file, bands, |key, _| {
+        if !catalog.insert(key) {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "duplicate key in persisted keys section",
+            });
+        }
+        keys.push(key);
+        Ok(())
+    })?;
+    Ok((keys, catalog))
+}
+
+/// Visit each key of `sections` with its band-hash row, in file order, one
+/// section pair at a time.
+fn for_each_key_row(
+    layout: &FileLayout,
+    sections: &[SectionDescriptor],
+    file: &mut File,
+    bands: usize,
+    mut visit: impl FnMut(u64, Vec<u64>) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    for (keys_descriptor, hashes_descriptor) in key_metadata_pairs(sections)? {
+        let chunk_keys = decode_keys(&layout.read_section(file, keys_descriptor)?)?;
+        let chunk_rows = decode_band_hashes(&layout.read_section(file, hashes_descriptor)?, bands)?;
+        if chunk_keys.len() != chunk_rows.len() {
+            return Err(StoreError::InvalidSnapshot {
+                reason: "key and band-hash record counts differ",
+            });
+        }
+        for (key, row) in chunk_keys.into_iter().zip(chunk_rows) {
+            visit(key, row)?;
+        }
+    }
+    Ok(())
 }
 
 /// Read the keys and band-hash rows of `sections`, in file order.
@@ -3247,6 +3401,7 @@ mod tests {
             assert!(index.remove(5));
             index.insert(9_000, &items[0]).expect("insert");
             let live = index.inner.collect_live_signatures().expect("signatures");
+            let hashes = index.inner.collect_live_hashes().expect("hashes");
             let expected = index
                 .inner
                 .encode_snapshot(live.as_deref())
@@ -3259,6 +3414,7 @@ mod tests {
                     .inner
                     .write_snapshot_with(
                         &mut streamed,
+                        &hashes,
                         live.as_deref(),
                         super::BUCKET_SEGMENT_TARGET_BYTES,
                         sort_limit,
@@ -3291,9 +3447,10 @@ mod tests {
             .map(|item| index.query(item).expect("query"))
             .collect();
         let mut output = std::io::Cursor::new(Vec::new());
+        let hashes = index.inner.collect_live_hashes().expect("hashes");
         index
             .inner
-            .write_snapshot_with(&mut output, None, 2_048, 17)
+            .write_snapshot_with(&mut output, &hashes, None, 2_048, 17)
             .expect("stream small segments");
         drop(index);
         fs::write(&split, output.into_inner()).expect("write");
@@ -3324,7 +3481,7 @@ mod tests {
         let mut streamed = std::io::Cursor::new(Vec::new());
         index
             .inner
-            .write_snapshot(&mut streamed, None)
+            .write_snapshot(&mut streamed, &BTreeMap::new(), None)
             .expect("stream");
         assert_eq!(streamed.into_inner(), expected);
         cleanup(&path);
@@ -3676,10 +3833,12 @@ mod tests {
         store.query(&value).expect("observe query");
         let observed = store.stats().expect("stats").queries;
 
+        let hashes = store.inner.collect_live_hashes().expect("live hashes");
         store
             .inner
             .refresh_after_commit(
                 Some(StoreError::Io(io::Error::other("directory sync failed"))),
+                hashes,
                 None,
             )
             .expect_err("durability error must propagate");
@@ -3694,11 +3853,12 @@ mod tests {
             .inner
             .collect_live_signatures()
             .expect("live signatures");
+        let hashes = store.inner.collect_live_hashes().expect("live hashes");
         store.inner.committed = None;
         store.inner.path = directory.join("missing.pari");
         store
             .inner
-            .refresh_after_commit(None, signatures.clone())
+            .refresh_after_commit(None, hashes, signatures.clone())
             .expect_err("reopen failure");
         assert_eq!(store.stats().expect("stats").queries, observed);
         assert_eq!(
@@ -4257,7 +4417,7 @@ mod tests {
         store.sync().expect("sync");
         let location = {
             let base = store.inner.committed.as_ref().expect("committed file");
-            let hash = store.inner.key_hashes[&10][0];
+            let hash = store.inner.collect_live_hashes().expect("hashes")[&10][0];
             let mut file = base.file.lock().expect("committed file");
             base.generations[0]
                 .directory
