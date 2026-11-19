@@ -3725,8 +3725,9 @@ mod tests {
                         metadata_target,
                     )
                     .expect("merged");
-                assert!(
-                    sorted.into_inner() == merged.into_inner(),
+                assert_eq!(
+                    sorted.into_inner(),
+                    merged.into_inner(),
                     "{name} merged rewrite differs at targets {bucket_target}/{metadata_target}"
                 );
             }
@@ -3756,7 +3757,7 @@ mod tests {
             .inner
             .write_snapshot(&mut expected, &hashes, None)
             .expect("sorted");
-        assert!(fs::read(&path).expect("read") == expected.into_inner());
+        assert_eq!(fs::read(&path).expect("read"), expected.into_inner());
         drop(index);
         cleanup(&path);
     }
@@ -3847,7 +3848,7 @@ mod tests {
             "{result:?}"
         );
         // Nothing was published and the handle keeps its state.
-        assert!(fs::read(&path).expect("read") == before);
+        assert_eq!(fs::read(&path).expect("read"), before);
         assert!(index.inner.committed.is_some());
         assert_eq!(index.inner.collect_live_hashes().expect("hashes"), hashes);
         drop(index);
