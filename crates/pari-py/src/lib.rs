@@ -1820,13 +1820,13 @@ impl PyDedupeEngine {
         })
     }
 
-    /// Commit the local mirror, release the in-memory index, then compact.
+    /// Commit the local mirror, compact it, then release the in-memory index.
     ///
     /// If the commit fails the handle stays open with every record. Once it
-    /// succeeds every record is on disk, so the handle closes: the in-memory
-    /// index is freed on a background thread while the mirror is rewritten as
-    /// one snapshot, and a failed rewrite leaves the committed generations
-    /// readable and raises the error.
+    /// succeeds every record is on disk, so the handle closes: the mirror is
+    /// rewritten as one snapshot, a failed rewrite leaves the committed
+    /// generations readable and raises the error, and either way the
+    /// in-memory index is then freed on a background thread.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let inner = Arc::clone(&self.inner);
         py.detach(move || {
@@ -1847,12 +1847,13 @@ impl PyDedupeEngine {
                 signatures,
                 ..
             } = state;
-            // Freeing millions of small allocations takes seconds; nothing
-            // waits on it.
+            let compacted = store.map_or(Ok(()), PersistentIndex32::compact_and_close);
+            // Freeing millions of small allocations takes seconds and nothing
+            // waits on it. It starts after the rewrite: freeing concurrently
+            // returns memory to the system while the rewrite faults in its
+            // buffers, which slowed a 10M-record rewrite from 8 s to 39 s.
             drop_in_background((index, signatures));
-            if let Some(store) = store {
-                store.compact_and_close().map_err(BindingError::from)?;
-            }
+            compacted.map_err(BindingError::from)?;
             Ok(())
         })
         .map_err(binding_error)
