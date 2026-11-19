@@ -10,7 +10,7 @@
 //! without format conversion.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     error::Error,
     ffi::OsString,
     fmt,
@@ -185,8 +185,10 @@ pub struct LazyStats {
     pub bands: usize,
     /// Number of rows per band.
     pub rows: usize,
-    /// Total persisted file bytes.
+    /// Committed file bytes: the snapshot and its delta generations.
     pub file_bytes: u64,
+    /// Number of delta generations appended after the snapshot.
+    pub delta_generations: usize,
     /// Exact stored bucket membership distribution.
     pub distribution: BucketDistribution,
     /// Process-local query metrics when observability is enabled.
@@ -197,14 +199,28 @@ pub struct LazyStats {
 struct LazyIndexCore {
     file: File,
     layout: FileLayout,
-    bucket_sections: Vec<SectionDescriptor>,
-    directory: BucketDirectory,
+    /// The base snapshot (index 0) and each appended delta generation.
+    generations: Vec<LazyGeneration>,
+    /// Base-snapshot keys, sorted.
     keys: Vec<u64>,
+    /// Base keys whose base memberships are not live: removed, or stored
+    /// again by a later generation.
+    suppressed: HashSet<u64>,
+    /// Generation index of each live key that a delta generation stores.
+    homes: HashMap<u64, u32>,
     item_count: usize,
     num_perm: usize,
     seed: u64,
     params: LshParams,
     query_metrics: Option<QueryMetrics>,
+    stores_signatures: bool,
+}
+
+/// One committed generation's bucket directory and stored signatures.
+#[derive(Debug)]
+struct LazyGeneration {
+    bucket_sections: Vec<SectionDescriptor>,
+    directory: BucketDirectory,
     signatures: Option<LazySignatures>,
 }
 
@@ -237,10 +253,10 @@ impl LazyIndexCore {
         expected_scheme: Option<SignatureScheme>,
     ) -> Result<Self, LazyStoreError> {
         let mut file = File::open(path)?;
-        let layout = FileLayout::read_from(&mut file)?;
+        let layout = FileLayout::read_with_generations(&mut file)?;
         validate_metadata(layout.metadata(), expected_scheme)?;
-        let keys_sections = key_sections(&layout)?;
-        let bucket_sections = collect_bucket_sections(&layout)?;
+        let keys_sections = key_sections(layout.sections())?;
+        let bucket_sections = collect_bucket_sections(layout.sections(), false)?;
         if bucket_sections.is_empty() {
             return Err(LazyStoreError::InvalidSnapshot {
                 reason: "missing required bucket sections; open and sync an older snapshot with a writable index to upgrade it",
@@ -253,7 +269,7 @@ impl LazyIndexCore {
                 &layout, &mut file, descriptor,
             )?);
         }
-        let signatures = read_lazy_signatures(&layout, &mut file, &keys)?;
+        let signatures = read_lazy_signatures(&layout, layout.sections(), &mut file, &keys)?;
         keys.sort_unstable();
         if keys.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(LazyStoreError::InvalidSnapshot {
@@ -279,20 +295,122 @@ impl LazyIndexCore {
         )?;
 
         let directory = BucketDirectory::read(&layout, &mut file, &bucket_sections, bands)?;
+        let stores_signatures = signatures.is_some();
 
-        Ok(Self {
+        let mut index = Self {
             file,
             layout,
-            bucket_sections,
-            directory,
+            generations: vec![LazyGeneration {
+                bucket_sections,
+                directory,
+                signatures,
+            }],
             keys,
+            suppressed: HashSet::new(),
+            homes: HashMap::new(),
             item_count,
             num_perm,
             seed,
             params,
             query_metrics: None,
-            signatures,
-        })
+            stores_signatures,
+        };
+        index.replay_deltas()?;
+        Ok(index)
+    }
+
+    /// Load each committed delta generation and apply its changes in order.
+    fn replay_deltas(&mut self) -> Result<(), LazyStoreError> {
+        let bands = self.params.bands;
+        for index in 1..=self.layout.deltas().len() {
+            let sections = self.layout.deltas()[index - 1].sections().to_vec();
+            let home = u32::try_from(index).map_err(|_| LazyStoreError::LengthOverflow)?;
+            let mut tombstone_sections = sections
+                .iter()
+                .filter(|descriptor| descriptor.kind() == SectionKind::Tombstones);
+            let (Some(tombstones), None) = (tombstone_sections.next(), tombstone_sections.next())
+            else {
+                return Err(LazyStoreError::InvalidSnapshot {
+                    reason: "delta must have exactly one tombstone section",
+                });
+            };
+            let tombstones = read_keys(&self.layout, &mut self.file, *tombstones)?;
+            if tombstones.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(LazyStoreError::InvalidSnapshot {
+                    reason: "delta tombstones are not strictly ascending",
+                });
+            }
+            for key in tombstones {
+                if self.homes.remove(&key).is_none() {
+                    if !self.is_live_in(0, key) {
+                        return Err(LazyStoreError::InvalidSnapshot {
+                            reason: "delta removes a key that is not live",
+                        });
+                    }
+                    self.suppressed.insert(key);
+                }
+            }
+            let mut keys = Vec::new();
+            for descriptor in key_sections(&sections)? {
+                keys.extend(read_keys(&self.layout, &mut self.file, descriptor)?);
+            }
+            for key in &keys {
+                if self.homes.contains_key(key) || self.is_live_in(0, *key) {
+                    return Err(LazyStoreError::InvalidSnapshot {
+                        reason: "delta inserts a key that is already live",
+                    });
+                }
+                if self.keys.binary_search(key).is_ok() {
+                    self.suppressed.insert(*key);
+                }
+                self.homes.insert(*key, home);
+            }
+            let signatures = read_lazy_signatures(&self.layout, &sections, &mut self.file, &keys)?;
+            if signatures.is_some() != self.stores_signatures {
+                return Err(LazyStoreError::InvalidSnapshot {
+                    reason: "delta signature sections do not match the snapshot",
+                });
+            }
+            let bucket_sections = collect_bucket_sections(&sections, true)?;
+            let directory =
+                BucketDirectory::read(&self.layout, &mut self.file, &bucket_sections, bands)?;
+            if keys.is_empty() != directory.is_empty() {
+                return Err(LazyStoreError::InvalidSnapshot {
+                    reason: "delta bucket memberships do not match its keys",
+                });
+            }
+            self.generations.push(LazyGeneration {
+                bucket_sections,
+                directory,
+                signatures,
+            });
+        }
+        self.item_count = self
+            .keys
+            .len()
+            .checked_sub(self.suppressed.len())
+            .and_then(|count| count.checked_add(self.homes.len()))
+            .ok_or(LazyStoreError::LengthOverflow)?;
+        Ok(())
+    }
+
+    /// Return whether `key`'s live memberships are stored by generation `index`.
+    fn is_live_in(&self, index: usize, key: u64) -> bool {
+        if index == 0 {
+            self.keys.binary_search(&key).is_ok() && !self.suppressed.contains(&key)
+        } else {
+            self.homes
+                .get(&key)
+                .is_some_and(|home| usize::try_from(*home).is_ok_and(|home| home == index))
+        }
+    }
+
+    /// Return the generation that stores `key`'s live memberships.
+    fn home_of(&self, key: u64) -> Option<usize> {
+        match self.homes.get(&key) {
+            Some(home) => usize::try_from(*home).ok(),
+            None => self.is_live_in(0, key).then_some(0),
+        }
     }
 
     fn query_scored(
@@ -306,21 +424,18 @@ impl LazyIndexCore {
             .map_err(|error| LazyStoreError::InvalidScoreFilter {
                 reason: error.reason(),
             })?;
-        if self.signatures.is_none() {
+        if !self.stores_signatures {
             return Err(LazyStoreError::SignaturesUnavailable);
         }
         let mut candidates = HashSet::new();
         self.collect_candidates(hashes, &mut candidates)?;
         let mut keys: Vec<_> = candidates.into_iter().collect();
         keys.sort_unstable();
-        let signatures = self
-            .signatures
-            .as_ref()
-            .ok_or(LazyStoreError::SignaturesUnavailable)?;
         let mut scored = Vec::with_capacity(keys.len());
         for key in keys {
-            let (segment, row) = signatures
-                .locate(key)
+            let (segment, row) = self
+                .home_of(key)
+                .and_then(|home| self.generations.get(home)?.signatures.as_ref()?.locate(key))
                 .ok_or(LazyStoreError::InvalidSnapshot {
                     reason: "live key has no stored signature",
                 })?;
@@ -395,22 +510,32 @@ impl LazyIndexCore {
     fn stats(&self) -> LazyStats {
         LazyStats {
             items: self.item_count,
-            buckets: usize::try_from(self.directory.len()).unwrap_or(usize::MAX),
+            buckets: self.generations.iter().fold(0_usize, |total, generation| {
+                total.saturating_add(
+                    usize::try_from(generation.directory.len()).unwrap_or(usize::MAX),
+                )
+            }),
             bands: self.params.bands,
             rows: self.params.rows,
             file_bytes: self.layout.file_length(),
-            distribution: BucketDistribution::from_size_counts(
-                self.directory
-                    .size_counts()
-                    .map(|(size, count)| (u64::from(size), count)),
-            ),
+            delta_generations: self.generations.len().saturating_sub(1),
+            distribution: BucketDistribution::from_size_counts(self.generations.iter().flat_map(
+                |generation| {
+                    generation
+                        .directory
+                        .size_counts()
+                        .map(|(size, count)| (u64::from(size), count))
+                },
+            )),
             queries: self.query_metrics,
         }
     }
 
     fn verify(&mut self) -> Result<(), LazyStoreError> {
-        for descriptor in &self.bucket_sections {
-            verify_section_checksum(&mut self.file, *descriptor)?;
+        for generation in &self.generations {
+            for descriptor in &generation.bucket_sections {
+                verify_section_checksum(&mut self.file, *descriptor)?;
+            }
         }
         Ok(())
     }
@@ -425,9 +550,16 @@ impl LazyIndexCore {
                 u32::try_from(band).map_err(|_| LazyStoreError::LengthOverflow)?,
                 hash,
             );
-            if let Some(location) = self.directory.find(&self.layout, &mut self.file, key)? {
+            for index in 0..self.generations.len() {
+                let Some(location) =
+                    self.generations[index]
+                        .directory
+                        .find(&self.layout, &mut self.file, key)?
+                else {
+                    continue;
+                };
                 for member in read_bucket_members(&self.layout, &mut self.file, location)? {
-                    if !output.contains(&member) && self.keys.binary_search(&member).is_ok() {
+                    if !output.contains(&member) && self.is_live_in(index, member) {
                         output.insert(member);
                     }
                 }
@@ -537,7 +669,7 @@ macro_rules! impl_lazy_index {
             /// Return whether the file stores signatures for scored queries.
             #[must_use]
             pub const fn stores_signatures(&self) -> bool {
-                self.inner.signatures.is_some()
+                self.inner.stores_signatures
             }
 
             /// Number of live keys in the snapshot.
@@ -803,10 +935,9 @@ fn clone_metadata(metadata: &IndexMetadata) -> Result<IndexMetadata, LazyStoreEr
 ///
 /// Large catalogs are split into row-aligned `Keys`/`BandHashes` pairs, so the
 /// number of `Keys` sections must match the number of `BandHashes` sections.
-fn key_sections(layout: &FileLayout) -> Result<Vec<SectionDescriptor>, LazyStoreError> {
+fn key_sections(sections: &[SectionDescriptor]) -> Result<Vec<SectionDescriptor>, LazyStoreError> {
     let of_kind = |kind| -> Vec<SectionDescriptor> {
-        layout
-            .sections()
+        sections
             .iter()
             .copied()
             .filter(|descriptor| descriptor.kind() == kind)
@@ -861,9 +992,14 @@ fn required_unique_section(
     Ok(descriptor)
 }
 
-fn collect_bucket_sections(layout: &FileLayout) -> Result<Vec<SectionDescriptor>, LazyStoreError> {
+/// Return the bucket sections of a base snapshot, or of a delta record when
+/// `delta` is set; only delta records carry (required) tombstone sections.
+fn collect_bucket_sections(
+    descriptors: &[SectionDescriptor],
+    delta: bool,
+) -> Result<Vec<SectionDescriptor>, LazyStoreError> {
     let mut sections = Vec::new();
-    for descriptor in layout.sections() {
+    for descriptor in descriptors {
         match descriptor.kind() {
             SectionKind::Buckets => {
                 if !descriptor.required() {
@@ -873,9 +1009,13 @@ fn collect_bucket_sections(layout: &FileLayout) -> Result<Vec<SectionDescriptor>
                 }
                 sections.push(*descriptor);
             }
-            SectionKind::Tombstones if descriptor.required() => {
+            SectionKind::Tombstones if descriptor.required() != delta => {
                 return Err(LazyStoreError::InvalidSnapshot {
-                    reason: "required tombstone sections are not supported",
+                    reason: if delta {
+                        "delta tombstone sections must be required"
+                    } else {
+                        "required tombstone sections are not supported"
+                    },
                 });
             }
             SectionKind::Keys
@@ -916,11 +1056,12 @@ fn widen<T: Copy + Into<u64>>(values: &[T]) -> Vec<u64> {
 /// `file_keys` must be in `Keys`-section order, which signature rows follow.
 fn read_lazy_signatures(
     layout: &FileLayout,
+    sections: &[SectionDescriptor],
     file: &mut File,
     file_keys: &[u64],
 ) -> Result<Option<LazySignatures>, LazyStoreError> {
     let mut segments = Vec::new();
-    for descriptor in layout.sections() {
+    for descriptor in sections {
         if descriptor.kind() != SectionKind::Signatures {
             continue;
         }

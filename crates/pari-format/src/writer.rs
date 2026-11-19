@@ -13,8 +13,9 @@ use std::{
 use crc32fast::hash as crc32;
 
 use crate::{
+    deltas::{encode_delta_header, record_digest, DELTA_HEADER_BYTES},
     format::{encode_header, MAX_SECTION_BYTES, MAX_SECTION_COUNT, SECTION_FLAG_REQUIRED},
-    FormatError, IndexMetadata, SectionKind,
+    DeltaCommit, FormatError, IndexMetadata, NextDelta, SectionKind,
 };
 
 /// Errors from [`ContainerWriter`].
@@ -72,6 +73,8 @@ pub struct ContainerWriter<W: Write> {
     writer: W,
     declared: Option<u32>,
     written: u32,
+    /// Section frames written so far, kept only for a delta record's digest.
+    frames: Option<Vec<u8>>,
 }
 
 impl<W: Write> ContainerWriter<W> {
@@ -94,6 +97,7 @@ impl<W: Write> ContainerWriter<W> {
             writer,
             declared: Some(declared),
             written: 0,
+            frames: None,
         })
     }
 
@@ -127,11 +131,16 @@ impl<W: Write> ContainerWriter<W> {
             return Err(FormatError::SectionTooLarge { length }.into());
         }
         let flags = if required { SECTION_FLAG_REQUIRED } else { 0 };
-        self.writer.write_all(&(kind as u16).to_le_bytes())?;
-        self.writer.write_all(&flags.to_le_bytes())?;
-        self.writer.write_all(&length.to_le_bytes())?;
-        self.writer.write_all(&crc32(payload).to_le_bytes())?;
+        let mut frame = [0_u8; 16];
+        frame[0..2].copy_from_slice(&(kind as u16).to_le_bytes());
+        frame[2..4].copy_from_slice(&flags.to_le_bytes());
+        frame[4..12].copy_from_slice(&length.to_le_bytes());
+        frame[12..16].copy_from_slice(&crc32(payload).to_le_bytes());
+        self.writer.write_all(&frame)?;
         self.writer.write_all(payload)?;
+        if let Some(frames) = &mut self.frames {
+            frames.extend_from_slice(&frame);
+        }
         self.written += 1;
         Ok(())
     }
@@ -172,6 +181,7 @@ impl<W: Write + Seek> ContainerWriter<W> {
             writer,
             declared: None,
             written: 0,
+            frames: None,
         };
         write(&mut container)?;
         let mut writer = container.writer;
@@ -186,6 +196,69 @@ impl<W: Write + Seek> ContainerWriter<W> {
             .seek(SeekFrom::Start(end))
             .map_err(ContainerWriteError::Io)?;
         Ok(writer)
+    }
+
+    /// Write the header and sections of an appended delta record.
+    ///
+    /// The sink must be positioned at [`NextDelta::offset`]. On success it is
+    /// positioned after the record, which is not committed yet: make it
+    /// durable, then write [`DeltaCommit::trailer`] at
+    /// [`DeltaCommit::trailer_offset`] and make that durable.
+    pub fn write_delta<E>(
+        mut writer: W,
+        next: NextDelta,
+        write: impl FnOnce(&mut Self) -> Result<(), E>,
+    ) -> Result<(W, DeltaCommit), E>
+    where
+        E: From<ContainerWriteError>,
+    {
+        let start = writer.stream_position().map_err(ContainerWriteError::Io)?;
+        if start != next.offset {
+            return Err(ContainerWriteError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a delta record must start where the committed data ends",
+            ))
+            .into());
+        }
+        writer
+            .write_all(&[0; DELTA_HEADER_BYTES])
+            .map_err(ContainerWriteError::Io)?;
+        let mut container = Self {
+            writer,
+            declared: None,
+            written: 0,
+            frames: Some(Vec::new()),
+        };
+        write(&mut container)?;
+        let frames = container.frames.take().unwrap_or_default();
+        let mut writer = container.writer;
+        let end = writer.stream_position().map_err(ContainerWriteError::Io)?;
+        let body_length = end
+            .checked_sub(start)
+            .and_then(|length| length.checked_sub(DELTA_HEADER_BYTES as u64))
+            .ok_or(ContainerWriteError::Format(FormatError::LengthOverflow))?;
+        let header = encode_delta_header(
+            container.written,
+            next.generation,
+            body_length,
+            next.previous_digest,
+        );
+        writer
+            .seek(SeekFrom::Start(start))
+            .map_err(ContainerWriteError::Io)?;
+        writer.write_all(&header).map_err(ContainerWriteError::Io)?;
+        writer
+            .seek(SeekFrom::Start(end))
+            .map_err(ContainerWriteError::Io)?;
+        Ok((
+            writer,
+            DeltaCommit {
+                generation: next.generation,
+                offset: start,
+                end,
+                digest: record_digest(&header, &frames),
+            },
+        ))
     }
 }
 

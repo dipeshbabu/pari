@@ -408,6 +408,16 @@ pub enum FormatError {
     LengthOverflow,
     /// Bytes remain after the declared section table.
     TrailingBytes { remaining: usize },
+    /// The file holds appended commit generations, which this reader does not
+    /// apply; use [`crate::FileLayout::read_with_generations`].
+    AppendedGenerations,
+    /// A committed appended generation is damaged or out of sequence.
+    InvalidGeneration {
+        /// The generation number being read.
+        generation: u64,
+        /// Which invariant failed.
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for FormatError {
@@ -469,6 +479,12 @@ impl fmt::Display for FormatError {
             Self::LengthOverflow => formatter.write_str("index length arithmetic overflowed"),
             Self::TrailingBytes { remaining } => {
                 write!(formatter, "{remaining} trailing bytes after declared sections")
+            }
+            Self::AppendedGenerations => formatter.write_str(
+                "index has appended commit generations that this reader does not apply; compact the index first",
+            ),
+            Self::InvalidGeneration { generation, reason } => {
+                write!(formatter, "invalid appended generation {generation}: {reason}")
             }
         }
     }

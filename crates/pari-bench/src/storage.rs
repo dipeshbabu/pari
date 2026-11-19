@@ -6,6 +6,7 @@
 )]
 
 use std::{
+    collections::HashSet,
     error::Error,
     fs,
     num::NonZeroUsize,
@@ -300,8 +301,129 @@ pub fn run_storage_benchmark(config: &BenchmarkConfig) -> Result<BenchmarkReport
             );
         }
     }
+    drop(lazy);
+
+    append_small_commit_metrics(
+        &mut report,
+        &persistent_path,
+        &indexed_signatures,
+        &query_signatures,
+        &reference_results,
+    )?;
 
     Ok(report)
+}
+
+/// Changes in the full-scale small commit: half inserts, half removals.
+const SMALL_COMMIT_CHANGES: usize = 2_000;
+
+/// Commit a few changes to the full-scale persistent index, reopen it, and
+/// compact it into one snapshot, checking candidate parity after each step.
+///
+/// The small commit appends a delta generation; compaction rewrites the
+/// snapshot, which is what every commit cost before delta generations.
+fn append_small_commit_metrics(
+    report: &mut BenchmarkReport,
+    path: &Path,
+    signatures: &[(u64, &MinHash32)],
+    query_signatures: &[MinHash32],
+    reference_results: &[Vec<u64>],
+) -> Result<(), Box<dyn Error>> {
+    let half = (SMALL_COMMIT_CHANGES / 2).min(signatures.len() / 2);
+    if half == 0 {
+        return Ok(());
+    }
+    let offset = u64::try_from(signatures.len())?;
+    let copied = u64::try_from(half)?;
+    let removed: HashSet<u64> = signatures[signatures.len() - half..]
+        .iter()
+        .map(|(key, _)| *key)
+        .collect();
+    // Copies of the first `half` items under new keys, minus the last `half` keys.
+    let expected: Vec<Vec<u64>> = reference_results
+        .iter()
+        .map(|row| {
+            let mut keys: Vec<u64> = row
+                .iter()
+                .copied()
+                .filter(|key| !removed.contains(key))
+                .chain(
+                    row.iter()
+                        .copied()
+                        .filter(|key| *key < copied)
+                        .map(|key| key + offset),
+                )
+                .collect();
+            keys.sort_unstable();
+            keys
+        })
+        .collect();
+    let check = |engine: &str, index: &PersistentIndex32| -> Result<(), Box<dyn Error>> {
+        let mut actual = index.query_many(query_signatures.iter())?;
+        for row in &mut actual {
+            row.sort_unstable();
+        }
+        ensure_candidate_parity(engine, &expected, &actual)
+    };
+
+    let mut index = PersistentIndex32::open(path)?;
+    for (key, signature) in &signatures[..half] {
+        index.insert(key + offset, signature)?;
+    }
+    for key in &removed {
+        if !index.remove(*key) {
+            return Err(format!("small commit could not remove key {key}").into());
+        }
+    }
+    let commit_started = Instant::now();
+    index.flush()?;
+    insert_elapsed(
+        report,
+        "storage.persistent.small_commit_ms",
+        commit_started.elapsed(),
+    );
+    let stats = index.stats()?;
+    report.insert_metric(
+        "storage.persistent.small_commit_changes",
+        Metric::new((half * 2) as f64, "changes", MetricDirection::Neutral),
+    );
+    report.insert_metric(
+        "storage.persistent.small_commit_delta_bytes",
+        Metric::new(stats.delta_bytes as f64, "bytes", MetricDirection::Lower),
+    );
+    report.insert_metric(
+        "storage.persistent.small_commit_delta_generations",
+        Metric::new(
+            stats.delta_generations as f64,
+            "generations",
+            MetricDirection::Neutral,
+        ),
+    );
+    check("PersistentIndex32 after a small commit", &index)?;
+    drop(index);
+
+    let reopen_started = Instant::now();
+    let mut index = PersistentIndex32::open(path)?;
+    insert_elapsed(
+        report,
+        "storage.persistent.reopen_with_delta_ms",
+        reopen_started.elapsed(),
+    );
+    check("PersistentIndex32 reopened with a delta", &index)?;
+
+    let compact_started = Instant::now();
+    index.compact()?;
+    insert_elapsed(
+        report,
+        "storage.persistent.compact_ms",
+        compact_started.elapsed(),
+    );
+    check("PersistentIndex32 after compaction", &index)?;
+    report.insert_metric(
+        "storage.persistent.small_commit_parity",
+        Metric::new(1.0, "ratio", MetricDirection::Neutral),
+    );
+    Ok(())
 }
 
 fn ensure_candidate_parity(

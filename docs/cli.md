@@ -31,8 +31,8 @@ Machine-readable output revision 1 is pinned by compiled CLI integration tests. 
 - `search --json`: `query`, optional `id`, `candidates`, and `scores` only with `--scores`, `--min-similarity`, or `--top-k`
 - `dedup --emit pairs --json`: `left`, `right`, and `similarity` only with `--min-similarity`
 - `dedup --emit groups --json`: `representative`, `members`
-- `stats --json`: `items`, `file_bytes`, `dirty`, `bands`, `rows`, `committed_buckets`, `overlay_buckets`, `suppressed_base_keys`, `committed_bucket_distribution`, `overlay_bucket_distribution`, `query_metrics`, `num_perm`, `seed`, `threshold`, `stores_signatures`
-- `verify --json`: `valid`, `sections`, `bucket_sections`, `buckets`, `members_checked`
+- `stats --json`: `items`, `file_bytes`, `dirty`, `bands`, `rows`, `committed_buckets`, `overlay_buckets`, `suppressed_base_keys`, `delta_generations`, `delta_bytes`, `committed_bucket_distribution`, `overlay_bucket_distribution`, `query_metrics`, `num_perm`, `seed`, `threshold`, `stores_signatures`
+- `verify --json`: `valid`, `sections`, `bucket_sections`, `buckets`, `members_checked`, `delta_generations`
 
 The experimental `plan --json` and `explain --json` commands share the model-labeled field set documented in [planning.md](planning.md). Compiled tests pin their current shape, but the planner model may be versioned at a future 0.x minor release as workload evidence improves.
 
@@ -251,7 +251,13 @@ pari stats --index documents.pari --json
 pari verify --index documents.pari --json
 ```
 
-`verify` validates the container header, every outer section checksum, bucket directory invariants, global bucket ordering, and each bucket member checksum. A corrupt or unsupported index returns a nonzero exit code and an actionable error on stderr.
+`verify` validates the container header, every outer section checksum, bucket directory invariants, global bucket ordering, and each bucket member checksum, for the snapshot and for every appended delta generation, and checks each generation's key changes. Its counts cover all generations: a bucket stored by several generations counts once per generation. A corrupt or unsupported index returns a nonzero exit code and an actionable error on stderr.
+
+`index` commits once per `--batch-size` records. Later batches append delta generations to the file instead of rewriting it, and the file is rewritten as one snapshot whenever the generations grow past a quarter of it; see [persistence](persistence.md#delta-commits-and-compaction). Rewrite an index as one snapshot, for example before handing it to Pari 0.3 or earlier:
+
+```bash
+pari compact --index documents.pari
+```
 
 `stats` computes exact committed and overlay bucket distributions on demand. Query metrics are process-local and therefore `null` in a fresh `stats` process. Applications that keep an index open can enable query observation through the Rust or Python API. See [observability](observability.md).
 

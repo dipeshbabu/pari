@@ -8,6 +8,7 @@
 mod bucket_stream;
 mod buckets;
 mod codec;
+mod deltas;
 mod format;
 mod layout;
 mod signatures;
@@ -22,6 +23,7 @@ pub use buckets::{
 pub use codec::{
     BytesCodec, CodecError, CodecId, I64Codec, JsonValueCodec, KeyCodec, U64Codec, Utf8Codec,
 };
+pub use deltas::{DeltaCommit, DeltaLayout, NextDelta, COMMIT_TRAILER_BYTES, DELTA_HEADER_BYTES};
 pub use format::{
     Algorithm, FormatError, IndexFile, IndexMetadata, Section, SectionKind, SignatureScheme,
     MAX_SECTION_BYTES,
