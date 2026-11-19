@@ -492,7 +492,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "pari-backend"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "idna_adapter",
  "pari-bench",
@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "pari-bench"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "pari-core",
  "pari-index",
@@ -518,7 +518,7 @@ dependencies = [
 
 [[package]]
 name = "pari-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -534,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "pari-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "rayon",
  "serde",
@@ -544,7 +544,7 @@ dependencies = [
 
 [[package]]
 name = "pari-format"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "crc32fast",
  "serde_json",
@@ -552,14 +552,14 @@ dependencies = [
 
 [[package]]
 name = "pari-index"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "pari-core",
 ]
 
 [[package]]
 name = "pari-py"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "pari-core",
  "pari-index",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "pari-store"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "fs4",
  "pari-core",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "pari-store-build"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "crc32fast",
  "pari-core",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "pari-store-lazy"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "crc32fast",
  "pari-core",
