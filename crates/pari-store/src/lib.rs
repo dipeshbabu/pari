@@ -2456,15 +2456,25 @@ fn read_key_catalog(
 ) -> Result<(Vec<u64>, HashSet<u64>), StoreError> {
     let mut keys = Vec::new();
     let mut catalog = HashSet::new();
-    for_each_key_row(layout, sections, file, bands, |key, _| {
-        if !catalog.insert(key) {
+    for (keys_descriptor, hashes_descriptor) in key_metadata_pairs(sections)? {
+        let chunk_keys = decode_keys(&layout.read_section(file, keys_descriptor)?)?;
+        // The section checksum covers the rows; only their shape needs checking.
+        let rows = band_hash_rows(&layout.read_section(file, hashes_descriptor)?, bands)?;
+        if chunk_keys.len() != rows {
             return Err(StoreError::InvalidSnapshot {
-                reason: "duplicate key in persisted keys section",
+                reason: "key and band-hash record counts differ",
             });
         }
-        keys.push(key);
-        Ok(())
-    })?;
+        catalog.reserve(chunk_keys.len());
+        for key in &chunk_keys {
+            if !catalog.insert(*key) {
+                return Err(StoreError::InvalidSnapshot {
+                    reason: "duplicate key in persisted keys section",
+                });
+            }
+        }
+        keys.extend(chunk_keys);
+    }
     Ok((keys, catalog))
 }
 
@@ -3131,7 +3141,9 @@ fn encode_band_hashes<'a>(
     Ok(output)
 }
 
-fn decode_band_hashes(payload: &[u8], bands: usize) -> Result<Vec<Vec<u64>>, StoreError> {
+/// Check a band-hash section's length against its record count and return the
+/// number of rows, without decoding them.
+fn band_hash_rows(payload: &[u8], bands: usize) -> Result<usize, StoreError> {
     let count = read_count(payload)?;
     let row_bytes = bands
         .checked_mul(U64_BYTES)
@@ -3148,6 +3160,12 @@ fn decode_band_hashes(payload: &[u8], bands: usize) -> Result<Vec<Vec<u64>>, Sto
             reason: "band-hash section length does not match metadata and record count",
         });
     }
+    Ok(count)
+}
+
+fn decode_band_hashes(payload: &[u8], bands: usize) -> Result<Vec<Vec<u64>>, StoreError> {
+    let count = band_hash_rows(payload, bands)?;
+    let row_bytes = bands * U64_BYTES;
     let mut rows = Vec::with_capacity(count);
     for row in payload[COUNT_BYTES..].chunks_exact(row_bytes) {
         let hashes = row
