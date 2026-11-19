@@ -126,6 +126,15 @@ also called compaction) when:
 - the file holds a legacy or empty snapshot, or the previous commit's outcome
   was uncertain.
 
+Bulk ingest that commits often can use `flush_delta()` (Rust) instead of
+`flush()`. It appends the pending changes whatever their size, so committing a
+growing index batch by batch never rewrites it, and rewrites only once 1,024
+generations exist or removed keys hide more than a quarter as many memberships
+as there are live keys. Queries look up every generation, so call `compact()`
+when the ingest finishes. `DedupeIndex(backend="local")` works this way: it
+commits each batch of about 65,536 records as a delta generation and compacts
+the file on `close()`.
+
 `compact()` rewrites on demand, folding every generation into one snapshot and
 dropping removed keys' memberships. `stats()` reports `delta_generations` and
 `delta_bytes`; `suppressed_base_keys` counts the hidden memberships a
@@ -148,8 +157,10 @@ bucket sizes for statistics. That is about 4.6 bytes per bucket instead of the
 56-byte in-memory location used before. Most band keys that match no bucket
 are rejected from memory; otherwise the query reads and checksums the one
 directory block that can hold the key, then reads that bucket's members. A persistent index
-additionally keeps every live key's band hashes in memory so it can remove
-keys and write the next snapshot.
+additionally keeps the set of live keys and, for keys inserted since the last
+commit, their band hashes. Committed keys' band hashes stay on disk: a snapshot
+rewrite reads them back from the generations that store them, holding them in
+memory only while it writes the new snapshot.
 
 ## Reader model and file lifetime
 

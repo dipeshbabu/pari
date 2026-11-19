@@ -174,6 +174,8 @@ with DedupeIndex(features, backend="local", path="records.pari") as index:
 
 The local file contains signatures and bucket membership, not the original Python records. Reopen it with the lower-level `Index` API for candidate queries; reconstructing high-level results still requires the source records.
 
+During ingest the local backend commits every batch of about 65,536 records to the file as a delta generation, so the mirror holds only the uncommitted batch in memory and a crash keeps every committed batch. `close()` commits the rest, releases the in-memory index, and rewrites the file as one snapshot. If that final commit fails, the handle stays open with every record. If only the rewrite fails, the handle is closed, the error is raised, and the file still holds every record as readable delta generations; `Index.compact()` can finish the rewrite later.
+
 ### Feature callback patterns
 
 For plain text, `shingles` returns overlapping word or character n-grams as bytes, ready to use as a feature:
@@ -297,7 +299,7 @@ with Index.open("documents.pari") as index:
     print(index.stats().file_bytes)
 ```
 
-The context manager calls `sync()` and closes the Python handle on exit. `close()` is idempotent after success. If saving fails, the storage exception propagates and the handle retains its pending changes so you can resolve the filesystem error and retry `sync()` or `close()`. This applies to `Index`, `Index64`, and local `DedupeIndex`, including context-manager exit. Operations on a closed handle raise `ClosedIndexError`.
+The context manager calls `sync()` and closes the Python handle on exit. `close()` is idempotent after success. If saving fails, the storage exception propagates and the handle retains its pending changes so you can resolve the filesystem error and retry `sync()` or `close()`. This applies to `Index`, `Index64`, and local `DedupeIndex`, including context-manager exit, except that a local `DedupeIndex` whose records are all committed closes even if the final rewrite fails (see [incremental and persistent ingestion](#incremental-and-persistent-ingestion)). Operations on a closed handle raise `ClosedIndexError`.
 
 See [persistence.md](persistence.md) for the local backend's writer, reader, durability, crash, and backup semantics.
 

@@ -280,6 +280,74 @@ fn compaction_folds_deltas_and_removed_keys() {
 }
 
 #[test]
+fn bulk_commits_append_large_deltas_until_compacted() {
+    // Each batch is larger than a quarter of the base, which `flush` would
+    // rewrite; `flush_delta` appends it, past the automatic generation limit.
+    let mut pair = Pair::new("bulk", 200, PersistentIndexOptions::new());
+    let mut rng = Rng(11);
+    let mut next = 100_000_u64;
+    for round in 1..=40_usize {
+        for _ in 0..60 {
+            pair.insert(next, 0);
+            next += 1;
+        }
+        if round % 4 == 0 {
+            // Reinsert a committed key with a new signature.
+            let key = pair.random_live(&mut rng);
+            pair.remove(key);
+            pair.insert(key, u64::try_from(round).expect("round"));
+        }
+        pair.index.flush_delta().expect("bulk commit");
+        assert_eq!(
+            pair.index.stats().expect("stats").delta_generations,
+            round,
+            "bulk commit {round} appends"
+        );
+        if round % 10 == 0 {
+            pair.assert_matches(&pair.index, "after bulk commits");
+        }
+    }
+    let reopened = PersistentIndex32::open(&pair.path).expect("reopen");
+    assert_eq!(reopened.stats().expect("stats").delta_generations, 40);
+    pair.assert_matches(&reopened, "reopened with bulk deltas");
+    drop(reopened);
+
+    // A clean bulk commit writes nothing.
+    let length = fs::metadata(&pair.path).expect("metadata").len();
+    pair.index.flush_delta().expect("clean bulk commit");
+    assert_eq!(fs::metadata(&pair.path).expect("metadata").len(), length);
+
+    // Removing many keys still compacts, to drop their memberships.
+    let live = pair.live.len();
+    for _ in 0..live / 3 {
+        let key = pair.random_live(&mut rng);
+        pair.remove(key);
+    }
+    pair.index.flush_delta().expect("removal commit");
+    let stats = pair.index.stats().expect("stats");
+    assert_eq!(stats.delta_generations, 0);
+    assert_eq!(stats.suppressed_base_keys, 0);
+    pair.assert_matches(&pair.index, "after removal compaction");
+
+    // Compaction folds bulk deltas, reading committed rows back from disk.
+    for _ in 0..3 {
+        for _ in 0..60 {
+            pair.insert(next, 0);
+            next += 1;
+        }
+        pair.index.flush_delta().expect("bulk commit");
+    }
+    assert_eq!(pair.index.stats().expect("stats").delta_generations, 3);
+    pair.index.compact().expect("compact");
+    assert_eq!(pair.index.stats().expect("stats").delta_generations, 0);
+    pair.assert_matches(&pair.index, "after compacting bulk deltas");
+    let reopened = PersistentIndex32::open(&pair.path).expect("reopen");
+    pair.assert_matches(&reopened, "reopened after compaction");
+    drop(reopened);
+    cleanup(&pair.path);
+}
+
+#[test]
 fn commits_compact_automatically_when_deltas_grow() {
     // Many small deltas: the 33rd commit rewrites the snapshot.
     let mut pair = Pair::new("delta-count", 3_000, PersistentIndexOptions::new());

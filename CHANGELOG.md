@@ -6,6 +6,28 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Added
+
+- `PersistentIndex32::flush_delta` and `PersistentIndex64::flush_delta` commit
+  pending changes as an appended delta generation whatever their size, for
+  bulk ingest that commits often and compacts once at the end.
+
+### Changed
+
+- Persistent indexes no longer keep committed keys' band hashes in memory, only
+  the set of live keys and the band hashes of uncommitted keys, about 300 bytes
+  per key less. Opening a snapshot checks band-hash sections without decoding
+  them, so reopening 10M items takes 5.9 s instead of 7.1 s. A snapshot rewrite
+  reads committed band hashes back from the file, which makes it about 11%
+  slower at 10M items (39.1 s instead of 35.2 s).
+- `DedupeIndex(backend="local")` commits each ingest batch of about 65,536
+  records as a delta generation instead of holding every record in the
+  persistence mirror until `close()`, then compacts the file on `close()` after
+  releasing its in-memory index. At 10M items, resident memory fell from 1,426
+  to 1,063 bytes per item and peak memory from 15.9 GB to 12.1 GB (the `memory`
+  backend uses 975 bytes and 11.3 GB); `close()` takes 89 s instead of 83 s. A
+  crash during ingest keeps every committed batch.
+
 ## [0.4.0] - 2026-11-19
 
 ### Added

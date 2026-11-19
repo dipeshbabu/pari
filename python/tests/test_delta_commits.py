@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pari import Index, Index64, MinHash, MinHash64, ReadOnlyIndex
+from pari import DedupeIndex, Index, Index64, MinHash, MinHash64, ReadOnlyIndex
 
 
 def tokens(item: int, variant: int = 0) -> list[bytes]:
@@ -72,6 +72,36 @@ class DeltaCommitTests(unittest.TestCase):
                     self.assertEqual(index.search_many(probes), expected)
                 with ReadOnlyIndex.open(path) as reader:
                     self.assertEqual(reader.search_many(probes), expected)
+
+    def test_local_dedupe_commits_batches_and_compacts_on_close(self) -> None:
+        items = 140_000
+
+        def features(record: int) -> list[bytes]:
+            pair = record // 2
+            return [f"p{pair}-{token}".encode() for token in range(8)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dedupe.pari"
+            index = DedupeIndex(features, path=path, num_perm=16, seed=3)
+            try:
+                self.assertEqual(index.add_many(range(items)), items)
+                # Earlier batches were committed as appended generations.
+                with Index.open(path) as reader:
+                    stats = reader.stats()
+                    self.assertGreaterEqual(stats.delta_generations, 1)
+                    self.assertLess(len(reader), items)
+                groups = index.groups()
+                self.assertEqual(len(groups), items // 2)
+            finally:
+                index.close()
+
+            with Index.open(path) as persisted:
+                stats = persisted.stats()
+                self.assertEqual(len(persisted), items)
+                self.assertEqual(stats.delta_generations, 0)
+                self.assertEqual(stats.delta_bytes, 0)
+                probe = MinHash.from_values(features(10), num_perm=16, seed=3)
+                self.assertEqual(persisted.search(probe), [10, 11])
 
 
 if __name__ == "__main__":
