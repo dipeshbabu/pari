@@ -6,6 +6,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-19
+
 ### Added
 
 - `PersistentIndex32::flush_delta` and `PersistentIndex64::flush_delta` commit
