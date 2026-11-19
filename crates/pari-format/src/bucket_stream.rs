@@ -156,6 +156,79 @@ pub fn write_bucket_segment<W: Write, R: Read>(
     })
 }
 
+/// Encode one canonical bucket segment from member lists that are already
+/// encoded, for writers that prepare buckets on several threads.
+///
+/// `members` must hold exactly the concatenated little-endian `u64` member
+/// lists described by `records`, and each record's checksum must be the CRC32
+/// of its list; the checksums are copied, not recomputed. The result is
+/// byte-for-byte what [`crate::encode_bucket_segment`] returns for the same
+/// buckets. Records must be strictly sorted and unique.
+pub fn encode_bucket_segment_parts(
+    records: &[BucketWriteRecord],
+    members: &[u8],
+) -> Result<Vec<u8>, BucketError> {
+    validate_records(records)?;
+    let directory_bytes = records
+        .len()
+        .checked_mul(BUCKET_DIRECTORY_ENTRY_BYTES)
+        .ok_or(BucketError::LengthOverflow)?;
+    let member_start = BUCKET_SEGMENT_HEADER_BYTES
+        .checked_add(directory_bytes)
+        .ok_or(BucketError::LengthOverflow)?;
+    let mut output = Vec::with_capacity(
+        member_start
+            .checked_add(members.len())
+            .ok_or(BucketError::LengthOverflow)?,
+    );
+    output.resize(BUCKET_SEGMENT_HEADER_BYTES, 0);
+    let mut member_offset = u64::try_from(member_start).map_err(|_| BucketError::LengthOverflow)?;
+    let mut total_member_bytes = 0_u64;
+    for record in records {
+        let member_bytes = u64::from(record.member_count)
+            .checked_mul(U64_BYTES_U64)
+            .ok_or(BucketError::LengthOverflow)?;
+        output.extend_from_slice(&record.key.band().to_le_bytes());
+        output.extend_from_slice(&0_u32.to_le_bytes());
+        output.extend_from_slice(&record.key.hash().to_le_bytes());
+        output.extend_from_slice(&member_offset.to_le_bytes());
+        output.extend_from_slice(&record.member_count.to_le_bytes());
+        output.extend_from_slice(&record.member_checksum.to_le_bytes());
+        member_offset = member_offset
+            .checked_add(member_bytes)
+            .ok_or(BucketError::LengthOverflow)?;
+        total_member_bytes = total_member_bytes
+            .checked_add(member_bytes)
+            .ok_or(BucketError::LengthOverflow)?;
+    }
+    if u64::try_from(members.len()).ok() != Some(total_member_bytes) {
+        return Err(BucketError::Invalid {
+            reason: "bucket member bytes do not match their records",
+        });
+    }
+    let directory_checksum = crc32(&output[BUCKET_SEGMENT_HEADER_BYTES..]);
+    let mut header = [0_u8; BUCKET_SEGMENT_HEADER_BYTES];
+    header[..8].copy_from_slice(&BUCKET_SEGMENT_MAGIC);
+    header[8..10].copy_from_slice(&BUCKET_SEGMENT_VERSION.to_le_bytes());
+    header[10..12].copy_from_slice(&BUCKET_SEGMENT_HEADER_BYTES_U16.to_le_bytes());
+    header[12..20].copy_from_slice(
+        &u64::try_from(records.len())
+            .map_err(|_| BucketError::LengthOverflow)?
+            .to_le_bytes(),
+    );
+    header[20..28].copy_from_slice(
+        &u64::try_from(directory_bytes)
+            .map_err(|_| BucketError::LengthOverflow)?
+            .to_le_bytes(),
+    );
+    header[28..32].copy_from_slice(&directory_checksum.to_le_bytes());
+    let header_checksum = crc32(&header[..32]);
+    header[32..36].copy_from_slice(&header_checksum.to_le_bytes());
+    output[..BUCKET_SEGMENT_HEADER_BYTES].copy_from_slice(&header);
+    output.extend_from_slice(members);
+    Ok(output)
+}
+
 fn validate_records(records: &[BucketWriteRecord]) -> Result<(), BucketError> {
     for pair in records.windows(2) {
         if pair[0].key >= pair[1].key {
@@ -189,6 +262,32 @@ mod tests {
 
     use super::{write_bucket_segment, BucketWriteRecord};
     use crate::{encode_bucket_segment, BucketKey, BucketRecord};
+
+    #[test]
+    fn parts_encoder_matches_in_memory_encoder() {
+        let first = [1_u64, 2, 3];
+        let second = [7_u64, 9];
+        let reference = encode_bucket_segment(&[
+            BucketRecord::new(BucketKey::new(0, 11), &first),
+            BucketRecord::new(BucketKey::new(1, 22), &second),
+        ])
+        .expect("reference");
+        let bytes: Vec<u8> = first
+            .iter()
+            .chain(&second)
+            .flat_map(|member| member.to_le_bytes())
+            .collect();
+        let records = [
+            BucketWriteRecord::new(BucketKey::new(0, 11), 3, crc32(&bytes[..24])),
+            BucketWriteRecord::new(BucketKey::new(1, 22), 2, crc32(&bytes[24..])),
+        ];
+        assert_eq!(
+            super::encode_bucket_segment_parts(&records, &bytes).expect("parts"),
+            reference
+        );
+        assert!(super::encode_bucket_segment_parts(&records, &bytes[..8]).is_err());
+        assert!(super::encode_bucket_segment_parts(&[], &[]).is_ok());
+    }
 
     #[test]
     fn streaming_writer_matches_in_memory_encoder() {

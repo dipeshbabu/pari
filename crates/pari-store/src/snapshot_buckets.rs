@@ -25,13 +25,7 @@ pub(super) fn write_bucket_sections<W: Write>(
     target_bytes: usize,
     sort_limit: usize,
 ) -> Result<(), StoreError> {
-    let mut output = BucketSegments {
-        writer,
-        target_bytes,
-        size: BUCKET_SEGMENT_HEADER_BYTES,
-        members: Vec::new(),
-        buckets: Vec::new(),
-    };
+    let mut output = BucketSegments::new(writer, target_bytes);
     if key_hashes.is_empty() {
         return output.flush();
     }
@@ -126,6 +120,7 @@ impl BandPartition<'_> {
     }
 }
 
+/// Groups buckets into `Buckets` sections of about `target_bytes` each.
 struct BucketSegments<'a, W: Write> {
     writer: &'a mut ContainerWriter<W>,
     target_bytes: usize,
@@ -134,7 +129,17 @@ struct BucketSegments<'a, W: Write> {
     buckets: Vec<(BucketKey, Range<usize>)>,
 }
 
-impl<W: Write> BucketSegments<'_, W> {
+impl<'a, W: Write> BucketSegments<'a, W> {
+    fn new(writer: &'a mut ContainerWriter<W>, target_bytes: usize) -> Self {
+        Self {
+            writer,
+            target_bytes,
+            size: BUCKET_SEGMENT_HEADER_BYTES,
+            members: Vec::new(),
+            buckets: Vec::new(),
+        }
+    }
+
     fn sort_and_write(&mut self, memberships: &mut [Membership]) -> Result<(), StoreError> {
         memberships.par_sort_unstable();
         let mut rest = &*memberships;

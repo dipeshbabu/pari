@@ -572,6 +572,7 @@ dependencies = [
 name = "pari-store"
 version = "0.4.1"
 dependencies = [
+ "crc32fast",
  "fs4",
  "pari-core",
  "pari-format",
