@@ -1547,6 +1547,15 @@ impl DedupeState {
 
 type SharedDedupe = Arc<Mutex<Option<DedupeState>>>;
 
+/// Drop `value` on a short-lived background thread, or here if no thread
+/// can be started.
+fn drop_in_background<T: Send + 'static>(value: T) {
+    // A failed spawn drops the closure, and with it `value`, on this thread.
+    let _ = std::thread::Builder::new()
+        .name("pari-release".to_owned())
+        .spawn(move || drop(value));
+}
+
 /// Native batch and grouping engine behind the Python usability layer.
 #[pyclass(module = "pari._native", name = "_DedupeEngine", skip_from_py_object)]
 #[derive(Debug, Clone)]
@@ -1814,9 +1823,10 @@ impl PyDedupeEngine {
     /// Commit the local mirror, release the in-memory index, then compact.
     ///
     /// If the commit fails the handle stays open with every record. Once it
-    /// succeeds every record is on disk, so the in-memory index is released
-    /// before the mirror is rewritten as one snapshot; a failed rewrite leaves
-    /// the committed generations readable and still closes the handle.
+    /// succeeds every record is on disk, so the handle closes: the in-memory
+    /// index is freed on a background thread while the mirror is rewritten as
+    /// one snapshot, and a failed rewrite leaves the committed generations
+    /// readable and raises the error.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let inner = Arc::clone(&self.inner);
         py.detach(move || {
@@ -1830,10 +1840,18 @@ impl PyDedupeEngine {
             let Some(state) = guard.take() else {
                 return Ok(());
             };
-            let DedupeState { index, store, .. } = state;
-            drop(index);
-            if let Some(mut store) = store {
-                store.compact().map_err(BindingError::from)?;
+            drop(guard);
+            let DedupeState {
+                index,
+                store,
+                signatures,
+                ..
+            } = state;
+            // Freeing millions of small allocations takes seconds; nothing
+            // waits on it.
+            drop_in_background((index, signatures));
+            if let Some(store) = store {
+                store.compact_and_close().map_err(BindingError::from)?;
             }
             Ok(())
         })
