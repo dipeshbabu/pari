@@ -6,6 +6,28 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Added
+
+- `pari_format::BucketDirectory::split_keys` and `range_cursor`, and the
+  `BucketRangeCursor` type, read the buckets of one key range of a snapshot or
+  delta generation, verifying each directory block and member list, so
+  several threads can read disjoint ranges at once.
+- `pari_format::encode_bucket_segment_parts` encodes a bucket segment from
+  member lists that are already encoded and checksummed.
+
+### Changed
+
+- A persistent-index snapshot rewrite (automatic compaction, `compact()`,
+  `sync()` of a large change, and `DedupeIndex(backend="local")` `close()`)
+  merges the committed generations, which already store keys and buckets in
+  sorted order, instead of loading every live key's band hashes and sorting
+  every membership again. Bucket ranges are merged on all CPU cores and the
+  output is byte-for-byte the same. Rewrites no longer hold every live key's
+  band hashes in memory. On a 1M-item index, a rewrite took 1.1 s instead of
+  1.8 s and `DedupeIndex(backend="local")` closed in 5.3 s instead of 12.1 s.
+  Files from older releases whose generations do not store keys in order fall
+  back to the full rebuild.
+
 ## [0.4.1] - 2026-11-19
 
 ### Added

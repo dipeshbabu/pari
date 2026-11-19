@@ -57,6 +57,7 @@ pub use pari_index::{ScoreFilter, ScoredCandidate};
 use same_file::Handle;
 
 mod snapshot_buckets;
+mod snapshot_merge;
 
 use snapshot_buckets::{write_bucket_sections, SORT_RECORD_LIMIT};
 
@@ -289,6 +290,9 @@ struct Generation {
     directory: BucketDirectory,
     /// Number of keys whose memberships this generation stores.
     keys: usize,
+    /// Whether the generation stores its keys in strictly ascending order, so
+    /// a rewrite can merge it instead of sorting.
+    sorted_keys: bool,
     /// `(key, row)` pairs sorted by key; rows index `signature_segments`.
     signature_rows: Vec<(u64, u64)>,
     /// Signature segments ordered by first row; empty without signatures.
@@ -337,6 +341,28 @@ const DELTA_BYTES_DIVISOR: u64 = 4;
 const DEAD_KEYS_DIVISOR: usize = 4;
 /// Fixed bytes of a delta record beyond its per-key and per-tombstone data.
 const DELTA_OVERHEAD_BYTES: u64 = 4_096;
+
+/// What a snapshot rewrite keeps to rebuild the overlay if publishing or
+/// reopening the new snapshot fails.
+enum RewriteRecovery {
+    /// Every live key's band hashes, materialized for the sorting writer.
+    Hashes(BTreeMap<u64, Vec<u64>>),
+    /// A read handle to the staged snapshot, which stores every live key.
+    Staged(File),
+}
+
+impl RewriteRecovery {
+    fn into_hashes(self, bands: usize) -> Result<BTreeMap<u64, Vec<u64>>, StoreError> {
+        match self {
+            Self::Hashes(key_hashes) => Ok(key_hashes),
+            Self::Staged(mut file) => {
+                file.seek(SeekFrom::Start(0))?;
+                let layout = FileLayout::read_from(&mut file)?;
+                Ok(read_key_metadata(&layout, &mut file, bands)?.1)
+            }
+        }
+    }
+}
 
 /// How a commit chooses between appending a delta and rewriting the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -479,6 +505,7 @@ impl PersistentIndexCore {
         let base = Generation {
             directory: BucketDirectory::read(&layout, &mut file, &bucket_descriptors, bands)?,
             keys: file_keys.len(),
+            sorted_keys: file_keys.windows(2).all(|pair| pair[0] < pair[1]),
             signature_rows: if stores_signatures {
                 sorted_rows(&file_keys)
             } else {
@@ -1155,19 +1182,18 @@ impl PersistentIndexCore {
             return Ok(());
         }
 
-        // Band hashes and signatures are materialized once: they are encoded
-        // into the snapshot and kept to recover in memory if publication fails
-        // after the committed file has been closed.
-        let key_hashes = self.collect_live_hashes()?;
+        // Signatures are materialized once: they are encoded into the
+        // snapshot and kept to recover in memory if publication fails after
+        // the committed file has been closed. Band hashes are recovered from
+        // the staged snapshot when it was merged, and kept otherwise.
         let signatures = self.collect_live_signatures()?;
-        let temporary = self.stage_snapshot(&key_hashes, signatures.as_deref())?;
+        let (temporary, recovery) = self.stage_rewrite(signatures.as_deref())?;
 
         // Close the committed file before replacing it. This is required on
         // Windows and avoids retaining a handle to the old generation.
         self.committed = None;
         if let Err(error) = temporary.publish_replace(&self.path) {
-            self.rebuild_overlay_all(key_hashes)?;
-            self.restore_signatures(signatures);
+            self.recover_overlay(recovery, signatures)?;
             return Err(error);
         }
         // The lock is still held, so the published file is this handle's own.
@@ -1178,7 +1204,57 @@ impl PersistentIndexCore {
         } else {
             None
         };
-        self.refresh_after_commit(parent_error, key_hashes, signatures)
+        self.refresh_after_commit(parent_error, recovery, signatures)
+    }
+
+    /// Stage a full snapshot of the live state: merged from the committed
+    /// generations when they allow it, otherwise sorted from materialized
+    /// band hashes.
+    fn stage_rewrite(
+        &self,
+        signatures: Option<&[(u64, Vec<u64>)]>,
+    ) -> Result<(OwnedTemporaryFile, RewriteRecovery), StoreError> {
+        if self.merge_eligible() {
+            create_parent_if_needed(&self.path)?;
+            let mut temporary = OwnedTemporaryFile::allocate(&self.path)?;
+            if let Err(error) =
+                temporary.write_streamed(|output| self.write_merged_snapshot(output, signatures))
+            {
+                return Err(temporary.cleanup_after_store(error));
+            }
+            return match File::open(&temporary.path) {
+                Ok(staged) => Ok((temporary, RewriteRecovery::Staged(staged))),
+                Err(error) => Err(temporary.cleanup_after_store(error.into())),
+            };
+        }
+        let key_hashes = self.collect_live_hashes()?;
+        let temporary = self.stage_snapshot(&key_hashes, signatures)?;
+        Ok((temporary, RewriteRecovery::Hashes(key_hashes)))
+    }
+
+    /// Return whether a rewrite can merge the committed generations: each
+    /// stores its keys in order, and the pending memberships fit one sort.
+    fn merge_eligible(&self) -> bool {
+        let Some(committed) = &self.committed else {
+            return false;
+        };
+        committed
+            .generations
+            .iter()
+            .all(|generation| generation.sorted_keys)
+            && self.overlay_hashes.len().saturating_mul(self.params.bands)
+                <= snapshot_buckets::SORT_RECORD_LIMIT
+    }
+
+    /// Move every live key into the overlay after a failed rewrite.
+    fn recover_overlay(
+        &mut self,
+        recovery: RewriteRecovery,
+        signatures: Option<LiveSignatures>,
+    ) -> Result<(), StoreError> {
+        self.rebuild_overlay_all(recovery.into_hashes(self.params.bands)?)?;
+        self.restore_signatures(signatures);
+        Ok(())
     }
 
     /// Rewrite the committed file as one snapshot without delta generations.
@@ -1449,7 +1525,7 @@ impl PersistentIndexCore {
             self.restore_signatures(signatures);
             return Err(error);
         }
-        self.refresh_after_commit(None, key_hashes, signatures)
+        self.refresh_after_commit(None, RewriteRecovery::Hashes(key_hashes), signatures)
     }
 
     fn stage_snapshot(
@@ -1470,11 +1546,11 @@ impl PersistentIndexCore {
     fn refresh_after_commit(
         &mut self,
         parent_error: Option<StoreError>,
-        key_hashes: BTreeMap<u64, Vec<u64>>,
+        recovery: RewriteRecovery,
         signatures: Option<LiveSignatures>,
     ) -> Result<(), StoreError> {
         // The file was published. Reopening can release the old overlay now:
-        // the collected band hashes and signatures suffice to rebuild it on error.
+        // the recovery data and collected signatures suffice to rebuild it on error.
         self.overlay_buckets = Vec::new();
         self.overlay_hashes = BTreeMap::new();
         self.live_keys = HashSet::new();
@@ -1494,8 +1570,7 @@ impl PersistentIndexCore {
                 *self = refreshed;
             }
             Err(error) => {
-                self.rebuild_overlay_all(key_hashes)?;
-                self.restore_signatures(signatures);
+                self.recover_overlay(recovery, signatures)?;
                 self.dirty = true;
                 return Err(error);
             }
@@ -1533,6 +1608,7 @@ impl PersistentIndexCore {
             signatures,
             BUCKET_SEGMENT_TARGET_BYTES,
             SORT_RECORD_LIMIT,
+            METADATA_SECTION_TARGET_BYTES,
         )
     }
 
@@ -1543,6 +1619,7 @@ impl PersistentIndexCore {
         signatures: Option<&[(u64, Vec<u64>)]>,
         bucket_target_bytes: usize,
         sort_limit: usize,
+        metadata_target_bytes: usize,
     ) -> Result<(), StoreError> {
         let metadata = self.snapshot_metadata()?;
         ContainerWriter::write_seekable(output, &metadata, |writer| {
@@ -1553,7 +1630,7 @@ impl PersistentIndexCore {
             emit_key_metadata_sections(
                 key_hashes,
                 self.params.bands,
-                METADATA_SECTION_TARGET_BYTES,
+                metadata_target_bytes,
                 &mut emit,
             )?;
             if let Some(signatures) = signatures {
@@ -1566,6 +1643,112 @@ impl PersistentIndexCore {
                 bucket_target_bytes,
                 sort_limit,
             )
+        })?;
+        Ok(())
+    }
+
+    /// Write the live state by merging the committed generations.
+    fn write_merged_snapshot<W: Write + Seek>(
+        &self,
+        output: W,
+        signatures: Option<&[(u64, Vec<u64>)]>,
+    ) -> Result<(), StoreError> {
+        self.write_merged_snapshot_with(
+            output,
+            signatures,
+            BUCKET_SEGMENT_TARGET_BYTES,
+            METADATA_SECTION_TARGET_BYTES,
+        )
+    }
+
+    fn write_merged_snapshot_with<W: Write + Seek>(
+        &self,
+        output: W,
+        signatures: Option<&[(u64, Vec<u64>)]>,
+        bucket_target_bytes: usize,
+        metadata_target_bytes: usize,
+    ) -> Result<(), StoreError> {
+        let committed = self.committed.as_ref().ok_or(StoreError::InvalidSnapshot {
+            reason: "a merged rewrite needs a committed file",
+        })?;
+        let mut file = committed
+            .file
+            .lock()
+            .map_err(|_| StoreError::PoisonedFileLock)?;
+        let mut homes = vec![0_usize; committed.generations.len()];
+        for home in self.homes.values() {
+            if let Some(count) = usize::try_from(*home)
+                .ok()
+                .and_then(|home| homes.get_mut(home))
+            {
+                *count += 1;
+            }
+        }
+        let mut generations = Vec::with_capacity(committed.generations.len());
+        let mut file_for_keys = file.try_clone()?;
+        for (index, generation) in committed.generations.iter().enumerate() {
+            let sections = if index == 0 {
+                committed.layout.sections()
+            } else {
+                committed
+                    .layout
+                    .deltas()
+                    .get(index - 1)
+                    .ok_or(StoreError::InvalidSnapshot {
+                        reason: "committed generation is missing from the layout",
+                    })?
+                    .sections()
+            };
+            // Keys this generation stores but no longer holds live: removed
+            // or stored again by a later generation or the overlay.
+            let dead = if index == 0 {
+                (!self.suppressed_base_keys.is_empty())
+                    .then(|| self.suppressed_base_keys.iter().copied().collect())
+            } else if homes[index] == generation.keys {
+                None
+            } else {
+                let mut dead = snapshot_merge::KeySet::default();
+                for_each_key(&committed.layout, sections, &mut file_for_keys, |key| {
+                    if !self.is_live_in(index, key) {
+                        dead.insert(key);
+                    }
+                })?;
+                Some(dead)
+            };
+            generations.push(snapshot_merge::MergeGeneration {
+                sections,
+                directory: &generation.directory,
+                dead,
+            });
+        }
+        drop(file_for_keys);
+        let source = snapshot_merge::MergeSource {
+            layout: &committed.layout,
+            generations,
+            overlay: &self.overlay_hashes,
+            bands: self.params.bands,
+            live_keys: self.live_keys.len(),
+        };
+        let metadata = self.snapshot_metadata()?;
+        ContainerWriter::write_seekable(output, &metadata, |writer| {
+            snapshot_merge::write_merged_key_metadata(
+                writer,
+                &mut file,
+                &source,
+                metadata_target_bytes,
+            )?;
+            if let Some(signatures) = signatures {
+                emit_signature_sections(
+                    signatures,
+                    self.scheme,
+                    self.num_perm,
+                    |kind, required, payload| {
+                        writer.write_section(kind, required, &payload)?;
+                        Ok(())
+                    },
+                )?;
+            }
+            snapshot_merge::write_merged_buckets(writer, &file, &source, bucket_target_bytes)
         })?;
         Ok(())
     }
@@ -2502,6 +2685,21 @@ fn for_each_key_row(
     Ok(())
 }
 
+/// Visit each key of `sections`, in file order, without reading band hashes.
+fn for_each_key(
+    layout: &FileLayout,
+    sections: &[SectionDescriptor],
+    file: &mut File,
+    mut visit: impl FnMut(u64),
+) -> Result<(), StoreError> {
+    for (keys_descriptor, _) in key_metadata_pairs(sections)? {
+        for key in decode_keys(&layout.read_section(file, keys_descriptor)?)? {
+            visit(key);
+        }
+    }
+    Ok(())
+}
+
 /// Read the keys and band-hash rows of `sections`, in file order.
 fn read_key_rows(
     layout: &FileLayout,
@@ -2756,6 +2954,7 @@ fn read_delta_generation(
     let generation = Generation {
         directory,
         keys: keys.len(),
+        sorted_keys: keys.windows(2).all(|pair| pair[0] < pair[1]),
         signature_rows: if stores_signatures {
             sorted_rows(&keys)
         } else {
@@ -3436,6 +3635,7 @@ mod tests {
                         live.as_deref(),
                         super::BUCKET_SEGMENT_TARGET_BYTES,
                         sort_limit,
+                        super::METADATA_SECTION_TARGET_BYTES,
                     )
                     .expect("stream");
                 assert_eq!(
@@ -3446,6 +3646,231 @@ mod tests {
             }
             cleanup(&path);
         }
+    }
+
+    /// Build a store whose committed state spans a base and several delta
+    /// generations, with removals, reinsertions and pending changes.
+    fn layered_store(name: &str, signatures: bool) -> (PathBuf, PersistentIndex32) {
+        let path = test_path(name);
+        cleanup(&path);
+        let options = super::PersistentIndexOptions::new().store_signatures(signatures);
+        let mut index =
+            PersistentIndex32::create_with_options(&path, 0.8, 128, 7, options).expect("create");
+        let item =
+            |key: u64, variant: u64| sketch((key / 3) * 50..(key / 3) * 50 + 40 + (variant % 3));
+        let base: Vec<_> = (0..600_u64).map(|key| item(key, 0)).collect();
+        index
+            .insert_many(base.iter().zip(0_u64..).map(|(sketch, key)| (key, sketch)))
+            .expect("insert base");
+        index.sync().expect("base");
+        for round in 1..=4_u64 {
+            for key in 0..40 {
+                index
+                    .insert(10_000 * round + key, &item(key + round, round))
+                    .expect("insert delta key");
+            }
+            assert!(index.remove(round * 7));
+            assert!(index.remove(round * 11 + 1));
+            index
+                .insert(round * 7, &item(round * 7, round))
+                .expect("reinsert");
+            if round > 1 {
+                assert!(index.remove(10_000 * (round - 1) + 3));
+            }
+            index.flush_delta().expect("delta");
+        }
+        // Pending changes on top of the committed generations.
+        index.insert(99_999, &item(5, 9)).expect("pending insert");
+        assert!(index.remove(10_000 * 4 + 5));
+        assert!(index.remove(2));
+        (path, index)
+    }
+
+    #[test]
+    fn merged_rewrites_match_sorted_rewrites_byte_for_byte() {
+        for (name, signatures) in [("plain", false), ("signed", true)] {
+            let (path, index) = layered_store(&format!("merge-equal-{name}"), signatures);
+            assert!(index.inner.merge_eligible());
+            assert!(index.stats().expect("stats").delta_generations >= 4);
+            let live = index.inner.collect_live_signatures().expect("signatures");
+            let hashes = index.inner.collect_live_hashes().expect("hashes");
+            // Default targets, then small ones that split keys, band hashes
+            // and buckets into many sections.
+            for (bucket_target, metadata_target) in [
+                (
+                    super::BUCKET_SEGMENT_TARGET_BYTES,
+                    super::METADATA_SECTION_TARGET_BYTES,
+                ),
+                (2_048, 8 + 37 * index.inner.params.bands * 8),
+            ] {
+                let mut sorted = std::io::Cursor::new(Vec::new());
+                index
+                    .inner
+                    .write_snapshot_with(
+                        &mut sorted,
+                        &hashes,
+                        live.as_deref(),
+                        bucket_target,
+                        super::SORT_RECORD_LIMIT,
+                        metadata_target,
+                    )
+                    .expect("sorted");
+                let mut merged = std::io::Cursor::new(Vec::new());
+                index
+                    .inner
+                    .write_merged_snapshot_with(
+                        &mut merged,
+                        live.as_deref(),
+                        bucket_target,
+                        metadata_target,
+                    )
+                    .expect("merged");
+                assert_eq!(
+                    sorted.into_inner(),
+                    merged.into_inner(),
+                    "{name} merged rewrite differs at targets {bucket_target}/{metadata_target}"
+                );
+            }
+            drop(index);
+            cleanup(&path);
+        }
+    }
+
+    #[test]
+    fn merged_rewrite_matches_sorted_rewrite_after_compaction() {
+        let (path, mut index) = layered_store("merge-compact", false);
+        let before: Vec<_> = (0..700_u64)
+            .map(|key| sketch((key / 3) * 50..(key / 3) * 50 + 40))
+            .map(|probe| index.query(&probe).expect("query"))
+            .collect();
+        let hashes = index.inner.collect_live_hashes().expect("hashes");
+        index.compact().expect("compact");
+        assert_eq!(index.stats().expect("stats").delta_generations, 0);
+        assert_eq!(index.inner.collect_live_hashes().expect("hashes"), hashes);
+        let after: Vec<_> = (0..700_u64)
+            .map(|key| sketch((key / 3) * 50..(key / 3) * 50 + 40))
+            .map(|probe| index.query(&probe).expect("query"))
+            .collect();
+        assert_eq!(before, after);
+        let mut expected = std::io::Cursor::new(Vec::new());
+        index
+            .inner
+            .write_snapshot(&mut expected, &hashes, None)
+            .expect("sorted");
+        assert_eq!(fs::read(&path).expect("read"), expected.into_inner());
+        drop(index);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn failed_merged_rewrite_recovers_from_the_staged_snapshot() {
+        let (path, mut index) = layered_store("merge-recover", true);
+        let hashes = index.inner.collect_live_hashes().expect("hashes");
+        let signatures = index.inner.collect_live_signatures().expect("signatures");
+        let (temporary, recovery) = index
+            .inner
+            .stage_rewrite(signatures.as_deref())
+            .expect("stage");
+        assert!(matches!(recovery, super::RewriteRecovery::Staged(_)));
+        // Simulate a failed publication: the committed file is closed and the
+        // staged file is removed, but the open handle still reads it.
+        index.inner.committed = None;
+        drop(temporary);
+        index
+            .inner
+            .recover_overlay(recovery, signatures.clone())
+            .expect("recover");
+        assert_eq!(index.inner.collect_live_hashes().expect("hashes"), hashes);
+        assert_eq!(
+            index.inner.collect_live_signatures().expect("signatures"),
+            signatures
+        );
+        index.sync().expect("retry");
+        assert_eq!(index.inner.collect_live_hashes().expect("hashes"), hashes);
+        let reopened = PersistentIndex32::open(&path).expect("reopen");
+        assert_eq!(
+            reopened.inner.collect_live_hashes().expect("hashes"),
+            hashes
+        );
+        drop(reopened);
+        drop(index);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn merged_rewrite_rejects_members_damaged_after_open() {
+        let (path, index) = layered_store("merge-damaged", false);
+        let hashes = index.inner.collect_live_hashes().expect("hashes");
+        let (key, row) = hashes.iter().next().expect("a live key");
+        let location = {
+            let committed = index.inner.committed.as_ref().expect("committed");
+            let home = index.inner.home_of(*key).expect("committed key");
+            let mut file = committed.file.lock().expect("committed file");
+            committed.generations[home]
+                .directory
+                .find(
+                    &committed.layout,
+                    &mut *file,
+                    pari_format::BucketKey::new(0, row[0]),
+                )
+                .expect("read directory block")
+                .expect("bucket location")
+        };
+        let absolute = location
+            .section()
+            .payload_offset()
+            .checked_add(location.member_offset())
+            .expect("absolute member offset");
+        let before = {
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .expect("open file");
+            file.seek(SeekFrom::Start(absolute)).expect("seek member");
+            file.write_all(&[0xFF]).expect("corrupt member");
+            file.sync_all().expect("sync corruption");
+            drop(file);
+            fs::read(&path).expect("read")
+        };
+
+        // Writing the file also trips the stale-handle check, so stage the
+        // rewrite directly: the merge must verify the damaged member list.
+        assert!(index.inner.merge_eligible());
+        let result = index.inner.stage_rewrite(None).map(|_| ());
+        assert!(
+            matches!(
+                result,
+                Err(StoreError::Bucket(
+                    BucketError::MemberChecksumMismatch { .. }
+                ))
+            ),
+            "{result:?}"
+        );
+        // Nothing was published and the handle keeps its state.
+        assert_eq!(fs::read(&path).expect("read"), before);
+        assert!(index.inner.committed.is_some());
+        assert_eq!(index.inner.collect_live_hashes().expect("hashes"), hashes);
+        drop(index);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn unsorted_generations_fall_back_to_the_sorting_rewrite() {
+        let (path, mut index) = layered_store("merge-fallback", false);
+        let hashes = index.inner.collect_live_hashes().expect("hashes");
+        index
+            .inner
+            .committed
+            .as_mut()
+            .expect("committed")
+            .generations[0]
+            .sorted_keys = false;
+        assert!(!index.inner.merge_eligible());
+        index.compact().expect("compact");
+        assert_eq!(index.inner.collect_live_hashes().expect("hashes"), hashes);
+        drop(index);
+        cleanup(&path);
     }
 
     #[test]
@@ -3468,7 +3893,14 @@ mod tests {
         let hashes = index.inner.collect_live_hashes().expect("hashes");
         index
             .inner
-            .write_snapshot_with(&mut output, &hashes, None, 2_048, 17)
+            .write_snapshot_with(
+                &mut output,
+                &hashes,
+                None,
+                2_048,
+                17,
+                super::METADATA_SECTION_TARGET_BYTES,
+            )
             .expect("stream small segments");
         drop(index);
         fs::write(&split, output.into_inner()).expect("write");
@@ -3856,7 +4288,7 @@ mod tests {
             .inner
             .refresh_after_commit(
                 Some(StoreError::Io(io::Error::other("directory sync failed"))),
-                hashes,
+                super::RewriteRecovery::Hashes(hashes),
                 None,
             )
             .expect_err("durability error must propagate");
@@ -3876,7 +4308,11 @@ mod tests {
         store.inner.path = directory.join("missing.pari");
         store
             .inner
-            .refresh_after_commit(None, hashes, signatures.clone())
+            .refresh_after_commit(
+                None,
+                super::RewriteRecovery::Hashes(hashes),
+                signatures.clone(),
+            )
             .expect_err("reopen failure");
         assert_eq!(store.stats().expect("stats").queries, observed);
         assert_eq!(

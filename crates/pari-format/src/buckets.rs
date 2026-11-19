@@ -287,6 +287,17 @@ fn read_segment_directory<R: Read + Seek>(
     reader: &mut R,
     descriptor: SectionDescriptor,
 ) -> Result<SegmentDirectory, BucketError> {
+    parse_segment_directory(descriptor, |offset, length| {
+        Ok(layout.read_section_range(reader, descriptor, offset, length)?)
+    })
+}
+
+/// Validate a segment header and its checksum-verified directory, reading
+/// section byte ranges through `read`.
+fn parse_segment_directory(
+    descriptor: SectionDescriptor,
+    mut read: impl FnMut(u64, usize) -> Result<Vec<u8>, BucketError>,
+) -> Result<SegmentDirectory, BucketError> {
     if descriptor.kind() != SectionKind::Buckets || !descriptor.required() {
         return Err(BucketError::Invalid {
             reason: "bucket segment must be a required Buckets section",
@@ -298,7 +309,7 @@ fn read_segment_directory<R: Read + Seek>(
         });
     }
 
-    let header = layout.read_section_range(reader, descriptor, 0, BUCKET_SEGMENT_HEADER_BYTES)?;
+    let header = read(0, BUCKET_SEGMENT_HEADER_BYTES)?;
     validate_header_fixed_fields(&header)?;
     let expected_header_checksum = read_u32_at(&header, 32)?;
     let actual_header_checksum = crc32(&header[..32]);
@@ -331,12 +342,7 @@ fn read_segment_directory<R: Read + Seek>(
         });
     }
 
-    let directory = layout.read_section_range(
-        reader,
-        descriptor,
-        BUCKET_SEGMENT_HEADER_BYTES_U64,
-        directory_bytes,
-    )?;
+    let directory = read(BUCKET_SEGMENT_HEADER_BYTES_U64, directory_bytes)?;
     let expected_directory_checksum = read_u32_at(&header, 28)?;
     let actual_directory_checksum = crc32(&directory);
     if expected_directory_checksum != actual_directory_checksum {
@@ -771,13 +777,240 @@ fn read_u64(bytes: &[u8]) -> Result<u64, BucketError> {
     Ok(u64::from_le_bytes(raw))
 }
 
+/// Directory bytes a [`BucketRangeCursor`] reads at once, across blocks.
+const RANGE_DIRECTORY_BATCH_BYTES: usize = 256 * 1024;
+
+impl BucketDirectory {
+    /// Return up to `parts - 1` ascending bucket keys that split this
+    /// directory's buckets into about `parts` ranges of similar bucket counts.
+    ///
+    /// Every key is the first key of a directory block, so ranges that start
+    /// at these keys begin at block boundaries in this directory.
+    #[must_use]
+    pub fn split_keys(&self, parts: usize) -> Vec<BucketKey> {
+        if parts < 2 || self.blocks.len() < 2 {
+            return Vec::new();
+        }
+        let step = self.blocks.len().div_ceil(parts).max(1);
+        self.blocks
+            .iter()
+            .step_by(step)
+            .skip(1)
+            .map(|block| block.first_key)
+            .collect()
+    }
+
+    /// Iterate the buckets whose keys are at least `start` (or every bucket
+    /// when `None`) and below `end` (or to the last bucket when `None`).
+    ///
+    /// The cursor reads directory blocks in batches, verifies each block's
+    /// checksum against this index and each member list's checksum against
+    /// its directory entry, exactly like [`Self::find`] and
+    /// [`read_bucket_members`]. Cursors over disjoint ranges can run on
+    /// separate threads with separate readers.
+    #[must_use]
+    pub fn range_cursor(
+        &self,
+        start: Option<BucketKey>,
+        end: Option<BucketKey>,
+    ) -> BucketRangeCursor<'_> {
+        // The block holding `start`: the last block whose first key is not
+        // above it. Earlier entries of that block are skipped.
+        let block = start.map_or(0, |start| {
+            self.blocks
+                .partition_point(|block| block.first_key <= start)
+                .saturating_sub(1)
+        });
+        BucketRangeCursor {
+            directory: self,
+            next_block: block,
+            start,
+            end,
+            entries: Vec::new(),
+            entry: 0,
+            members: Vec::new(),
+            members_offset: 0,
+            finished: false,
+        }
+    }
+}
+
+/// Buckets of one key range of a [`BucketDirectory`], in key order.
+#[derive(Debug)]
+pub struct BucketRangeCursor<'a> {
+    directory: &'a BucketDirectory,
+    next_block: usize,
+    start: Option<BucketKey>,
+    end: Option<BucketKey>,
+    /// Verified directory entries of the current batch.
+    entries: Vec<u8>,
+    entry: usize,
+    /// Member bytes of the current batch, starting at `members_offset`.
+    members: Vec<u8>,
+    members_offset: u64,
+    finished: bool,
+}
+
+impl BucketRangeCursor<'_> {
+    /// Return the next bucket in the range and replace `members` with its
+    /// member keys, or `None` after the range.
+    pub fn next_bucket<R: Read + Seek>(
+        &mut self,
+        layout: &FileLayout,
+        reader: &mut R,
+        members: &mut Vec<u64>,
+    ) -> Result<Option<BucketKey>, BucketError> {
+        loop {
+            if self.finished {
+                return Ok(None);
+            }
+            if self.entry * BUCKET_DIRECTORY_ENTRY_BYTES >= self.entries.len() {
+                if !self.load_batch(layout, reader)? {
+                    self.finished = true;
+                    return Ok(None);
+                }
+                continue;
+            }
+            let at = self.entry * BUCKET_DIRECTORY_ENTRY_BYTES;
+            let entry = &self.entries[at..at + BUCKET_DIRECTORY_ENTRY_BYTES];
+            self.entry += 1;
+            let key = entry_key(entry)?;
+            if self.start.is_some_and(|start| key < start) {
+                continue;
+            }
+            if self.end.is_some_and(|end| key >= end) {
+                self.finished = true;
+                return Ok(None);
+            }
+            let offset = read_u64_at(entry, 16)?;
+            let count = read_u32_at(entry, 24)?;
+            let checksum = read_u32_at(entry, 28)?;
+            let length = usize::try_from(count)
+                .map_err(|_| BucketError::LengthOverflow)?
+                .checked_mul(U64_BYTES)
+                .ok_or(BucketError::LengthOverflow)?;
+            let first = usize::try_from(offset.checked_sub(self.members_offset).ok_or(
+                BucketError::Invalid {
+                    reason: "bucket member range precedes its batch",
+                },
+            )?)
+            .map_err(|_| BucketError::LengthOverflow)?;
+            let bytes = first
+                .checked_add(length)
+                .and_then(|last| self.members.get(first..last))
+                .ok_or(BucketError::Invalid {
+                    reason: "bucket member range extends past its batch",
+                })?;
+            let actual = crc32(bytes);
+            if actual != checksum {
+                return Err(BucketError::MemberChecksumMismatch {
+                    expected: checksum,
+                    actual,
+                });
+            }
+            members.clear();
+            for chunk in bytes.chunks_exact(U64_BYTES) {
+                members.push(read_u64(chunk)?);
+            }
+            return Ok(Some(key));
+        }
+    }
+
+    /// Read the next batch of contiguous blocks of one section and their
+    /// member bytes. Return `false` when no block is left in the range.
+    fn load_batch<R: Read + Seek>(
+        &mut self,
+        layout: &FileLayout,
+        reader: &mut R,
+    ) -> Result<bool, BucketError> {
+        let blocks = &self.directory.blocks;
+        let Some(first) = blocks.get(self.next_block).copied() else {
+            return Ok(false);
+        };
+        if self.end.is_some_and(|end| first.first_key >= end) {
+            return Ok(false);
+        }
+        // Extend the batch over following blocks of the same section.
+        let mut last = self.next_block;
+        let mut entries =
+            usize::try_from(first.entries).map_err(|_| BucketError::LengthOverflow)?;
+        while let Some(next) = blocks.get(last + 1) {
+            let previous = blocks[last];
+            let next_entries =
+                usize::try_from(next.entries).map_err(|_| BucketError::LengthOverflow)?;
+            if next.section != first.section
+                || next.first_entry != previous.first_entry + previous.entries
+                || (entries + next_entries) * BUCKET_DIRECTORY_ENTRY_BYTES
+                    > RANGE_DIRECTORY_BATCH_BYTES
+                || self.end.is_some_and(|end| next.first_key >= end)
+            {
+                break;
+            }
+            entries += next_entries;
+            last += 1;
+        }
+        let descriptor = *self
+            .directory
+            .sections
+            .get(usize::try_from(first.section).map_err(|_| BucketError::LengthOverflow)?)
+            .ok_or(BucketError::Invalid {
+                reason: "bucket directory block references a missing section",
+            })?;
+        let offset = u64::from(first.first_entry)
+            .checked_mul(BUCKET_DIRECTORY_ENTRY_BYTES as u64)
+            .and_then(|bytes| bytes.checked_add(BUCKET_SEGMENT_HEADER_BYTES_U64))
+            .ok_or(BucketError::LengthOverflow)?;
+        let length = entries
+            .checked_mul(BUCKET_DIRECTORY_ENTRY_BYTES)
+            .ok_or(BucketError::LengthOverflow)?;
+        let bytes = layout.read_section_range(reader, descriptor, offset, length)?;
+        let mut at = 0;
+        for block in &blocks[self.next_block..=last] {
+            let size = usize::try_from(block.entries).map_err(|_| BucketError::LengthOverflow)?
+                * BUCKET_DIRECTORY_ENTRY_BYTES;
+            let actual = crc32(&bytes[at..at + size]);
+            if actual != block.checksum {
+                return Err(BucketError::DirectoryChecksumMismatch {
+                    expected: block.checksum,
+                    actual,
+                });
+            }
+            at += size;
+        }
+        // Member lists of consecutive entries are contiguous.
+        let first_entry = &bytes[..BUCKET_DIRECTORY_ENTRY_BYTES];
+        let last_entry = &bytes[length - BUCKET_DIRECTORY_ENTRY_BYTES..];
+        let members_start = read_u64_at(first_entry, 16)?;
+        let members_end = read_u64_at(last_entry, 16)?
+            .checked_add(
+                u64::from(read_u32_at(last_entry, 24)?)
+                    .checked_mul(U64_BYTES_U64)
+                    .ok_or(BucketError::LengthOverflow)?,
+            )
+            .ok_or(BucketError::LengthOverflow)?;
+        let member_length = usize::try_from(members_end.checked_sub(members_start).ok_or(
+            BucketError::Invalid {
+                reason: "bucket member ranges are out of order",
+            },
+        )?)
+        .map_err(|_| BucketError::LengthOverflow)?;
+        self.members =
+            layout.read_section_range(reader, descriptor, members_start, member_length)?;
+        self.members_offset = members_start;
+        self.entries = bytes;
+        self.entry = 0;
+        self.next_block = last + 1;
+        Ok(true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
 
     use super::{
         decode_bucket_segment, encode_bucket_segment, read_bucket_members,
-        validate_global_bucket_order, BucketKey, BucketRecord,
+        validate_global_bucket_order, BucketDirectory, BucketError, BucketKey, BucketRecord,
     };
     use crate::{
         Algorithm, CodecId, FileLayout, IndexFile, IndexMetadata, Section, SectionKind,
@@ -829,6 +1062,116 @@ mod tests {
             read_bucket_members(&layout, &mut cursor, locations[1]).expect("members"),
             second
         );
+    }
+
+    /// A file whose buckets span several sections and many directory blocks
+    /// in every band.
+    fn many_bucket_file() -> (Vec<u8>, Vec<(BucketKey, Vec<u64>)>) {
+        let mut buckets = Vec::new();
+        for band in 0..32_u32 {
+            for hash in 0..150_u64 {
+                let members: Vec<u64> = (0..=(hash % 3)).map(|offset| hash * 10 + offset).collect();
+                buckets.push((
+                    BucketKey::new(band, hash * 1_000 + u64::from(band)),
+                    members,
+                ));
+            }
+        }
+        let sections = buckets
+            .chunks(700)
+            .map(|chunk| {
+                let records: Vec<_> = chunk
+                    .iter()
+                    .map(|(key, members)| BucketRecord::new(*key, members))
+                    .collect();
+                Section::new(
+                    SectionKind::Buckets,
+                    true,
+                    encode_bucket_segment(&records).expect("encode"),
+                )
+                .expect("section")
+            })
+            .collect();
+        let bytes = IndexFile::new(metadata(), sections)
+            .expect("file")
+            .encode()
+            .expect("container");
+        (bytes, buckets)
+    }
+
+    #[test]
+    fn range_cursors_cover_every_bucket_exactly_once() {
+        let (bytes, expected) = many_bucket_file();
+        let mut reader = Cursor::new(bytes);
+        let layout = FileLayout::read_from(&mut reader).expect("layout");
+        let directory =
+            BucketDirectory::read(&layout, &mut reader, layout.sections(), 32).expect("directory");
+        for parts in [1, 2, 7, 64, 10_000] {
+            let splits = directory.split_keys(parts);
+            assert!(splits.windows(2).all(|pair| pair[0] < pair[1]));
+            let mut bounds = vec![None];
+            bounds.extend(splits.iter().copied().map(Some));
+            bounds.push(None);
+            let mut actual = Vec::new();
+            let mut members = Vec::new();
+            for range in bounds.windows(2) {
+                let mut cursor = directory.range_cursor(range[0], range[1]);
+                while let Some(key) = cursor
+                    .next_bucket(&layout, &mut reader, &mut members)
+                    .expect("bucket")
+                {
+                    actual.push((key, members.clone()));
+                }
+            }
+            assert_eq!(actual, expected, "{parts} parts");
+        }
+        // Ranges that start and end inside directory blocks.
+        let start = expected[123].0;
+        let end = expected[2_345].0;
+        let mut cursor = directory.range_cursor(Some(start), Some(end));
+        let mut members = Vec::new();
+        let mut actual = Vec::new();
+        while let Some(key) = cursor
+            .next_bucket(&layout, &mut reader, &mut members)
+            .expect("bucket")
+        {
+            actual.push((key, members.clone()));
+        }
+        assert_eq!(actual, expected[123..2_345]);
+    }
+
+    #[test]
+    fn range_cursors_detect_damaged_members_and_directories() {
+        let (bytes, _) = many_bucket_file();
+        let mut reader = Cursor::new(bytes.clone());
+        let layout = FileLayout::read_from(&mut reader).expect("layout");
+        let directory =
+            BucketDirectory::read(&layout, &mut reader, layout.sections(), 32).expect("directory");
+        let section = layout.sections()[0];
+        let payload = usize::try_from(section.payload_offset()).expect("offset");
+        let directory_end = payload + super::BUCKET_SEGMENT_HEADER_BYTES + 700 * 32;
+        for (at, member) in [(directory_end + 3, true), (payload + 50, false)] {
+            let mut damaged = bytes.clone();
+            damaged[at] ^= 0xFF;
+            let mut reader = Cursor::new(damaged);
+            let mut cursor = directory.range_cursor(None, None);
+            let mut members = Vec::new();
+            let error = loop {
+                match cursor.next_bucket(&layout, &mut reader, &mut members) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => panic!("damage at {at} was not detected"),
+                    Err(error) => break error,
+                }
+            };
+            if member {
+                assert!(matches!(error, BucketError::MemberChecksumMismatch { .. }));
+            } else {
+                assert!(matches!(
+                    error,
+                    BucketError::DirectoryChecksumMismatch { .. }
+                ));
+            }
+        }
     }
 
     #[test]

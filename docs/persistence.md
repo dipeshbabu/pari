@@ -141,6 +141,18 @@ dropping removed keys' memberships. `stats()` reports `delta_generations` and
 compaction would drop. `pari compact --index PATH` does the same from the
 command line.
 
+A snapshot rewrite merges the committed generations instead of rebuilding the
+index from scratch. Every generation stores its keys in ascending order and
+its buckets in `(band, hash)` order, so the rewrite merges those sorted streams
+and drops memberships that are no longer live. It splits the bucket key space
+into ranges at directory-block boundaries, merges the ranges on all CPU cores
+with positioned reads, and writes them in order. It verifies every directory
+block and member list it reads, and the result is byte-for-byte the snapshot a
+full rebuild would write. Memory stays at a few read buffers per generation
+plus the ranges in flight, instead of every live key's band hashes. Files
+whose generations do not store keys in order, written by older releases, and
+rewrites with many uncommitted keys use the full rebuild.
+
 The format of delta records is specified in
 [index-format.md](index-format.md#appended-commit-generations). Pari 0.3 and
 earlier cannot open a file with delta generations; compact it first if an older
@@ -159,8 +171,8 @@ are rejected from memory; otherwise the query reads and checksums the one
 directory block that can hold the key, then reads that bucket's members. A persistent index
 additionally keeps the set of live keys and, for keys inserted since the last
 commit, their band hashes. Committed keys' band hashes stay on disk: a snapshot
-rewrite reads them back from the generations that store them, holding them in
-memory only while it writes the new snapshot.
+rewrite streams them from the generations that store them into the new
+snapshot.
 
 ## Reader model and file lifetime
 
