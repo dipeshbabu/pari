@@ -8,10 +8,11 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Changed
 
-- `DedupeIndex.add_many` and `deduplicate` collect and sketch each batch in
-  chunks of 8,192 records and insert each chunk on a worker thread while the
-  next one is collected and sketched, instead of running the steps one after
-  another. A batch remains all-or-nothing: a failure removes every record of
+- `DedupeIndex.add_many` and `deduplicate` handle each batch in chunks of
+  8,192 records in three overlapping stages: the calling thread collects a
+  chunk from Python while a sketch thread builds the previous chunk's
+  signatures and an insert thread adds the one before, instead of running the
+  steps one after another. A batch remains all-or-nothing: a failure removes every record of
   the batch again. `threads=1` keeps the sequential path.
 - `MinHash.from_batch`, `MinHash64.from_batch`, `DedupeIndex` and
   `deduplicate` copy a batch's feature rows into one contiguous buffer instead
