@@ -502,18 +502,67 @@ impl IndexData {
         Ok(())
     }
 
-    fn insert_validated(&mut self, key: u64, hashes: Vec<u64>, signature: Option<Box<[u64]>>) {
-        if let Some(signatures) = &mut self.signatures {
-            signatures.push(signature);
-        }
-        let id = u32::try_from(self.id_to_key.len()).expect("capacity validated before insertion");
-        for (table, hash) in self.buckets.iter_mut().zip(&hashes) {
-            table.entry(*hash).or_default().push(id);
+    /// Insert validated items, assigning internal ids in order.
+    ///
+    /// Each band table is independent, so for large batches the tables are
+    /// filled on several threads, a group of bands each, while this thread
+    /// records keys and band hashes. Every table receives its ids in the
+    /// same order either way, so the index is the same.
+    fn insert_validated(&mut self, items: Vec<ValidatedItem>) {
+        let first = self.id_to_key.len();
+        let id_of = |offset: usize| {
+            u32::try_from(first + offset).expect("capacity validated before insertion")
+        };
+        let fill = |band: usize, table: &mut HashMap<u64, Vec<u32>>| {
+            for (offset, (_, hashes, _)) in items.iter().enumerate() {
+                table.entry(hashes[band]).or_default().push(id_of(offset));
+            }
+        };
+        let threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(self.buckets.len());
+
+        let Self {
+            buckets,
+            key_to_id,
+            id_to_key,
+            ..
+        } = self;
+        let record_keys = |key_to_id: &mut HashMap<u64, u32>, id_to_key: &mut Vec<Option<u64>>| {
+            key_to_id.reserve(items.len());
+            id_to_key.reserve(items.len());
+            for (offset, (key, _, _)) in items.iter().enumerate() {
+                key_to_id.insert(*key, id_of(offset));
+                id_to_key.push(Some(*key));
+            }
+        };
+        if threads < 2 || items.len() < PARALLEL_INSERT_MIN_ITEMS {
+            for (band, table) in buckets.iter_mut().enumerate() {
+                fill(band, table);
+            }
+            record_keys(key_to_id, id_to_key);
+        } else {
+            let bands_per_thread = buckets.len().div_ceil(threads);
+            std::thread::scope(|scope| {
+                for (group, tables) in buckets.chunks_mut(bands_per_thread).enumerate() {
+                    let fill = &fill;
+                    scope.spawn(move || {
+                        for (offset, table) in tables.iter_mut().enumerate() {
+                            fill(group * bands_per_thread + offset, table);
+                        }
+                    });
+                }
+                record_keys(key_to_id, id_to_key);
+            });
         }
 
-        self.key_to_id.insert(key, id);
-        self.id_to_key.push(Some(key));
-        self.band_hashes.push(Some(hashes));
+        self.band_hashes.reserve(items.len());
+        for (_, hashes, signature) in items {
+            if let Some(signatures) = &mut self.signatures {
+                signatures.push(signature);
+            }
+            self.band_hashes.push(Some(hashes));
+        }
     }
 
     fn collect_candidate_ids(&self, hashes: &[u64], output: &mut HashSet<u32>) {
@@ -667,11 +716,15 @@ macro_rules! impl_lsh_index {
                 }
                 self.data.ensure_capacity(items.len())?;
                 let store_signatures = self.data.signatures.is_some();
-                for (key, sketch) in items {
-                    let hashes = self.compute_band_hashes(sketch.signature());
-                    let signature = store_signatures.then(|| widen(sketch.signature()));
-                    self.data.insert_validated(key, hashes, signature);
-                }
+                let items = items
+                    .into_iter()
+                    .map(|(key, sketch)| {
+                        let hashes = self.compute_band_hashes(sketch.signature());
+                        let signature = store_signatures.then(|| widen(sketch.signature()));
+                        (key, hashes, signature)
+                    })
+                    .collect();
+                self.data.insert_validated(items);
                 Ok(())
             }
 
@@ -887,6 +940,12 @@ macro_rules! impl_lsh_index {
 impl_lsh_index!(LshIndex32, MinHash32, u32, 4, hash_band32);
 impl_lsh_index!(LshIndex64, MinHash64, u64, 8, hash_band64);
 
+/// A validated item to insert: key, band hashes and optional stored signature.
+type ValidatedItem = (u64, Vec<u64>, Option<Box<[u64]>>);
+
+/// Items per insert below which band tables are filled on the calling thread.
+const PARALLEL_INSERT_MIN_ITEMS: usize = 1_024;
+
 fn widen<T: Copy + Into<u64>>(values: &[T]) -> Box<[u64]> {
     values.iter().map(|value| (*value).into()).collect()
 }
@@ -1017,6 +1076,50 @@ mod tests {
     use super::{
         hash_band64, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams, StorageMode,
     };
+
+    #[test]
+    fn parallel_batch_insert_builds_the_same_index_as_single_inserts() {
+        let items: Vec<(u64, MinHash32)> = (0..5_000_u64)
+            .map(|key| {
+                // Families of four keys share most values, so buckets fill.
+                let base = (key / 4) * 100;
+                (
+                    key * 7 + 3,
+                    sketch((base..base + 30).chain([base + 90 + key % 4]), 128, 9),
+                )
+            })
+            .collect();
+        let empty = || {
+            LshIndex32::with_params(0.5, 128, 9, LshParams::new(16, 8))
+                .expect("valid index")
+                .with_signature_storage()
+        };
+        let mut batch = empty();
+        batch
+            .insert_many(items.iter().map(|(key, sketch)| (*key, sketch)))
+            .expect("batch insert");
+        let mut single = empty();
+        for (key, sketch) in &items {
+            single.insert(*key, sketch).expect("single insert");
+        }
+
+        assert_eq!(batch.data.buckets, single.data.buckets);
+        assert_eq!(batch.data.key_to_id, single.data.key_to_id);
+        assert_eq!(batch.data.id_to_key, single.data.id_to_key);
+        assert_eq!(batch.data.band_hashes, single.data.band_hashes);
+        assert_eq!(batch.data.signatures, single.data.signatures);
+        assert!(batch
+            .data
+            .buckets
+            .iter()
+            .any(|table| table.values().any(|ids| ids.len() > 1)));
+        for (_, sketch) in items.iter().step_by(97) {
+            assert_eq!(
+                batch.query(sketch).expect("query"),
+                single.query(sketch).expect("query")
+            );
+        }
+    }
 
     #[test]
     fn bucket_distribution_uses_exact_nearest_rank_summaries() {
