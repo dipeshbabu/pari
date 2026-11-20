@@ -13,6 +13,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   next one is collected and sketched, instead of running the steps one after
   another. A batch remains all-or-nothing: a failure removes every record of
   the batch again. `threads=1` keeps the sequential path.
+- `MinHash.from_batch`, `MinHash64.from_batch`, `DedupeIndex` and
+  `deduplicate` copy a batch's feature rows into one contiguous buffer instead
+  of allocating every feature separately, and read rows that are exact lists
+  or tuples without a Python iterator. Signatures are unchanged.
 
 ## [0.4.2] - 2026-11-19
 
