@@ -4,7 +4,10 @@
 use std::{
     num::NonZeroUsize,
     path::PathBuf,
-    sync::{Arc, Mutex, TryLockError},
+    sync::{
+        mpsc::{self, Receiver},
+        Arc, Mutex, TryLockError,
+    },
 };
 
 use pari_core::{BatchThreads, MinHash32, MinHash64, MinHashError};
@@ -21,7 +24,7 @@ use pyo3::{
     create_exception,
     exceptions::{PyException, PyTypeError},
     prelude::*,
-    types::{PyAny, PyByteArray, PyBytes, PyMemoryView, PyModule},
+    types::{PyAny, PyByteArray, PyBytes, PyIterator, PyMemoryView, PyModule},
 };
 
 mod read_only;
@@ -203,6 +206,19 @@ fn collect_feature_rows(py: Python<'_>, rows: &Bound<'_, PyAny>) -> PyResult<Vec
     rows.try_iter()?
         .map(|row| collect_byte_values(py, &row?))
         .collect()
+}
+
+/// Copy up to `limit` feature rows from `rows`, consuming no row beyond them.
+fn collect_feature_chunk(
+    py: Python<'_>,
+    rows: &mut Bound<'_, PyIterator>,
+    limit: usize,
+) -> PyResult<Vec<Vec<Vec<u8>>>> {
+    let mut chunk = Vec::with_capacity(limit.min(INGEST_CHUNK_ROWS));
+    for row in rows.by_ref().take(limit) {
+        chunk.push(collect_byte_values(py, &row?)?);
+    }
+    Ok(chunk)
 }
 
 fn indexed_signature_error(py: Python<'_>, error: &PyErr, index: usize) -> PyErr {
@@ -1547,6 +1563,156 @@ impl DedupeState {
 
 type SharedDedupe = Arc<Mutex<Option<DedupeState>>>;
 
+/// Records collected, sketched and handed to the insert worker at a time.
+const INGEST_CHUNK_ROWS: usize = 8_192;
+
+/// One ingest batch applied to a dedupe state under its lock.
+///
+/// Chunks are inserted as they arrive. Until [`Self::finish`], the batch can
+/// be rolled back, so a failed call leaves no record behind.
+struct BatchIngest<'a> {
+    state: &'a mut DedupeState,
+    start_key: u64,
+    inserted: u64,
+}
+
+impl<'a> BatchIngest<'a> {
+    /// Commit earlier batches to the local mirror if enough are pending, then
+    /// start a batch at `start_key`.
+    fn begin(state: &'a mut DedupeState, start_key: u64) -> Result<Self, BindingError> {
+        if let Some(store) = &mut state.store {
+            if state.mirror_pending >= MIRROR_COMMIT_KEYS {
+                // Commit earlier batches before inserting this one, so a
+                // failed commit leaves the whole call without effect. Each
+                // commit appends a delta; `close` compacts the file once.
+                store.flush_delta().map_err(BindingError::from)?;
+                state.mirror_pending = 0;
+            }
+        }
+        if let Some(signatures) = &state.signatures {
+            if u64::try_from(signatures.len()).ok() != Some(start_key) {
+                return Err(BindingError::Store(StoreError::InvalidSnapshot {
+                    reason: "dedupe keys must be contiguous ingestion indexes",
+                }));
+            }
+        }
+        Ok(Self {
+            state,
+            start_key,
+            inserted: 0,
+        })
+    }
+
+    /// Insert the next chunk; on error the chunk leaves no trace, and the
+    /// caller rolls back the earlier chunks.
+    fn insert(&mut self, keys: &[u64], sketches: &[MinHash32]) -> Result<(), BindingError> {
+        let state = &mut *self.state;
+        state
+            .index
+            .insert_many(
+                keys.iter()
+                    .zip(sketches)
+                    .map(|(key, sketch)| (*key, sketch)),
+            )
+            .map_err(BindingError::from)?;
+        if let Some(store) = &mut state.store {
+            if let Err(error) = store.insert_many(
+                keys.iter()
+                    .zip(sketches)
+                    .map(|(key, sketch)| (*key, sketch)),
+            ) {
+                for key in keys {
+                    state.index.remove(*key);
+                }
+                return Err(BindingError::from(error));
+            }
+        }
+        if let Some(signatures) = &mut state.signatures {
+            signatures.extend(
+                sketches
+                    .iter()
+                    .map(|sketch| sketch.signature().to_vec().into_boxed_slice()),
+            );
+        }
+        self.inserted += u64::try_from(keys.len())
+            .map_err(|_| BindingError::Store(StoreError::LengthOverflow))?;
+        Ok(())
+    }
+
+    fn finish(self) {
+        if self.state.store.is_some() {
+            let inserted = usize::try_from(self.inserted).unwrap_or(usize::MAX);
+            self.state.mirror_pending = self.state.mirror_pending.saturating_add(inserted);
+        }
+    }
+
+    /// Remove every record this batch inserted.
+    fn rollback(self) {
+        let state = self.state;
+        for key in self.start_key..self.start_key.saturating_add(self.inserted) {
+            state.index.remove(key);
+            if let Some(store) = &mut state.store {
+                store.remove(key);
+            }
+        }
+        if let Some(signatures) = &mut state.signatures {
+            signatures.truncate(usize::try_from(self.start_key).unwrap_or(usize::MAX));
+        }
+    }
+}
+
+/// A message from the collecting thread to the insert worker.
+enum IngestMessage {
+    Chunk(Vec<u64>, Vec<MinHash32>),
+    /// Every chunk was sent: keep the batch.
+    Finish,
+}
+
+/// Lock the engine, then insert chunks as they arrive until `Finish`.
+///
+/// If the sender goes away without `Finish`, the collecting thread failed and
+/// reports its own error; the batch is rolled back either way.
+fn ingest_worker(
+    inner: &SharedDedupe,
+    start_key: u64,
+    chunks: &Receiver<IngestMessage>,
+) -> Result<(), BindingError> {
+    let mut guard = inner.try_lock().map_err(BindingError::from)?;
+    let state = guard.as_mut().ok_or(BindingError::Closed)?;
+    let mut batch = BatchIngest::begin(state, start_key)?;
+    loop {
+        match chunks.recv() {
+            Ok(IngestMessage::Chunk(keys, sketches)) => {
+                if let Err(error) = batch.insert(&keys, &sketches) {
+                    batch.rollback();
+                    return Err(error);
+                }
+            }
+            Ok(IngestMessage::Finish) => {
+                batch.finish();
+                return Ok(());
+            }
+            Err(_) => {
+                batch.rollback();
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Ingestion keys `start_key + offset ..` for `len` records.
+fn chunk_keys(start_key: u64, offset: u64, len: usize) -> PyResult<Vec<u64>> {
+    (0..len)
+        .map(|index| {
+            u64::try_from(index)
+                .ok()
+                .and_then(|index| offset.checked_add(index))
+                .and_then(|offset| start_key.checked_add(offset))
+                .ok_or_else(|| ConfigurationError::new_err("ingestion key exceeds u64 range"))
+        })
+        .collect()
+}
+
 /// Drop `value` on a short-lived background thread, or here if no thread
 /// can be started.
 fn drop_in_background<T: Send + 'static>(value: T) {
@@ -1655,79 +1821,95 @@ impl PyDedupeEngine {
     }
 
     /// Build and insert one bounded batch after copying Python buffers.
+    ///
+    /// Rows are collected and sketched in chunks. Unless `threads=1`, a worker
+    /// thread inserts each chunk while the next one is collected and
+    /// sketched. The call is atomic: if any row, sketch or insert fails, every
+    /// record of the call is removed again.
     fn add_many(
         &self,
         py: Python<'_>,
         start_key: u64,
         feature_rows: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        let rows = collect_feature_rows(py, feature_rows)?;
-        if rows.is_empty() {
+        let mut rows = feature_rows.try_iter()?;
+        let first = collect_feature_chunk(py, &mut rows, INGEST_CHUNK_ROWS)?;
+        if first.is_empty() {
             return Ok(());
         }
-        let keys = (0..rows.len())
-            .map(|offset| {
-                u64::try_from(offset)
-                    .ok()
-                    .and_then(|offset| start_key.checked_add(offset))
-                    .ok_or_else(|| ConfigurationError::new_err("ingestion key exceeds u64 range"))
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-
         let num_perm = self.num_perm;
         let seed = self.seed;
         let threads = self.threads;
-        let sketches = py
-            .detach(move || build_sketches(&rows, num_perm, seed, threads))
-            .map_err(binding_error)?;
 
-        self.run_write(py, move |state| {
-            if let Some(store) = &mut state.store {
-                if state.mirror_pending >= MIRROR_COMMIT_KEYS {
-                    // Commit earlier batches before inserting this one, so a
-                    // failed commit leaves the whole call without effect. Each
-                    // commit appends a delta; `close` compacts the file once.
-                    store.flush_delta().map_err(BindingError::from)?;
-                    state.mirror_pending = 0;
-                }
-            }
-            if let Some(signatures) = &state.signatures {
-                if u64::try_from(signatures.len()).ok() != Some(start_key) {
-                    return Err(BindingError::Store(StoreError::InvalidSnapshot {
-                        reason: "dedupe keys must be contiguous ingestion indexes",
-                    }));
-                }
-            }
-            state
-                .index
-                .insert_many(
-                    keys.iter()
-                        .zip(&sketches)
-                        .map(|(key, sketch)| (*key, sketch)),
-                )
-                .map_err(BindingError::from)?;
+        if threads == BatchThreads::Sequential {
+            let mut batch_rows = first;
+            batch_rows.extend(collect_feature_chunk(py, &mut rows, usize::MAX)?);
+            let keys = chunk_keys(start_key, 0, batch_rows.len())?;
+            let sketches = py
+                .detach(move || build_sketches(&batch_rows, num_perm, seed, threads))
+                .map_err(binding_error)?;
+            return self.run_write(py, move |state| {
+                let mut batch = BatchIngest::begin(state, start_key)?;
+                batch.insert(&keys, &sketches)?;
+                batch.finish();
+                Ok(())
+            });
+        }
 
-            if let Some(store) = &mut state.store {
-                if let Err(error) = store.insert_many(
-                    keys.iter()
-                        .zip(&sketches)
-                        .map(|(key, sketch)| (*key, sketch)),
-                ) {
-                    for key in &keys {
-                        state.index.remove(*key);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let inner = Arc::clone(&self.inner);
+        std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new()
+                .name("pari-ingest".to_owned())
+                .spawn_scoped(scope, move || ingest_worker(&inner, start_key, &receiver))
+                .map_err(|error| binding_error(BindingError::Store(StoreError::Io(error))))?;
+
+            let mut produced: PyResult<()> = Ok(());
+            let mut chunk = first;
+            let mut offset = 0_u64;
+            loop {
+                let keys = match chunk_keys(start_key, offset, chunk.len()) {
+                    Ok(keys) => keys,
+                    Err(error) => {
+                        produced = Err(error);
+                        break;
                     }
-                    return Err(BindingError::from(error));
+                };
+                offset = offset.saturating_add(u64::try_from(keys.len()).unwrap_or(u64::MAX));
+                let sketches = match py
+                    .detach(|| build_sketches(&chunk, num_perm, seed, threads))
+                    .map_err(binding_error)
+                {
+                    Ok(sketches) => sketches,
+                    Err(error) => {
+                        produced = Err(error);
+                        break;
+                    }
+                };
+                if sender.send(IngestMessage::Chunk(keys, sketches)).is_err() {
+                    // The worker stopped with an error, reported below.
+                    break;
                 }
-                state.mirror_pending = state.mirror_pending.saturating_add(keys.len());
+                chunk = match collect_feature_chunk(py, &mut rows, INGEST_CHUNK_ROWS) {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        produced = Err(error);
+                        break;
+                    }
+                };
+                if chunk.is_empty() {
+                    // A failed send means the worker already stopped with an
+                    // error, which its result reports.
+                    let _ = sender.send(IngestMessage::Finish);
+                    break;
+                }
             }
-            if let Some(signatures) = &mut state.signatures {
-                signatures.extend(
-                    sketches
-                        .iter()
-                        .map(|sketch| sketch.signature().to_vec().into_boxed_slice()),
-                );
+            drop(sender);
+            match py.detach(move || worker.join()) {
+                Ok(Ok(())) => produced,
+                Ok(Err(error)) => Err(binding_error(error)),
+                Err(panic) => std::panic::resume_unwind(panic),
             }
-            Ok(())
         })
     }
 

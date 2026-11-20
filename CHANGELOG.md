@@ -6,6 +6,14 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+### Changed
+
+- `DedupeIndex.add_many` and `deduplicate` collect and sketch each batch in
+  chunks of 8,192 records and insert each chunk on a worker thread while the
+  next one is collected and sketched, instead of running the steps one after
+  another. A batch remains all-or-nothing: a failure removes every record of
+  the batch again. `threads=1` keeps the sequential path.
+
 ## [0.4.2] - 2026-11-19
 
 ### Added

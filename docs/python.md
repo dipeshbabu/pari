@@ -152,7 +152,7 @@ with DedupeIndex(features, batch_size=2048) as index:
     result = index.result()
 ```
 
-Feature extraction runs in Python. Each batch's byte buffers are copied into Rust-owned memory before CPU-heavy MinHash construction, insertion, and grouping run outside the GIL. The native grouping path unions LSH buckets directly and does not materialize all candidate pairs.
+Feature extraction runs in Python. Each batch's byte buffers are copied into Rust-owned memory before CPU-heavy MinHash construction, insertion, and grouping run outside the GIL. Within a batch, records are collected and sketched in chunks of 8,192, and a worker thread inserts each chunk into the index (and the local mirror) while the next chunk is collected and sketched. A batch is still all-or-nothing: if a feature callback or an insert fails, every record of that batch is removed again before the error is raised. With `threads=1`, collection, sketching and insertion run one after another on the calling thread. The native grouping path unions LSH buckets directly and does not materialize all candidate pairs.
 
 Streaming integrations that should discard large source payloads immediately can retain a lightweight record reference and provide precomputed features separately:
 
