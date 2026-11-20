@@ -12,9 +12,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   8,192 records in three overlapping stages: the calling thread collects a
   chunk from Python while a sketch thread builds the previous chunk's
   signatures and an insert thread adds the one before, instead of running the
-  steps one after another. With `backend="local"`, the insert thread updates
-  the in-memory index and the local mirror (including its per-batch commit)
-  at the same time. A batch remains all-or-nothing: a failure removes every
+  steps one after another. With `backend="local"`, the in-memory index and
+  the local mirror (including its per-batch commit) are updated on separate
+  threads, and the mirror may fall up to about one batch behind. A batch remains all-or-nothing: a failure removes every
   record of the batch again. `threads=1` keeps the sequential path.
 - `MinHash.from_batch`, `MinHash64.from_batch`, `DedupeIndex` and
   `deduplicate` copy a batch's feature rows into one contiguous buffer instead
