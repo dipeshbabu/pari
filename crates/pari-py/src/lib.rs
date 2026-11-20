@@ -1807,6 +1807,45 @@ fn ingest_worker(
     }
 }
 
+/// A message from the collecting thread to the sketch stage.
+enum RowsMessage {
+    Rows(Vec<u64>, FeatureRows),
+    /// Every chunk was sent: keep the batch.
+    Finish,
+}
+
+/// Sketch each chunk of rows in order and pass it on to the insert worker.
+///
+/// A sketch error is returned, and dropping `chunks` without `Finish` makes
+/// the insert worker roll the batch back. If the collecting thread goes away
+/// without `Finish`, or the insert worker stops, this stage stops quietly:
+/// the other thread reports its own error.
+fn sketch_worker(
+    rows: &Receiver<RowsMessage>,
+    chunks: &mpsc::SyncSender<IngestMessage>,
+    num_perm: usize,
+    seed: u64,
+    threads: BatchThreads,
+) -> Result<(), BindingError> {
+    loop {
+        match rows.recv() {
+            Ok(RowsMessage::Rows(keys, chunk)) => {
+                let sketches = build_sketches(&chunk, num_perm, seed, threads)?;
+                // Free the copied rows here, off the collecting thread.
+                drop(chunk);
+                if chunks.send(IngestMessage::Chunk(keys, sketches)).is_err() {
+                    return Ok(());
+                }
+            }
+            Ok(RowsMessage::Finish) => {
+                let _ = chunks.send(IngestMessage::Finish);
+                return Ok(());
+            }
+            Err(_) => return Ok(()),
+        }
+    }
+}
+
 /// Ingestion keys `start_key + offset ..` for `len` records.
 fn chunk_keys(start_key: u64, offset: u64, len: usize) -> PyResult<Vec<u64>> {
     (0..len)
@@ -1963,13 +2002,26 @@ impl PyDedupeEngine {
             });
         }
 
-        let (sender, receiver) = mpsc::sync_channel(1);
+        // Three stages run at once: this thread collects chunk k + 2 while a
+        // sketch thread sketches chunk k + 1 and the insert worker inserts
+        // chunk k. Each channel holds at most one waiting chunk.
+        let (rows_sender, rows_receiver) = mpsc::sync_channel(1);
+        let (chunk_sender, chunk_receiver) = mpsc::sync_channel(1);
         let inner = Arc::clone(&self.inner);
+        let spawn_error = |error| binding_error(BindingError::Store(StoreError::Io(error)));
         std::thread::scope(|scope| {
-            let worker = std::thread::Builder::new()
+            let insert_stage = std::thread::Builder::new()
                 .name("pari-ingest".to_owned())
-                .spawn_scoped(scope, move || ingest_worker(&inner, start_key, &receiver))
-                .map_err(|error| binding_error(BindingError::Store(StoreError::Io(error))))?;
+                .spawn_scoped(scope, move || {
+                    ingest_worker(&inner, start_key, &chunk_receiver)
+                })
+                .map_err(spawn_error)?;
+            let sketch_stage = std::thread::Builder::new()
+                .name("pari-sketch".to_owned())
+                .spawn_scoped(scope, move || {
+                    sketch_worker(&rows_receiver, &chunk_sender, num_perm, seed, threads)
+                })
+                .map_err(spawn_error)?;
 
             let mut produced: PyResult<()> = Ok(());
             let mut chunk = first;
@@ -1983,18 +2035,10 @@ impl PyDedupeEngine {
                     }
                 };
                 offset = offset.saturating_add(u64::try_from(keys.len()).unwrap_or(u64::MAX));
-                let sketches = match py
-                    .detach(|| build_sketches(&chunk, num_perm, seed, threads))
-                    .map_err(binding_error)
-                {
-                    Ok(sketches) => sketches,
-                    Err(error) => {
-                        produced = Err(error);
-                        break;
-                    }
-                };
-                if sender.send(IngestMessage::Chunk(keys, sketches)).is_err() {
-                    // The worker stopped with an error, reported below.
+                // Wait for room without holding the GIL.
+                let sent = py.detach(|| rows_sender.send(RowsMessage::Rows(keys, chunk)));
+                if sent.is_err() {
+                    // A later stage stopped with an error, reported below.
                     break;
                 }
                 chunk = match collect_feature_chunk(py, &mut rows, INGEST_CHUNK_ROWS) {
@@ -2005,18 +2049,20 @@ impl PyDedupeEngine {
                     }
                 };
                 if chunk.is_empty() {
-                    // A failed send means the worker already stopped with an
-                    // error, which its result reports.
-                    let _ = sender.send(IngestMessage::Finish);
+                    // A failed send means a later stage already stopped with
+                    // an error, which its result reports.
+                    let _ = py.detach(|| rows_sender.send(RowsMessage::Finish));
                     break;
                 }
             }
-            drop(sender);
-            match py.detach(move || worker.join()) {
-                Ok(Ok(())) => produced,
-                Ok(Err(error)) => Err(binding_error(error)),
-                Err(panic) => std::panic::resume_unwind(panic),
-            }
+            drop(rows_sender);
+            let (sketched, inserted) =
+                py.detach(move || (sketch_stage.join(), insert_stage.join()));
+            let sketched = sketched.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            let inserted = inserted.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            inserted.map_err(binding_error)?;
+            sketched.map_err(binding_error)?;
+            produced
         })
     }
 

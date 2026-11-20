@@ -64,7 +64,7 @@ Structured inputs can use `from_batch_with` to update sketches without allocatin
 
 ## Python API
 
-`MinHash.from_batch`, `DedupeIndex`, and `deduplicate` accept `threads=None` for automatic execution or a positive integer limit. Unless `threads=1`, `DedupeIndex` and `deduplicate` also insert each chunk of a batch on one worker thread while the next chunk is collected and sketched:
+`MinHash.from_batch`, `DedupeIndex`, and `deduplicate` accept `threads=None` for automatic execution or a positive integer limit. Unless `threads=1`, `DedupeIndex` and `deduplicate` also sketch each chunk of a batch on one thread and insert it on another while the calling thread collects the next chunk:
 
 ```python
 from pari import MinHash, deduplicate
