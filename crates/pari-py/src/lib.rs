@@ -1831,11 +1831,13 @@ fn ingest_worker(
     inner: &SharedDedupe,
     start_key: u64,
     chunks: &Receiver<IngestMessage>,
+    chunk_rows: usize,
 ) -> Result<(), BindingError> {
     let mut guard = inner.try_lock().map_err(BindingError::from)?;
     let state = guard.as_mut().ok_or(BindingError::Closed)?;
     if state.store.is_some() {
-        return ingest_with_mirror(state, start_key, chunks);
+        let lag = MIRROR_LAG_RECORDS.div_ceil(chunk_rows.max(1));
+        return ingest_with_mirror(state, start_key, chunks, lag);
     }
     let mut batch_start = start_key;
     loop {
@@ -1866,9 +1868,9 @@ fn ingest_worker(
     }
 }
 
-/// Chunks the local mirror may fall behind the index, about one batch, so a
-/// mirror commit at the start of a batch does not stall the index.
-const MIRROR_LAG_CHUNKS: usize = 8;
+/// Records the local mirror may fall behind the index: as many as it commits
+/// at once, so the index keeps going while the mirror commits.
+const MIRROR_LAG_RECORDS: usize = MIRROR_COMMIT_KEYS;
 
 /// One chunk shared by the index and the local mirror.
 type SharedChunk = Arc<(Vec<u64>, Vec<MinHash32>)>;
@@ -1895,7 +1897,7 @@ struct MirrorOutcome {
 /// Insert chunks into the index on this thread while a second thread inserts
 /// them into the local mirror, each at its own pace.
 ///
-/// The mirror may fall up to [`MIRROR_LAG_CHUNKS`] behind. It reaches a
+/// The mirror may fall up to `lag_chunks` chunks behind. It reaches a
 /// batch's end only after the index has inserted the whole batch, so every
 /// batch before the mirror's open batch is complete on both sides. If anything
 /// fails, each side removes what it inserted from the start of that open
@@ -1906,6 +1908,7 @@ fn ingest_with_mirror(
     state: &mut DedupeState,
     start_key: u64,
     chunks: &Receiver<IngestMessage>,
+    lag_chunks: usize,
 ) -> Result<(), BindingError> {
     if let Some(signatures) = &state.signatures {
         if u64::try_from(signatures.len()).ok() != Some(start_key) {
@@ -1925,7 +1928,7 @@ fn ingest_with_mirror(
     };
 
     let (finished, indexed, index_error, mirror) = std::thread::scope(|scope| {
-        let (to_mirror, mirror_chunks) = mpsc::sync_channel(MIRROR_LAG_CHUNKS);
+        let (to_mirror, mirror_chunks) = mpsc::sync_channel(lag_chunks.max(1));
         let mirror_store = &mut *store;
         let pending = &mut *mirror_pending;
         let mirror =
@@ -2347,7 +2350,7 @@ impl PyDedupeEngine {
             let insert_stage = std::thread::Builder::new()
                 .name("pari-ingest".to_owned())
                 .spawn_scoped(scope, move || {
-                    ingest_worker(&inner, start_key, &chunk_receiver)
+                    ingest_worker(&inner, start_key, &chunk_receiver, chunk_rows)
                 })
                 .map_err(spawn_error)?;
             let sketch_stage = std::thread::Builder::new()

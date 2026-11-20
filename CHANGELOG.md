@@ -14,7 +14,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   signatures and an insert thread adds the one before, instead of running the
   steps one after another. With `backend="local"`, the in-memory index and
   the local mirror (including its per-batch commit) are updated on separate
-  threads, and the mirror may fall up to about one batch behind. A batch remains all-or-nothing: a failure removes every
+  threads, and the mirror may fall up to 65,536 records behind, the amount it
+  commits at once. A batch remains all-or-nothing: a failure removes every
   record of the batch again. `threads=1` keeps the sequential path.
 - `MinHash.from_batch`, `MinHash64.from_batch`, `DedupeIndex` and
   `deduplicate` copy a batch's feature rows into one contiguous buffer instead
