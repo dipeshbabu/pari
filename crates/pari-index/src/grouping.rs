@@ -333,22 +333,84 @@ where
     }
 }
 
+/// Buckets across all bands below which grouping scans on the calling thread.
+const PARALLEL_SCAN_MIN_BUCKETS: usize = 1 << 16;
+
+/// Links sent from a band-scanning thread to the union thread at a time.
+const LINK_BATCH: usize = 1 << 16;
+
 fn union_index_buckets_unverified(index: &IndexData, union_find: &mut UnionFind) {
-    for table in &index.buckets {
-        for ids in table.values() {
-            let mut anchor = None;
-            for id in ids {
-                let Ok(node) = usize::try_from(*id) else {
-                    continue;
-                };
-                if live_key(index, *id).is_none() {
-                    continue;
+    let bucket_count: usize = index.buckets.iter().map(HashMap::len).sum();
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(index.buckets.len());
+    if threads < 2 || bucket_count < PARALLEL_SCAN_MIN_BUCKETS {
+        for table in &index.buckets {
+            scan_band(table, &index.id_to_key, |anchor, node| {
+                union_find.union(anchor, node);
+            });
+        }
+        return;
+    }
+
+    // Most buckets of a large index hold one key, and reading them dominates
+    // grouping. Bands are scanned on separate threads, which send links only
+    // for buckets with two or more live keys; this thread applies them. The
+    // resulting partition does not depend on the order of the unions.
+    let buckets = &index.buckets;
+    let id_to_key = &index.id_to_key;
+    std::thread::scope(|scope| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<(usize, usize)>>(threads * 2);
+        for first_band in 0..threads {
+            let sender = sender.clone();
+            scope.spawn(move || {
+                let mut links = Vec::with_capacity(LINK_BATCH);
+                for table in buckets.iter().skip(first_band).step_by(threads) {
+                    scan_band(table, id_to_key, |anchor, node| links.push((anchor, node)));
+                    if links.len() >= LINK_BATCH {
+                        if sender.send(std::mem::take(&mut links)).is_err() {
+                            return;
+                        }
+                        links.reserve(LINK_BATCH);
+                    }
                 }
-                if let Some(anchor_node) = anchor {
-                    union_find.union(anchor_node, node);
-                } else {
-                    anchor = Some(node);
+                if !links.is_empty() {
+                    let _ = sender.send(links);
                 }
+            });
+        }
+        drop(sender);
+        for links in receiver {
+            for (anchor, node) in links {
+                union_find.union(anchor, node);
+            }
+        }
+    });
+}
+
+/// Call `link(anchor, node)` for every live key of each bucket in `table`
+/// after its first live key, the bucket's anchor.
+fn scan_band(
+    table: &HashMap<u64, Vec<u32>>,
+    id_to_key: &[Option<u64>],
+    mut link: impl FnMut(usize, usize),
+) {
+    for ids in table.values() {
+        if ids.len() < 2 {
+            continue;
+        }
+        let mut anchor = None;
+        for &id in ids {
+            let Ok(node) = usize::try_from(id) else {
+                continue;
+            };
+            if id_to_key.get(node).copied().flatten().is_none() {
+                continue;
+            }
+            if let Some(anchor_node) = anchor {
+                link(anchor_node, node);
+            } else {
+                anchor = Some(node);
             }
         }
     }
@@ -536,7 +598,7 @@ impl UnionFind {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
 
     use pari_core::{MinHash32, MinHash64};
 
@@ -604,6 +666,37 @@ mod tests {
         let mut pairs: Vec<_> = index.candidate_pairs().collect();
         pairs.sort_unstable();
         assert_eq!(pairs, vec![(1, 5), (1, 9), (5, 9)]);
+    }
+
+    #[test]
+    fn parallel_bucket_scan_matches_pair_grouping() {
+        // Enough buckets to take the parallel scan: 32 bands of 4 rows over
+        // 6,000 keys. Keys come in families sharing most features, so groups
+        // span several bands, and some keys are removed.
+        let mut index =
+            LshIndex32::with_params(0.5, 128, 6, LshParams::new(32, 4)).expect("valid index");
+        let sketches: Vec<_> = (0..6_000_u64)
+            .map(|key| {
+                let family = key / 3;
+                let base = family * 1_000;
+                signature(6, (base..base + 20).chain([base + 500 + key % 3]))
+            })
+            .collect();
+        index
+            .insert_many((0..6_000_u64).zip(&sketches))
+            .expect("valid insert");
+        for key in (0..6_000_u64).step_by(7) {
+            assert!(index.remove(key));
+        }
+        let buckets: usize = index.data.buckets.iter().map(HashMap::len).sum();
+        assert!(
+            buckets >= super::PARALLEL_SCAN_MIN_BUCKETS,
+            "{buckets} buckets"
+        );
+
+        let groups = index.duplicate_groups();
+        assert!(groups.len() > 500, "{} groups", groups.len());
+        assert_eq!(groups, group_pairs(index.candidate_pairs(), 2));
     }
 
     #[test]
