@@ -41,6 +41,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   flushes the staged file to disk every 64 MiB on a background thread while
   it is written, instead of writing all of it in the final sync. A failed
   background flush fails the rewrite.
+- `LshIndex32` and `LshIndex64` store a bucket's only member inline instead of
+  in a separate heap allocation, and allocate a vector only once a second
+  member arrives. Most buckets of a large index hold one member, so this
+  saves memory and allocation time; the index's behavior is unchanged.
 
 ## [0.4.2] - 2026-11-19
 

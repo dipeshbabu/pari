@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{IndexData, LshIndex32, LshIndex64};
+use crate::{Bucket, IndexData, LshIndex32, LshIndex64};
 
 /// One deterministic connected component of duplicate candidates.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +79,7 @@ impl<'a> CandidatePairs<'a> {
         for (band, table) in index.buckets.iter().enumerate() {
             for (hash, ids) in table {
                 if ids.len() >= 2 {
-                    ordered.push((band, *hash, ids.as_slice()));
+                    ordered.push((band, *hash, &**ids));
                 }
             }
         }
@@ -391,7 +391,7 @@ fn union_index_buckets_unverified(index: &IndexData, union_find: &mut UnionFind)
 /// Call `link(anchor, node)` for every live key of each bucket in `table`
 /// after its first live key, the bucket's anchor.
 fn scan_band(
-    table: &HashMap<u64, Vec<u32>>,
+    table: &HashMap<u64, Bucket>,
     id_to_key: &[Option<u64>],
     mut link: impl FnMut(usize, usize),
 ) {
@@ -400,7 +400,7 @@ fn scan_band(
             continue;
         }
         let mut anchor = None;
-        for &id in ids {
+        for &id in ids.iter() {
             let Ok(node) = usize::try_from(id) else {
                 continue;
             };

@@ -395,7 +395,7 @@ impl Error for LshError {}
 
 #[derive(Debug)]
 struct IndexData {
-    buckets: Vec<HashMap<u64, Vec<u32>>>,
+    buckets: Vec<HashMap<u64, Bucket>>,
     key_to_id: HashMap<u64, u32>,
     id_to_key: Vec<Option<u64>>,
     band_hashes: Vec<Option<Vec<u64>>>,
@@ -433,13 +433,7 @@ impl IndexData {
 
         self.key_to_id.remove(&key);
         for (table, hash) in self.buckets.iter_mut().zip(hashes) {
-            let remove_bucket = if let Some(ids) = table.get_mut(&hash) {
-                ids.retain(|candidate| *candidate != id);
-                ids.is_empty()
-            } else {
-                false
-            };
-            if remove_bucket {
+            if table.get_mut(&hash).is_some_and(|ids| ids.remove(id)) {
                 table.remove(&hash);
             }
         }
@@ -480,7 +474,7 @@ impl IndexData {
             buckets: BucketDistribution::from_sizes(
                 self.buckets
                     .iter()
-                    .flat_map(|table| table.values().map(Vec::len)),
+                    .flat_map(|table| table.values().map(|ids| ids.len())),
             ),
             queries: self
                 .query_observer
@@ -513,9 +507,17 @@ impl IndexData {
         let id_of = |offset: usize| {
             u32::try_from(first + offset).expect("capacity validated before insertion")
         };
-        let fill = |band: usize, table: &mut HashMap<u64, Vec<u32>>| {
+        let fill = |band: usize, table: &mut HashMap<u64, Bucket>| {
             for (offset, (_, hashes, _)) in items.iter().enumerate() {
-                table.entry(hashes[band]).or_default().push(id_of(offset));
+                let id = id_of(offset);
+                match table.entry(hashes[band]) {
+                    std::collections::hash_map::Entry::Occupied(bucket) => {
+                        bucket.into_mut().push(id);
+                    }
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(Bucket::One(id));
+                    }
+                }
             }
         };
         let threads = std::thread::available_parallelism()
@@ -940,6 +942,57 @@ macro_rules! impl_lsh_index {
 impl_lsh_index!(LshIndex32, MinHash32, u32, 4, hash_band32);
 impl_lsh_index!(LshIndex64, MinHash64, u64, 8, hash_band64);
 
+/// Internal ids of the items in one LSH bucket, in insertion order.
+///
+/// Most buckets of a large index hold one item, so one id is stored inline
+/// and a vector is allocated only once a second id arrives. The enum is the
+/// size of the vector alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Bucket {
+    One(u32),
+    Many(Vec<u32>),
+}
+
+impl Bucket {
+    fn push(&mut self, id: u32) {
+        match self {
+            Self::One(first) => *self = Self::Many(vec![*first, id]),
+            Self::Many(ids) => ids.push(id),
+        }
+    }
+
+    /// Remove `id`; return whether the bucket is now empty.
+    fn remove(&mut self, id: u32) -> bool {
+        match self {
+            Self::One(only) => *only == id,
+            Self::Many(ids) => {
+                ids.retain(|candidate| *candidate != id);
+                match ids.as_slice() {
+                    [] => true,
+                    [only] => {
+                        *self = Self::One(*only);
+                        false
+                    }
+                    _ => false,
+                }
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for Bucket {
+    type Target = [u32];
+
+    fn deref(&self) -> &[u32] {
+        match self {
+            Self::One(id) => std::slice::from_ref(id),
+            Self::Many(ids) => ids,
+        }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<Bucket>() == std::mem::size_of::<Vec<u32>>());
+
 /// A validated item to insert: key, band hashes and optional stored signature.
 type ValidatedItem = (u64, Vec<u64>, Option<Box<[u64]>>);
 
@@ -1073,9 +1126,49 @@ mod tests {
 
     use pari_core::{MinHash32, MinHash64};
 
+    use std::collections::HashMap;
+
     use super::{
-        hash_band64, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams, StorageMode,
+        hash_band64, Bucket, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams,
+        StorageMode,
     };
+
+    #[test]
+    fn buckets_store_one_id_inline_and_keep_insertion_order() {
+        let mut bucket = Bucket::One(7);
+        assert_eq!(&*bucket, &[7]);
+        bucket.push(3);
+        bucket.push(9);
+        assert_eq!(bucket, Bucket::Many(vec![7, 3, 9]));
+        assert!(!bucket.remove(42), "absent ids leave the bucket alone");
+        assert_eq!(&*bucket, &[7, 3, 9]);
+        assert!(!bucket.remove(3));
+        assert_eq!(&*bucket, &[7, 9]);
+        assert!(!bucket.remove(7));
+        assert_eq!(bucket, Bucket::One(9), "one remaining id moves back inline");
+        assert!(!bucket.remove(1));
+        assert!(bucket.remove(9), "removing the last id empties the bucket");
+
+        // Removing keys from a shared bucket keeps queries consistent.
+        let shared = sketch(0..50, 128, 4);
+        let mut index =
+            LshIndex32::with_params(0.5, 128, 4, LshParams::new(16, 8)).expect("valid index");
+        index
+            .insert_many([(1, &shared), (2, &shared), (3, &shared)])
+            .expect("insert");
+        assert!(index.remove(2));
+        assert_eq!(index.query(&shared).expect("query"), vec![1, 3]);
+        assert!(index.remove(1));
+        // Buckets hold internal ids; key 3 has id 2.
+        assert!(index
+            .data
+            .buckets
+            .iter()
+            .all(|table| table.values().all(|ids| matches!(ids, Bucket::One(2)))));
+        assert!(index.remove(3));
+        assert!(index.data.buckets.iter().all(HashMap::is_empty));
+        assert!(index.query(&shared).expect("query").is_empty());
+    }
 
     #[test]
     fn parallel_batch_insert_builds_the_same_index_as_single_inserts() {
