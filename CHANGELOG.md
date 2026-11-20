@@ -20,6 +20,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   `deduplicate` copy a batch's feature rows into one contiguous buffer instead
   of allocating every feature separately, and read rows that are exact lists
   or tuples without a Python iterator. Signatures are unchanged.
+- `duplicate_groups` and the other grouping methods gather components with
+  flat arrays indexed by node instead of a hash map with one vector per
+  component, and no longer sort the default groups a second time. Output is
+  unchanged.
 
 ## [0.4.2] - 2026-11-19
 

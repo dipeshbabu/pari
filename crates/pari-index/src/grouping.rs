@@ -367,21 +367,15 @@ fn collect_default_groups<I>(
 where
     I: IntoIterator<Item = (usize, u64)>,
 {
-    let mut components = collect_components(union_find, members, min_size);
-    let mut groups = Vec::with_capacity(components.len());
-    for members in components.drain(..) {
-        let representative = members[0];
-        groups.push(DuplicateGroup {
-            representative,
+    // Components arrive ordered by their smallest key, which is each default
+    // representative, so the groups need no further sort.
+    collect_components(union_find, members, min_size)
+        .into_iter()
+        .map(|members| DuplicateGroup {
+            representative: members[0],
             members,
-        });
-    }
-    groups.sort_unstable_by(|left, right| {
-        left.representative
-            .cmp(&right.representative)
-            .then_with(|| left.members.cmp(&right.members))
-    });
-    groups
+        })
+        .collect()
 }
 
 fn collect_selected_groups<I, F>(
@@ -416,31 +410,61 @@ where
     Ok(groups)
 }
 
+/// Gather member keys by component, keep components of at least `min_size`,
+/// and return each sorted, ordered by smallest key.
+///
+/// Components are disjoint, so ordering them by smallest key is the same as
+/// ordering them lexicographically. Sizes and placement use flat arrays
+/// indexed by node rather than one allocation per component, so the many
+/// singleton components of a large index cost no more than a counter.
 fn collect_components<I>(union_find: &mut UnionFind, members: I, min_size: usize) -> Vec<Vec<u64>>
 where
     I: IntoIterator<Item = (usize, u64)>,
 {
     let minimum = min_size.max(1);
-    let mut by_root: HashMap<usize, Vec<u64>> = HashMap::new();
+    let nodes = union_find.len();
+    let mut entries: Vec<(usize, u64)> = Vec::new();
+    let mut sizes = vec![0_usize; nodes];
     for (id, key) in members {
-        if id >= union_find.len() {
+        if id >= nodes {
             continue;
         }
         let root = union_find.find(id);
-        by_root.entry(root).or_default().push(key);
+        sizes[root] += 1;
+        entries.push((root, key));
     }
 
-    let mut components: Vec<_> = by_root
-        .into_values()
-        .filter_map(|mut values| {
-            if values.len() < minimum {
-                return None;
-            }
+    // Each kept component's slot in `flat`; `usize::MAX` marks the rest.
+    let mut cursors = vec![usize::MAX; nodes];
+    let mut kept = Vec::new();
+    let mut total = 0_usize;
+    for (root, &size) in sizes.iter().enumerate() {
+        if size >= minimum {
+            cursors[root] = total;
+            kept.push((total, size));
+            total += size;
+        }
+    }
+    drop(sizes);
+
+    let mut flat = vec![0_u64; total];
+    for (root, key) in entries {
+        let cursor = &mut cursors[root];
+        if *cursor != usize::MAX {
+            flat[*cursor] = key;
+            *cursor += 1;
+        }
+    }
+
+    let mut components: Vec<Vec<u64>> = kept
+        .into_iter()
+        .map(|(start, size)| {
+            let mut values = flat[start..start + size].to_vec();
             values.sort_unstable();
-            Some(values)
+            values
         })
         .collect();
-    components.sort_unstable();
+    components.sort_unstable_by_key(|values| values[0]);
     components
 }
 
@@ -516,9 +540,11 @@ mod tests {
 
     use pari_core::{MinHash32, MinHash64};
 
+    use std::collections::HashMap;
+
     use super::{
-        group_pairs, group_pairs_with_representative, DuplicateGroup, GroupError, LshIndex32,
-        LshIndex64,
+        collect_components, group_pairs, group_pairs_with_representative, DuplicateGroup,
+        GroupError, LshIndex32, LshIndex64, UnionFind,
     };
     use crate::LshParams;
 
@@ -680,6 +706,74 @@ mod tests {
         let actual = member_lists(&group_pairs(edges.iter().copied(), 1));
         let expected = reference_components(node_count, &edges);
         assert_eq!(actual, expected);
+    }
+
+    /// The previous implementation: one vector per root in a hash map.
+    fn hash_map_components(
+        union_find: &mut UnionFind,
+        members: &[(usize, u64)],
+        min_size: usize,
+    ) -> Vec<Vec<u64>> {
+        let minimum = min_size.max(1);
+        let mut by_root: HashMap<usize, Vec<u64>> = HashMap::new();
+        for &(id, key) in members {
+            if id >= union_find.len() {
+                continue;
+            }
+            let root = union_find.find(id);
+            by_root.entry(root).or_default().push(key);
+        }
+        let mut components: Vec<_> = by_root
+            .into_values()
+            .filter(|values| values.len() >= minimum)
+            .map(|mut values| {
+                values.sort_unstable();
+                values
+            })
+            .collect();
+        components.sort_unstable();
+        components
+    }
+
+    #[test]
+    fn flat_component_collection_matches_the_hash_map_reference() {
+        let mut state = 0x5EED_0FC0_11EC_7500_u64;
+        for round in 0..200_u64 {
+            state = splitmix(state ^ round);
+            let nodes = 1 + usize::try_from(state % 300).expect("small node count");
+            let mut union_find = UnionFind::with_len(nodes);
+            state = splitmix(state);
+            let unions = usize::try_from(state % 400).expect("small union count");
+            for _ in 0..unions {
+                state = splitmix(state);
+                let left = usize::try_from(state % nodes as u64).expect("node");
+                state = splitmix(state);
+                let right = usize::try_from(state % nodes as u64).expect("node");
+                union_find.union(left, right);
+            }
+            // Members skip some nodes, include out-of-range ids, and map ids
+            // to keys that are not in id order.
+            let mut members = Vec::new();
+            for id in 0..nodes + 5 {
+                state = splitmix(state);
+                if state % 7 != 0 {
+                    members.push((id, splitmix(id as u64 ^ round) % 10_000));
+                }
+            }
+            members.sort_unstable_by_key(|&(_, key)| key);
+            members.dedup_by_key(|&mut (_, key)| key);
+            for min_size in 0..4 {
+                let mut reference = UnionFind {
+                    parent: union_find.parent.clone(),
+                    rank: union_find.rank.clone(),
+                };
+                assert_eq!(
+                    collect_components(&mut union_find, members.iter().copied(), min_size),
+                    hash_map_components(&mut reference, &members, min_size),
+                    "round {round} min_size {min_size}"
+                );
+            }
+        }
     }
 
     fn reference_components(node_count: usize, edges: &[(u64, u64)]) -> Vec<Vec<u64>> {
