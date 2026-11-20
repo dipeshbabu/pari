@@ -28,6 +28,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   the LSH bands on several threads for large indexes, collecting links only
   from buckets with two or more live keys, while the calling thread joins
   them. Output is unchanged.
+- `DedupeIndex.groups()` and `candidate_groups()` build `DuplicateGroup`
+  objects in bulk when no `representative` callback is set: the native engine
+  returns member tuples, fields are set directly, and cyclic garbage
+  collection is paused while the groups are built. The groups are unchanged.
 
 ## [0.4.2] - 2026-11-19
 

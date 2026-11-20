@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from collections.abc import Callable, Iterable, Iterator, Sequence, Sized
 from dataclasses import dataclass
 from itertools import islice
@@ -330,9 +331,7 @@ class DedupeIndex(Generic[T]):
 
         self._ensure_open()
         raw_groups = self._engine.groups(verifier=None, apply_checks=False)
-        return tuple(
-            self._convert_group(member_indices) for _, member_indices in raw_groups
-        )
+        return self._convert_groups(raw_groups)
 
     def candidate_pairs(self) -> tuple[tuple[T, T], ...]:
         """Return unique, normalized LSH candidate pairs deterministically."""
@@ -352,9 +351,7 @@ class DedupeIndex(Generic[T]):
 
         self._ensure_open()
         raw_groups = self._engine.groups(verifier=self._native_verifier())
-        return tuple(
-            self._convert_group(member_indices) for _, member_indices in raw_groups
-        )
+        return self._convert_groups(raw_groups)
 
     def result(self) -> DeduplicationResult[T]:
         """Return groups and deterministic input-order keep/drop partitions."""
@@ -434,6 +431,38 @@ class DedupeIndex(Generic[T]):
             return bool(exact(records[left], records[right]))
 
         return verify
+
+    def _convert_groups(
+        self, raw_groups: Sequence[tuple[int, tuple[int, ...]]]
+    ) -> tuple[DuplicateGroup[T], ...]:
+        if self._representative is not None:
+            return tuple(
+                self._convert_group(member_indices) for _, member_indices in raw_groups
+            )
+        # Default representatives: build millions of groups without the
+        # frozen dataclass's per-field checks, and with cyclic garbage
+        # collection paused, since every object built here stays reachable.
+        record = self._records.__getitem__
+        new_group = object.__new__
+        set_field = object.__setattr__
+        group_type = DuplicateGroup
+        groups: list[DuplicateGroup[T]] = []
+        append = groups.append
+        collecting = gc.isenabled()
+        gc.disable()
+        try:
+            for _, member_indices in raw_groups:
+                members = tuple(map(record, member_indices))
+                group = new_group(group_type)
+                set_field(group, "representative", members[0])
+                set_field(group, "members", members)
+                set_field(group, "representative_index", member_indices[0])
+                set_field(group, "member_indices", member_indices)
+                append(group)
+        finally:
+            if collecting:
+                gc.enable()
+        return tuple(groups)
 
     def _convert_group(self, raw_indices: Sequence[int]) -> DuplicateGroup[T]:
         member_indices = tuple(raw_indices)
