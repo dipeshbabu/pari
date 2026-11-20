@@ -223,6 +223,60 @@ class PipelinedIngestTests(unittest.TestCase):
                     finally:
                         persisted.close()
 
+    def test_a_mirror_failure_in_a_later_batch_keeps_the_earlier_batches(self) -> None:
+        # With batch_size 1,000, the mirror commits once 65,536 records are
+        # pending: at the start of the 67th batch of this call. That commit
+        # fails, so the 66 earlier batches stay and the 67th is removed.
+        committed = 10
+        kept = committed + 66_000
+        for threads in (None, 1):
+            with (
+                self.subTest(threads=threads),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "later.pari"
+                backup = Path(directory) / "committed.pari"
+                index = DedupeIndex(
+                    pair_features,
+                    num_perm=32,
+                    seed=11,
+                    threads=threads,
+                    batch_size=1_000,
+                    backend="local",
+                    path=path,
+                )
+                expected, _ = self.build("memory", 1, directory)
+                try:
+                    index.add_many(range(committed))
+                    index.sync()
+                    path.rename(backup)
+                    path.mkdir()
+                    try:
+                        with self.assertRaises(StorageError):
+                            index.add_many(range(committed, committed + 70_000))
+                    finally:
+                        path.rmdir()
+                        backup.rename(path)
+                    self.assertEqual(len(index), kept)
+                    expected.add_many(range(kept))
+                    self.assertEqual(
+                        sorted(index._engine.pairs()), sorted(expected._engine.pairs())
+                    )
+                    # Ingest continues with contiguous keys.
+                    index.add_many(range(kept, kept + 2_000))
+                    expected.add_many(range(kept, kept + 2_000))
+                    self.assertEqual(
+                        sorted(index._engine.pairs()), sorted(expected._engine.pairs())
+                    )
+                finally:
+                    index.close()
+                    expected.close()
+                persisted = Index.open(path)
+                try:
+                    self.assertEqual(len(persisted), kept + 2_000)
+                finally:
+                    persisted.close()
+
     def test_a_failed_mirror_commit_rolls_back_the_parallel_index_insert(self) -> None:
         committed = 10
         # A full batch makes the next batch commit the mirror first.

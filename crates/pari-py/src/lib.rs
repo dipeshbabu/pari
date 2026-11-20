@@ -1815,14 +1815,18 @@ impl<'a> BatchIngest<'a> {
 /// A message from the collecting thread to the insert worker.
 enum IngestMessage {
     Chunk(Vec<u64>, Vec<MinHash32>),
-    /// Every chunk was sent: keep the batch.
+    /// The open batch is complete: keep it and start the next one.
+    EndBatch,
+    /// Every chunk was sent: keep the last batch.
     Finish,
 }
 
-/// Lock the engine, then insert chunks as they arrive until `Finish`.
+/// Lock the engine, then insert chunks as they arrive, keeping each batch
+/// when its `EndBatch` (or the final `Finish`) arrives.
 ///
-/// If the sender goes away without `Finish`, the collecting thread failed and
-/// reports its own error; the batch is rolled back either way.
+/// An error rolls back only the open batch; earlier batches stay. If the
+/// sender goes away without `Finish`, an earlier stage failed and reports
+/// its own error, and the open batch is rolled back.
 fn ingest_worker(
     inner: &SharedDedupe,
     start_key: u64,
@@ -1833,22 +1837,30 @@ fn ingest_worker(
     if state.store.is_some() {
         return ingest_with_mirror(state, start_key, chunks);
     }
-    let mut batch = BatchIngest::begin(state, start_key)?;
+    let mut batch_start = start_key;
     loop {
-        match chunks.recv() {
-            Ok(IngestMessage::Chunk(keys, sketches)) => {
-                if let Err(error) = batch.insert(&keys, &sketches) {
-                    batch.rollback();
-                    return Err(error);
+        let mut batch = BatchIngest::begin(&mut *state, batch_start)?;
+        loop {
+            match chunks.recv() {
+                Ok(IngestMessage::Chunk(keys, sketches)) => {
+                    if let Err(error) = batch.insert(&keys, &sketches) {
+                        batch.rollback();
+                        return Err(error);
+                    }
                 }
-            }
-            Ok(IngestMessage::Finish) => {
-                batch.finish();
-                return Ok(());
-            }
-            Err(_) => {
-                batch.rollback();
-                return Ok(());
+                Ok(IngestMessage::EndBatch) => {
+                    batch_start = batch_start.saturating_add(batch.inserted);
+                    batch.finish();
+                    break;
+                }
+                Ok(IngestMessage::Finish) => {
+                    batch.finish();
+                    return Ok(());
+                }
+                Err(_) => {
+                    batch.rollback();
+                    return Ok(());
+                }
             }
         }
     }
@@ -1864,19 +1876,32 @@ type SharedChunk = Arc<(Vec<u64>, Vec<MinHash32>)>;
 /// A message from the insert worker to the local-mirror thread.
 enum MirrorMessage {
     Chunk(SharedChunk),
-    /// Every chunk was sent: keep the batch.
+    /// The open batch is complete on the index side.
+    EndBatch,
+    /// Every chunk was sent: keep the last batch.
     Finish,
+}
+
+/// What the local-mirror thread did.
+struct MirrorOutcome {
+    result: Result<(), BindingError>,
+    /// Records inserted into the mirror, from the first key of the call.
+    mirrored: u64,
+    /// End of the batches kept on both sides: the first key of the mirror's
+    /// open batch.
+    kept_end: u64,
 }
 
 /// Insert chunks into the index on this thread while a second thread inserts
 /// them into the local mirror, each at its own pace.
 ///
-/// The mirror commits earlier batches before its first chunk and may fall up
-/// to [`MIRROR_LAG_CHUNKS`] behind. The batch is kept only if both sides
-/// finish; otherwise each side removes the records it inserted, and the first
-/// error (the index's, then the mirror's) is returned. If the sender goes
-/// away without `Finish`, the collecting thread failed and reports its own
-/// error.
+/// The mirror may fall up to [`MIRROR_LAG_CHUNKS`] behind. It reaches a
+/// batch's end only after the index has inserted the whole batch, so every
+/// batch before the mirror's open batch is complete on both sides. If anything
+/// fails, each side removes what it inserted from the start of that open
+/// batch, and the first error (the index's, then the mirror's) is returned.
+/// If the sender goes away without `Finish`, an earlier stage failed and
+/// reports its own error.
 fn ingest_with_mirror(
     state: &mut DedupeState,
     start_key: u64,
@@ -1898,83 +1923,80 @@ fn ingest_with_mirror(
     let Some(store) = store else {
         return Err(BindingError::Closed);
     };
-    let commit_first = *mirror_pending >= MIRROR_COMMIT_KEYS;
 
-    let (finished, indexed, index_error, mirrored, mirror_result, committed) =
-        std::thread::scope(|scope| {
-            let (to_mirror, mirror_chunks) = mpsc::sync_channel(MIRROR_LAG_CHUNKS);
-            let mirror_store = &mut *store;
-            let mirror =
-                scope.spawn(move || mirror_worker(mirror_store, commit_first, &mirror_chunks));
-            let mut indexed = 0_u64;
-            let mut index_error = None;
-            let mut finished = false;
-            loop {
-                match chunks.recv() {
-                    Ok(IngestMessage::Chunk(keys, sketches)) => {
-                        let chunk: SharedChunk = Arc::new((keys, sketches));
-                        if to_mirror
-                            .send(MirrorMessage::Chunk(Arc::clone(&chunk)))
-                            .is_err()
-                        {
-                            // The mirror stopped with an error, reported below.
-                            break;
-                        }
-                        let (keys, sketches) = &*chunk;
-                        if let Err(error) = index.insert_many(
-                            keys.iter()
-                                .zip(sketches)
-                                .map(|(key, sketch)| (*key, sketch)),
-                        ) {
-                            index_error = Some(BindingError::from(error));
-                            break;
-                        }
-                        if let Some(signatures) = signatures.as_mut() {
-                            signatures.extend(
-                                sketches
-                                    .iter()
-                                    .map(|sketch| sketch.signature().to_vec().into_boxed_slice()),
-                            );
-                        }
-                        indexed += u64::try_from(keys.len()).unwrap_or(u64::MAX);
-                    }
-                    Ok(IngestMessage::Finish) => {
-                        finished = to_mirror.send(MirrorMessage::Finish).is_ok();
+    let (finished, indexed, index_error, mirror) = std::thread::scope(|scope| {
+        let (to_mirror, mirror_chunks) = mpsc::sync_channel(MIRROR_LAG_CHUNKS);
+        let mirror_store = &mut *store;
+        let pending = &mut *mirror_pending;
+        let mirror =
+            scope.spawn(move || mirror_worker(mirror_store, pending, start_key, &mirror_chunks));
+        let mut indexed = 0_u64;
+        let mut index_error = None;
+        let mut finished = false;
+        loop {
+            match chunks.recv() {
+                Ok(IngestMessage::Chunk(keys, sketches)) => {
+                    let chunk: SharedChunk = Arc::new((keys, sketches));
+                    if to_mirror
+                        .send(MirrorMessage::Chunk(Arc::clone(&chunk)))
+                        .is_err()
+                    {
+                        // The mirror stopped with an error, reported below.
                         break;
                     }
-                    Err(_) => break,
+                    let (keys, sketches) = &*chunk;
+                    if let Err(error) = index.insert_many(
+                        keys.iter()
+                            .zip(sketches)
+                            .map(|(key, sketch)| (*key, sketch)),
+                    ) {
+                        index_error = Some(BindingError::from(error));
+                        break;
+                    }
+                    if let Some(signatures) = signatures.as_mut() {
+                        signatures.extend(
+                            sketches
+                                .iter()
+                                .map(|sketch| sketch.signature().to_vec().into_boxed_slice()),
+                        );
+                    }
+                    indexed += u64::try_from(keys.len()).unwrap_or(u64::MAX);
                 }
+                Ok(IngestMessage::EndBatch) => {
+                    if to_mirror.send(MirrorMessage::EndBatch).is_err() {
+                        break;
+                    }
+                }
+                Ok(IngestMessage::Finish) => {
+                    finished = to_mirror.send(MirrorMessage::Finish).is_ok();
+                    break;
+                }
+                Err(_) => break,
             }
-            drop(to_mirror);
-            let (mirror_result, mirrored, committed) = mirror
-                .join()
-                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-            (
-                finished,
-                indexed,
-                index_error,
-                mirrored,
-                mirror_result,
-                committed,
-            )
-        });
+        }
+        drop(to_mirror);
+        let mirror = mirror
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        (finished, indexed, index_error, mirror)
+    });
 
-    if committed {
-        *mirror_pending = 0;
-    }
+    let MirrorOutcome {
+        result: mirror_result,
+        mirrored,
+        kept_end,
+    } = mirror;
     if finished && index_error.is_none() && mirror_result.is_ok() {
-        *mirror_pending =
-            mirror_pending.saturating_add(usize::try_from(mirrored).unwrap_or(usize::MAX));
         return Ok(());
     }
-    for key in start_key..start_key.saturating_add(indexed) {
+    for key in kept_end..start_key.saturating_add(indexed) {
         index.remove(key);
     }
-    for key in start_key..start_key.saturating_add(mirrored) {
+    for key in kept_end..start_key.saturating_add(mirrored) {
         store.remove(key);
     }
     if let Some(signatures) = signatures {
-        signatures.truncate(usize::try_from(start_key).unwrap_or(usize::MAX));
+        signatures.truncate(usize::try_from(kept_end).unwrap_or(usize::MAX));
     }
     match (index_error, mirror_result) {
         (Some(error), _) | (None, Err(error)) => Err(error),
@@ -1983,52 +2005,74 @@ fn ingest_with_mirror(
 }
 
 /// Insert chunks into the local mirror until `Finish` or until the index side
-/// stops, committing earlier batches before the first chunk. Returns the
-/// outcome, how many records were inserted (a failed chunk leaves no trace),
-/// and whether earlier batches were committed.
+/// stops. Before each batch's first chunk, earlier batches are committed if
+/// enough records are pending, so a failed commit leaves that batch without
+/// effect. Each commit appends a delta; `close` compacts the file once. A
+/// failed chunk leaves no trace.
 fn mirror_worker(
     store: &mut PersistentIndex32,
-    commit_first: bool,
+    pending: &mut usize,
+    start_key: u64,
     chunks: &Receiver<MirrorMessage>,
-) -> (Result<(), BindingError>, u64, bool) {
+) -> MirrorOutcome {
     let mut mirrored = 0_u64;
-    let mut committed = false;
-    while let Ok(MirrorMessage::Chunk(chunk)) = chunks.recv() {
-        if commit_first && !committed {
-            // Commit earlier batches before inserting this one, so a failed
-            // commit leaves the whole call without effect. Each commit
-            // appends a delta; `close` compacts the file once.
-            if let Err(error) = store.flush_delta() {
-                return (Err(BindingError::from(error)), mirrored, committed);
+    let mut kept_end = start_key;
+    let mut batch_started = false;
+    let outcome = |result, mirrored, kept_end| MirrorOutcome {
+        result,
+        mirrored,
+        kept_end,
+    };
+    loop {
+        match chunks.recv() {
+            Ok(MirrorMessage::Chunk(chunk)) => {
+                if !std::mem::replace(&mut batch_started, true) && *pending >= MIRROR_COMMIT_KEYS {
+                    if let Err(error) = store.flush_delta() {
+                        return outcome(Err(BindingError::from(error)), mirrored, kept_end);
+                    }
+                    *pending = 0;
+                }
+                let (keys, sketches) = &*chunk;
+                if let Err(error) = store.insert_many(
+                    keys.iter()
+                        .zip(sketches)
+                        .map(|(key, sketch)| (*key, sketch)),
+                ) {
+                    return outcome(Err(BindingError::from(error)), mirrored, kept_end);
+                }
+                mirrored += u64::try_from(keys.len()).unwrap_or(u64::MAX);
             }
-            committed = true;
+            Ok(message @ (MirrorMessage::EndBatch | MirrorMessage::Finish)) => {
+                let end = start_key.saturating_add(mirrored);
+                *pending =
+                    pending.saturating_add(usize::try_from(end - kept_end).unwrap_or(usize::MAX));
+                kept_end = end;
+                batch_started = false;
+                if matches!(message, MirrorMessage::Finish) {
+                    return outcome(Ok(()), mirrored, kept_end);
+                }
+            }
+            Err(_) => return outcome(Ok(()), mirrored, kept_end),
         }
-        let (keys, sketches) = &*chunk;
-        if let Err(error) = store.insert_many(
-            keys.iter()
-                .zip(sketches)
-                .map(|(key, sketch)| (*key, sketch)),
-        ) {
-            return (Err(BindingError::from(error)), mirrored, committed);
-        }
-        mirrored += u64::try_from(keys.len()).unwrap_or(u64::MAX);
     }
-    (Ok(()), mirrored, committed)
 }
 
 /// A message from the collecting thread to the sketch stage.
 enum RowsMessage {
     Rows(Vec<u64>, FeatureRows),
-    /// Every chunk was sent: keep the batch.
+    /// The open batch is complete.
+    EndBatch,
+    /// Every chunk was sent: keep the last batch.
     Finish,
 }
 
-/// Sketch each chunk of rows in order and pass it on to the insert worker.
+/// Sketch each chunk of rows in order and pass it on to the insert worker,
+/// forwarding batch ends.
 ///
 /// A sketch error is returned, and dropping `chunks` without `Finish` makes
-/// the insert worker roll the batch back. If the collecting thread goes away
-/// without `Finish`, or the insert worker stops, this stage stops quietly:
-/// the other thread reports its own error.
+/// the insert worker roll the open batch back. If the collecting thread goes
+/// away without `Finish`, or the insert worker stops, this stage stops
+/// quietly: the other thread reports its own error.
 fn sketch_worker(
     rows: &Receiver<RowsMessage>,
     chunks: &mpsc::SyncSender<IngestMessage>,
@@ -2037,20 +2081,22 @@ fn sketch_worker(
     threads: BatchThreads,
 ) -> Result<(), BindingError> {
     loop {
-        match rows.recv() {
+        let message = match rows.recv() {
             Ok(RowsMessage::Rows(keys, chunk)) => {
                 let sketches = build_sketches(&chunk, num_perm, seed, threads)?;
                 // Free the copied rows here, off the collecting thread.
                 drop(chunk);
-                if chunks.send(IngestMessage::Chunk(keys, sketches)).is_err() {
-                    return Ok(());
-                }
+                IngestMessage::Chunk(keys, sketches)
             }
+            Ok(RowsMessage::EndBatch) => IngestMessage::EndBatch,
             Ok(RowsMessage::Finish) => {
                 let _ = chunks.send(IngestMessage::Finish);
                 return Ok(());
             }
             Err(_) => return Ok(()),
+        };
+        if chunks.send(message).is_err() {
+            return Ok(());
         }
     }
 }
@@ -2235,22 +2281,27 @@ impl PyDedupeEngine {
         })
     }
 
-    /// Build and insert one bounded batch after copying Python buffers.
+    /// Build and insert bounded batches after copying Python buffers.
     ///
-    /// Rows are collected and sketched in chunks. Unless `threads=1`, a worker
-    /// thread inserts each chunk while the next one is collected and
-    /// sketched. `batch_size`, the caller's batch size, sets the chunk size
-    /// so small batches overlap too. The call is atomic: if any row, sketch
-    /// or insert fails, every record of the call is removed again.
-    #[pyo3(signature = (start_key, feature_rows, batch_size = None))]
+    /// Rows are collected and sketched in chunks; `batch_size`, the caller's
+    /// batch size, sets the chunk size so small batches overlap too. Every
+    /// `atomic_rows` records form one all-or-nothing batch (by default the
+    /// whole call is one batch): if a row, sketch or insert fails, the
+    /// failing batch is removed again, earlier batches stay, and the error is
+    /// raised. Unless `threads=1`, the stages run at once and across batch
+    /// boundaries: this thread collects while a sketch thread sketches and
+    /// the insert worker inserts.
+    #[pyo3(signature = (start_key, feature_rows, batch_size = None, atomic_rows = None))]
     fn add_many(
         &self,
         py: Python<'_>,
         start_key: u64,
         feature_rows: &Bound<'_, PyAny>,
         batch_size: Option<usize>,
+        atomic_rows: Option<usize>,
     ) -> PyResult<()> {
-        let chunk_rows = ingest_chunk_rows(batch_size);
+        let atomic = atomic_rows.filter(|&rows| rows > 0).unwrap_or(usize::MAX);
+        let chunk_rows = ingest_chunk_rows(batch_size).min(atomic);
         let mut rows = feature_rows.try_iter()?;
         let first = collect_feature_chunk(py, &mut rows, chunk_rows)?;
         if first.is_empty() {
@@ -2261,18 +2312,28 @@ impl PyDedupeEngine {
         let threads = self.threads;
 
         if threads == BatchThreads::Sequential {
+            let mut batch_start = start_key;
             let mut batch_rows = first;
-            collect_feature_rows_into(py, &mut rows, &mut batch_rows, usize::MAX)?;
-            let keys = chunk_keys(start_key, 0, batch_rows.len())?;
-            let sketches = py
-                .detach(move || build_sketches(&batch_rows, num_perm, seed, threads))
-                .map_err(binding_error)?;
-            return self.run_write(py, move |state| {
-                let mut batch = BatchIngest::begin(state, start_key)?;
-                batch.insert(&keys, &sketches)?;
-                batch.finish();
-                Ok(())
-            });
+            loop {
+                let remaining = atomic.saturating_sub(batch_rows.len());
+                collect_feature_rows_into(py, &mut rows, &mut batch_rows, remaining)?;
+                let keys = chunk_keys(batch_start, 0, batch_rows.len())?;
+                let count = u64::try_from(keys.len()).unwrap_or(u64::MAX);
+                let sketches = py
+                    .detach(move || build_sketches(&batch_rows, num_perm, seed, threads))
+                    .map_err(binding_error)?;
+                self.run_write(py, move |state| {
+                    let mut batch = BatchIngest::begin(state, batch_start)?;
+                    batch.insert(&keys, &sketches)?;
+                    batch.finish();
+                    Ok(())
+                })?;
+                batch_start = batch_start.saturating_add(count);
+                batch_rows = collect_feature_chunk(py, &mut rows, chunk_rows)?;
+                if batch_rows.is_empty() {
+                    return Ok(());
+                }
+            }
         }
 
         // Three stages run at once: this thread collects chunk k + 2 while a
@@ -2299,6 +2360,8 @@ impl PyDedupeEngine {
             let mut produced: PyResult<()> = Ok(());
             let mut chunk = first;
             let mut offset = 0_u64;
+            // Records of the open batch sent so far.
+            let mut in_batch = 0_usize;
             loop {
                 let keys = match chunk_keys(start_key, offset, chunk.len()) {
                     Ok(keys) => keys,
@@ -2308,13 +2371,24 @@ impl PyDedupeEngine {
                     }
                 };
                 offset = offset.saturating_add(u64::try_from(keys.len()).unwrap_or(u64::MAX));
+                in_batch += keys.len();
                 // Wait for room without holding the GIL.
                 let sent = py.detach(|| rows_sender.send(RowsMessage::Rows(keys, chunk)));
                 if sent.is_err() {
                     // A later stage stopped with an error, reported below.
                     break;
                 }
-                chunk = match collect_feature_chunk(py, &mut rows, chunk_rows) {
+                if in_batch >= atomic {
+                    in_batch = 0;
+                    if py
+                        .detach(|| rows_sender.send(RowsMessage::EndBatch))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                let limit = chunk_rows.min(atomic - in_batch);
+                chunk = match collect_feature_chunk(py, &mut rows, limit) {
                     Ok(chunk) => chunk,
                     Err(error) => {
                         produced = Err(error);

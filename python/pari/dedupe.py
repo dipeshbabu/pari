@@ -262,8 +262,10 @@ class DedupeIndex(Generic[T]):
 
         self._ensure_open()
         iterator = iter(items)
+        if progress is None:
+            return self._add_all_batches(iterator)
         added = 0
-        started = perf_counter() if progress is not None else None
+        started = perf_counter()
 
         def feature_rows(records: list[T]) -> Iterator[Iterable[ReadableBuffer]]:
             for record, features in islice(iterator, self._batch_size):
@@ -304,6 +306,44 @@ class DedupeIndex(Generic[T]):
                     started=started,
                     final=total is not None and added == total,
                 )
+
+    def _add_all_batches(
+        self, iterator: Iterator[tuple[T, Iterable[ReadableBuffer]]]
+    ) -> int:
+        """Ingest every batch in one native call when no callback runs between.
+
+        The native engine keeps each batch of ``batch_size`` records
+        all-or-nothing while it overlaps work across batch boundaries. After a
+        failure, the records of the batches it kept are retained here too.
+        """
+
+        start = len(self._records)
+        records: list[T] = []
+
+        def feature_rows() -> Iterator[Iterable[ReadableBuffer]]:
+            for record, features in iterator:
+                records.append(record)
+                # The native collector copies this row before advancing the
+                # source, which may reuse its feature list or mutable buffers.
+                yield features
+
+        try:
+            self._engine.add_many(
+                start,
+                feature_rows(),
+                # Chunks never cross a batch end, and the pipeline overlaps
+                # across batches, so chunks can be whole small batches.
+                atomic_rows=self._batch_size,
+            )
+        except BaseException:
+            try:
+                committed = len(self._engine) - start
+            except Exception:
+                committed = 0
+            self._records.extend(records[: max(committed, 0)])
+            raise
+        self._records.extend(records)
+        return len(records)
 
     @staticmethod
     def _emit_progress(
