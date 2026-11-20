@@ -24,7 +24,7 @@ use pyo3::{
     create_exception,
     exceptions::{PyException, PyTypeError},
     prelude::*,
-    types::{PyAny, PyByteArray, PyBytes, PyIterator, PyMemoryView, PyModule},
+    types::{PyAny, PyByteArray, PyBytes, PyIterator, PyList, PyMemoryView, PyModule, PyTuple},
 };
 
 mod read_only;
@@ -202,23 +202,122 @@ fn collect_byte_values(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Ve
         .collect()
 }
 
-fn collect_feature_rows(py: Python<'_>, rows: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<Vec<u8>>>> {
-    rows.try_iter()?
-        .map(|row| collect_byte_values(py, &row?))
-        .collect()
+/// Feature rows copied from Python into one contiguous buffer, so a row of
+/// many small features costs no allocation per feature.
+#[derive(Debug, Default)]
+struct FeatureRows {
+    bytes: Vec<u8>,
+    /// End offset in `bytes` of each feature.
+    feature_ends: Vec<usize>,
+    /// End index in `feature_ends` of each row.
+    row_ends: Vec<usize>,
 }
 
-/// Copy up to `limit` feature rows from `rows`, consuming no row beyond them.
+impl FeatureRows {
+    fn with_capacity(rows: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            feature_ends: Vec::new(),
+            row_ends: Vec::with_capacity(rows),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.row_ends.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.row_ends.is_empty()
+    }
+
+    fn push_feature(&mut self, feature: &[u8]) {
+        self.bytes.extend_from_slice(feature);
+        self.feature_ends.push(self.bytes.len());
+    }
+
+    fn end_row(&mut self) {
+        self.row_ends.push(self.feature_ends.len());
+    }
+
+    /// The features of row `index`, in input order.
+    fn row(&self, index: usize) -> impl Iterator<Item = &[u8]> {
+        let first = index
+            .checked_sub(1)
+            .map_or(0, |previous| self.row_ends[previous]);
+        (first..self.row_ends[index]).map(move |feature| {
+            let start = feature
+                .checked_sub(1)
+                .map_or(0, |previous| self.feature_ends[previous]);
+            &self.bytes[start..self.feature_ends[feature]]
+        })
+    }
+}
+
+/// Append one feature value, copying `bytes` without an intermediate buffer.
+fn push_feature_value(
+    py: Python<'_>,
+    rows: &mut FeatureRows,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    if let Ok(bytes) = value.cast::<PyBytes>() {
+        rows.push_feature(bytes.as_bytes());
+    } else {
+        rows.push_feature(&owned_bytes(py, value)?);
+    }
+    Ok(())
+}
+
+/// Append one row of feature values. Exact lists and tuples are read in
+/// place; any other iterable is iterated.
+fn push_feature_row(
+    py: Python<'_>,
+    rows: &mut FeatureRows,
+    values: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    if let Ok(list) = values.cast_exact::<PyList>() {
+        for value in list.iter() {
+            push_feature_value(py, rows, &value)?;
+        }
+    } else if let Ok(tuple) = values.cast_exact::<PyTuple>() {
+        for value in tuple.iter() {
+            push_feature_value(py, rows, &value)?;
+        }
+    } else {
+        for value in values.try_iter()? {
+            push_feature_value(py, rows, &value?)?;
+        }
+    }
+    rows.end_row();
+    Ok(())
+}
+
+/// Copy up to `limit` more feature rows from `source` into `rows`, consuming
+/// no row beyond them.
+fn collect_feature_rows_into(
+    py: Python<'_>,
+    source: &mut Bound<'_, PyIterator>,
+    rows: &mut FeatureRows,
+    limit: usize,
+) -> PyResult<()> {
+    for row in source.by_ref().take(limit) {
+        push_feature_row(py, rows, &row?)?;
+    }
+    Ok(())
+}
+
+fn collect_feature_rows(py: Python<'_>, rows: &Bound<'_, PyAny>) -> PyResult<FeatureRows> {
+    collect_feature_chunk(py, &mut rows.try_iter()?, usize::MAX)
+}
+
+/// Copy up to `limit` feature rows from `source`, consuming no row beyond them.
 fn collect_feature_chunk(
     py: Python<'_>,
-    rows: &mut Bound<'_, PyIterator>,
+    source: &mut Bound<'_, PyIterator>,
     limit: usize,
-) -> PyResult<Vec<Vec<Vec<u8>>>> {
-    let mut chunk = Vec::with_capacity(limit.min(INGEST_CHUNK_ROWS));
-    for row in rows.by_ref().take(limit) {
-        chunk.push(collect_byte_values(py, &row?)?);
-    }
-    Ok(chunk)
+) -> PyResult<FeatureRows> {
+    let mut rows = FeatureRows::with_capacity(limit.min(INGEST_CHUNK_ROWS));
+    collect_feature_rows_into(py, source, &mut rows, limit)?;
+    Ok(rows)
 }
 
 fn indexed_signature_error(py: Python<'_>, error: &PyErr, index: usize) -> PyErr {
@@ -243,21 +342,29 @@ fn collect_signature64(py: Python<'_>, signature: &Bound<'_, PyAny>) -> PyResult
 }
 
 fn build_sketches(
-    rows: &[Vec<Vec<u8>>],
+    rows: &FeatureRows,
     num_perm: usize,
     seed: u64,
     threads: BatchThreads,
 ) -> Result<Vec<MinHash32>, BindingError> {
-    MinHash32::from_batch(rows, num_perm, seed, threads).map_err(BindingError::from)
+    let indexes: Vec<usize> = (0..rows.len()).collect();
+    MinHash32::from_batch_with(&indexes, num_perm, seed, threads, |sketch, &row| {
+        sketch.update_many(rows.row(row));
+    })
+    .map_err(BindingError::from)
 }
 
 fn build_sketches64(
-    rows: &[Vec<Vec<u8>>],
+    rows: &FeatureRows,
     num_perm: usize,
     seed: u64,
     threads: BatchThreads,
 ) -> Result<Vec<MinHash64>, BindingError> {
-    MinHash64::from_batch(rows, num_perm, seed, threads).map_err(BindingError::from)
+    let indexes: Vec<usize> = (0..rows.len()).collect();
+    MinHash64::from_batch_with(&indexes, num_perm, seed, threads, |sketch, &row| {
+        sketch.update_many(rows.row(row));
+    })
+    .map_err(BindingError::from)
 }
 
 fn batch_threads(threads: Option<usize>) -> PyResult<BatchThreads> {
@@ -1843,7 +1950,7 @@ impl PyDedupeEngine {
 
         if threads == BatchThreads::Sequential {
             let mut batch_rows = first;
-            batch_rows.extend(collect_feature_chunk(py, &mut rows, usize::MAX)?);
+            collect_feature_rows_into(py, &mut rows, &mut batch_rows, usize::MAX)?;
             let keys = chunk_keys(start_key, 0, batch_rows.len())?;
             let sketches = py
                 .detach(move || build_sketches(&batch_rows, num_perm, seed, threads))

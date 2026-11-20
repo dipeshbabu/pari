@@ -63,6 +63,48 @@ class BufferInputTests(unittest.TestCase):
                         sketch_type.from_values([bytes(values)]).signature,
                     )
 
+    def test_batch_rows_of_any_iterable_shape_match_from_values(self) -> None:
+        class OverriddenList(list):
+            # A list subclass is iterated, not read in place.
+            def __iter__(self):
+                return iter([b"override"])
+
+        def rows() -> list[tuple[object, list[object]]]:
+            # (row passed to from_batch, the same features as a list)
+            return [
+                ([b"a", b"bb", b""], [b"a", b"bb", b""]),
+                ((b"a", b"bb", b""), [b"a", b"bb", b""]),
+                (iter([b"x", bytearray(b"y")]), [b"x", b"y"]),
+                ([], []),
+                (OverriddenList([b"ignored"]), [b"override"]),
+                ([[1, 2, 255], memoryview(b"z")], [bytes([1, 2, 255]), b"z"]),
+            ]
+
+        for sketch_type in (MinHash, MinHash64):
+            for threads in (1, 2):
+                with self.subTest(sketch=sketch_type.__name__, threads=threads):
+                    batch_rows: list[object] = []
+                    expected: list[list[object]] = []
+                    # Enough rows for the parallel batch path.
+                    for _ in range(64):
+                        for row, features in rows():
+                            batch_rows.append(row)
+                            expected.append(features)
+                    actual = sketch_type.from_batch(
+                        batch_rows, num_perm=32, seed=7, threads=threads
+                    )
+                    self.assertEqual(
+                        [sketch.signature for sketch in actual],
+                        [
+                            sketch_type.from_values(
+                                features, num_perm=32, seed=7
+                            ).signature
+                            for features in expected
+                        ],
+                    )
+                    with self.assertRaises(TypeError):
+                        sketch_type.from_batch([[b"a", object(), b"b"]])
+
     def test_released_views_and_non_buffer_values_fail(self) -> None:
         released = memoryview(b"abc")
         released.release()
