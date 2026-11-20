@@ -49,6 +49,14 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   1,024, into about four chunks of at least 256 records, so collecting,
   sketching and inserting overlap within each batch too. Batches of 32,768
   records or more keep 8,192-record chunks.
+- Without a `progress` callback, `DedupeIndex.add_many`,
+  `add_many_features` and `deduplicate` pass every batch to the native
+  engine in one call, so collecting, sketching and inserting overlap across
+  batch boundaries too. Each batch of `batch_size` records stays
+  all-or-nothing: a failure keeps the earlier batches, removes the failing
+  one, and raises. The input may be read up to a few chunks past the failing
+  batch. With a `progress` callback, batches are still ingested one call at a
+  time so the callback runs between them.
 
 ## [0.4.2] - 2026-11-19
 
