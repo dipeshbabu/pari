@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pari import DedupeIndex, Index
+from pari import DedupeIndex, Index, StorageError
 
 # More than two native ingest chunks of 8,192 rows in one batch.
 RECORDS = 25_000
@@ -154,6 +154,61 @@ class PipelinedIngestTests(unittest.TestCase):
                             self.assertEqual(len(persisted), FAIL_AT)
                         finally:
                             persisted.close()
+
+    def test_a_failed_mirror_commit_rolls_back_the_parallel_index_insert(self) -> None:
+        committed = 10
+        # A full batch makes the next batch commit the mirror first.
+        pending_end = committed + BATCH
+        failed_end = pending_end + 9_000
+        for threads in (None, 1):
+            with (
+                self.subTest(threads=threads),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "mirror.pari"
+                backup = Path(directory) / "committed.pari"
+                index = DedupeIndex(
+                    pair_features,
+                    num_perm=32,
+                    seed=11,
+                    threads=threads,
+                    batch_size=BATCH,
+                    backend="local",
+                    path=path,
+                )
+                expected, _ = self.build("memory", 1, directory)
+                try:
+                    index.add_many(range(committed))
+                    index.sync()
+                    index.add_many(range(committed, pending_end))
+                    expected.add_many(range(pending_end))
+
+                    path.rename(backup)
+                    path.mkdir()
+                    try:
+                        with self.assertRaises(StorageError):
+                            index.add_many(range(pending_end, failed_end))
+                    finally:
+                        path.rmdir()
+                        backup.rename(path)
+                    self.assertEqual(len(index), pending_end)
+                    self.assertEqual(
+                        sorted(index._engine.pairs()), sorted(expected._engine.pairs())
+                    )
+
+                    index.add_many(range(pending_end, failed_end))
+                    expected.add_many(range(pending_end, failed_end))
+                    self.assertEqual(
+                        sorted(index._engine.pairs()), sorted(expected._engine.pairs())
+                    )
+                finally:
+                    index.close()
+                    expected.close()
+                persisted = Index.open(path)
+                try:
+                    self.assertEqual(len(persisted), failed_end)
+                finally:
+                    persisted.close()
 
 
 if __name__ == "__main__":
