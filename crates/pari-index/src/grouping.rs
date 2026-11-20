@@ -602,8 +602,6 @@ mod tests {
 
     use pari_core::{MinHash32, MinHash64};
 
-    use std::collections::HashMap;
-
     use super::{
         collect_components, group_pairs, group_pairs_with_representative, DuplicateGroup,
         GroupError, LshIndex32, LshIndex64, UnionFind,
