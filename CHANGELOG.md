@@ -6,6 +6,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-19
+
 ### Added
 
 - `pari_format::BucketDirectory::split_keys` and `range_cursor`, and the
