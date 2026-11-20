@@ -36,6 +36,11 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   tables of a batch of at least 1,024 items on several threads, a group of
   bands each, while the calling thread records the keys. The index built is
   the same as before.
+- A persistent-index snapshot rewrite (automatic compaction, `compact()`,
+  `compact_and_close()`, and `DedupeIndex(backend="local")` `close()`)
+  flushes the staged file to disk every 64 MiB on a background thread while
+  it is written, instead of writing all of it in the final sync. A failed
+  background flush fails the rewrite.
 
 ## [0.4.2] - 2026-11-19
 

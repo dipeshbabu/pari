@@ -2345,19 +2345,56 @@ impl OwnedTemporaryFile {
     }
 
     /// Stream content through a buffered writer, then flush and sync it.
+    /// Stream a snapshot into the temporary file and make it durable.
+    ///
+    /// While the snapshot is written, a background thread flushes what has
+    /// been written so far after every [`SYNC_BEHIND_BYTES`], so the disk
+    /// writes overlap building the snapshot and the final sync has little
+    /// left to do.
     fn write_streamed<F>(&mut self, write: F) -> Result<(), StoreError>
     where
-        F: FnOnce(&mut BufWriter<&mut File>) -> Result<(), StoreError>,
+        F: FnOnce(&mut BufWriter<SyncBehind<'_>>) -> Result<(), StoreError>,
     {
         let file = self.file.as_mut().ok_or_else(|| {
             StoreError::Io(io::Error::other(
                 "persistent-index temporary file is already closed",
             ))
         })?;
-        let mut writer = BufWriter::with_capacity(1024 * 1024, &mut *file);
-        write(&mut writer)?;
-        writer.flush()?;
-        drop(writer);
+        // Without a second handle, the file is synced only at the end.
+        let flush_handle = file.try_clone().ok();
+        let written = std::thread::scope(|scope| {
+            let (requests, pending) = std::sync::mpsc::sync_channel::<()>(1);
+            let background = flush_handle.map(|handle| {
+                scope.spawn(move || -> io::Result<()> {
+                    // Keep the first error: a failed flush may not be reported
+                    // again by a later sync of the same open file.
+                    while pending.recv().is_ok() {
+                        handle.sync_data()?;
+                    }
+                    Ok(())
+                })
+            });
+            let requests = background.as_ref().map(|_| requests);
+            let mut writer = BufWriter::with_capacity(
+                1024 * 1024,
+                SyncBehind {
+                    file: &mut *file,
+                    since_sync: 0,
+                    requests,
+                },
+            );
+            let written =
+                write(&mut writer).and_then(|()| writer.flush().map_err(StoreError::from));
+            // Stop the background thread and wait for its last flush.
+            drop(writer);
+            let synced = background.map_or(Ok(()), |background| {
+                background
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            });
+            written.and(synced.map_err(StoreError::from))
+        });
+        written?;
         file.sync_all()?;
         Ok(())
     }
@@ -2518,6 +2555,49 @@ fn recover_after_initial_publication(
             cleanup,
         },
     ))
+}
+
+/// Bytes written to a staged snapshot between background flushes.
+/// Tests flush every few kilobytes so every staged rewrite exercises it.
+const SYNC_BEHIND_BYTES: u64 = if cfg!(test) {
+    4 * 1024
+} else {
+    64 * 1024 * 1024
+};
+
+/// A file writer that asks a background thread to flush the file after
+/// every [`SYNC_BEHIND_BYTES`] written. Dropping it ends the requests.
+struct SyncBehind<'a> {
+    file: &'a mut File,
+    since_sync: u64,
+    requests: Option<std::sync::mpsc::SyncSender<()>>,
+}
+
+impl Write for SyncBehind<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.file.write(bytes)?;
+        self.since_sync = self
+            .since_sync
+            .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+        if self.since_sync >= SYNC_BEHIND_BYTES {
+            self.since_sync = 0;
+            if let Some(requests) = &self.requests {
+                // A flush already queued covers these bytes too.
+                let _ = requests.try_send(());
+            }
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl Seek for SyncBehind<'_> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.file.seek(position)
+    }
 }
 
 fn cleanup_failed_allocation(path: &Path, original: io::Error) -> StoreError {
@@ -3875,6 +3955,46 @@ mod tests {
         assert!(index.inner.committed.is_some());
         assert_eq!(index.inner.collect_live_hashes().expect("hashes"), hashes);
         drop(index);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn sync_behind_writes_and_seeks_like_the_file_and_requests_flushes() {
+        let path = test_path("sync-behind");
+        cleanup(&path);
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("create");
+        let (requests, received) = std::sync::mpsc::sync_channel(1);
+        let mut expected = Vec::new();
+        let mut flushes = 0;
+        {
+            let mut writer = super::SyncBehind {
+                file: &mut file,
+                since_sync: 0,
+                requests: Some(requests),
+            };
+            for round in 0..40_u8 {
+                let block = vec![round; 1_000];
+                writer.write_all(&block).expect("write");
+                expected.extend_from_slice(&block);
+                flushes += received.try_iter().count();
+            }
+            // Patch the start, as the container writer does with its header.
+            writer.seek(SeekFrom::Start(0)).expect("seek start");
+            writer.write_all(b"head").expect("patch");
+            expected[..4].copy_from_slice(b"head");
+            writer.seek(SeekFrom::End(0)).expect("seek end");
+            writer.write_all(b"tail").expect("tail");
+            expected.extend_from_slice(b"tail");
+        }
+        drop(file);
+        assert_eq!(fs::read(&path).expect("read"), expected);
+        // 40,008 bytes at one request per 4 KiB.
+        assert!(flushes >= 8, "{flushes} flush requests");
         cleanup(&path);
     }
 
