@@ -331,7 +331,8 @@ class DedupeIndex(Generic[T]):
             self._engine.add_many(
                 start,
                 feature_rows(),
-                batch_size=self._batch_size,
+                # Chunks never cross a batch end, and the pipeline overlaps
+                # across batches, so chunks can be whole small batches.
                 atomic_rows=self._batch_size,
             )
         except BaseException:
