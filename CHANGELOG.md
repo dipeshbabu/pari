@@ -45,6 +45,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   in a separate heap allocation, and allocate a vector only once a second
   member arrives. Most buckets of a large index hold one member, so this
   saves memory and allocation time; the index's behavior is unchanged.
+- `DedupeIndex` splits small batches, including the default `batch_size` of
+  1,024, into about four chunks of at least 256 records, so collecting,
+  sketching and inserting overlap within each batch too. Batches of 32,768
+  records or more keep 8,192-record chunks.
 
 ## [0.4.2] - 2026-11-19
 

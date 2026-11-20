@@ -274,7 +274,9 @@ class DedupeIndex(Generic[T]):
 
         while True:
             records: list[T] = []
-            self._engine.add_many(len(self._records), feature_rows(records))
+            self._engine.add_many(
+                len(self._records), feature_rows(records), batch_size=self._batch_size
+            )
             if not records:
                 if (
                     progress is not None

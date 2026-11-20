@@ -155,6 +155,74 @@ class PipelinedIngestTests(unittest.TestCase):
                         finally:
                             persisted.close()
 
+    def test_small_batches_are_chunked_and_roll_back_whole_batches(self) -> None:
+        # batch_size 1,000 splits each batch into chunks of 256 rows; a
+        # failure in the third batch's third chunk keeps the first two
+        # batches and removes every record of the third.
+        fail_at = 2_600
+
+        def failing(record: int) -> list[bytes]:
+            if record == fail_at:
+                raise RuntimeError("feature failed")
+            return pair_features(record)
+
+        for backend in ("memory", "local"):
+            for batch_size in (300, 1_000):
+                with (
+                    self.subTest(backend=backend, batch_size=batch_size),
+                    tempfile.TemporaryDirectory() as directory,
+                ):
+                    options = {"num_perm": 32, "seed": 11, "batch_size": batch_size}
+                    path = (
+                        Path(directory) / "small.pari" if backend == "local" else None
+                    )
+                    pipelined = DedupeIndex(
+                        pair_features, backend=backend, path=path, **options
+                    )
+                    sequential, _ = self.build("memory", 1, directory)
+                    try:
+                        pipelined.add_many(range(5_000))
+                        sequential.add_many(range(5_000))
+                        self.assertEqual(
+                            sorted(pipelined._engine.pairs()),
+                            sorted(sequential._engine.pairs()),
+                        )
+                    finally:
+                        pipelined.close()
+                        sequential.close()
+
+            with (
+                self.subTest(backend=backend, failure=True),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "fail.pari" if backend == "local" else None
+                index = DedupeIndex(
+                    failing,
+                    num_perm=32,
+                    seed=11,
+                    batch_size=1_000,
+                    backend=backend,
+                    path=path,
+                )
+                expected, _ = self.build("memory", 1, directory)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "feature failed"):
+                        index.add_many(range(5_000))
+                    self.assertEqual(len(index), 2_000)
+                    expected.add_many(range(2_000))
+                    self.assertEqual(
+                        sorted(index._engine.pairs()), sorted(expected._engine.pairs())
+                    )
+                finally:
+                    index.close()
+                    expected.close()
+                if path is not None:
+                    persisted = Index.open(path)
+                    try:
+                        self.assertEqual(len(persisted), 2_000)
+                    finally:
+                        persisted.close()
+
     def test_a_failed_mirror_commit_rolls_back_the_parallel_index_insert(self) -> None:
         committed = 10
         # A full batch makes the next batch commit the mirror first.

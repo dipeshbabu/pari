@@ -1673,6 +1673,20 @@ type SharedDedupe = Arc<Mutex<Option<DedupeState>>>;
 /// Records collected, sketched and handed to the insert worker at a time.
 const INGEST_CHUNK_ROWS: usize = 8_192;
 
+/// Smallest chunk a batch is split into, so sketching a chunk still uses
+/// several cores.
+const MIN_INGEST_CHUNK_ROWS: usize = 256;
+
+/// Chunk size for batches of about `batch_size` records: about a quarter of
+/// the batch, so even small batches overlap collecting, sketching and
+/// inserting, within [`MIN_INGEST_CHUNK_ROWS`] and [`INGEST_CHUNK_ROWS`].
+fn ingest_chunk_rows(batch_size: Option<usize>) -> usize {
+    batch_size.map_or(INGEST_CHUNK_ROWS, |rows| {
+        rows.div_ceil(4)
+            .clamp(MIN_INGEST_CHUNK_ROWS, INGEST_CHUNK_ROWS)
+    })
+}
+
 /// One ingest batch applied to a dedupe state under its lock.
 ///
 /// Chunks are inserted as they arrive. Until [`Self::finish`], the batch can
@@ -2225,16 +2239,20 @@ impl PyDedupeEngine {
     ///
     /// Rows are collected and sketched in chunks. Unless `threads=1`, a worker
     /// thread inserts each chunk while the next one is collected and
-    /// sketched. The call is atomic: if any row, sketch or insert fails, every
-    /// record of the call is removed again.
+    /// sketched. `batch_size`, the caller's batch size, sets the chunk size
+    /// so small batches overlap too. The call is atomic: if any row, sketch
+    /// or insert fails, every record of the call is removed again.
+    #[pyo3(signature = (start_key, feature_rows, batch_size = None))]
     fn add_many(
         &self,
         py: Python<'_>,
         start_key: u64,
         feature_rows: &Bound<'_, PyAny>,
+        batch_size: Option<usize>,
     ) -> PyResult<()> {
+        let chunk_rows = ingest_chunk_rows(batch_size);
         let mut rows = feature_rows.try_iter()?;
-        let first = collect_feature_chunk(py, &mut rows, INGEST_CHUNK_ROWS)?;
+        let first = collect_feature_chunk(py, &mut rows, chunk_rows)?;
         if first.is_empty() {
             return Ok(());
         }
@@ -2296,7 +2314,7 @@ impl PyDedupeEngine {
                     // A later stage stopped with an error, reported below.
                     break;
                 }
-                chunk = match collect_feature_chunk(py, &mut rows, INGEST_CHUNK_ROWS) {
+                chunk = match collect_feature_chunk(py, &mut rows, chunk_rows) {
                     Ok(chunk) => chunk,
                     Err(error) => {
                         produced = Err(error);
@@ -2470,4 +2488,29 @@ fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("ClosedIndexError", py.get_type::<ClosedIndexError>())?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ingest_chunk_rows, INGEST_CHUNK_ROWS, MIN_INGEST_CHUNK_ROWS};
+
+    #[test]
+    fn small_batches_split_into_about_four_chunks() {
+        assert_eq!(ingest_chunk_rows(None), INGEST_CHUNK_ROWS);
+        for (batch_size, chunk_rows) in [
+            (1, MIN_INGEST_CHUNK_ROWS),
+            (1_000, MIN_INGEST_CHUNK_ROWS),
+            (1_024, 256),
+            (2_048, 512),
+            (10_000, 2_500),
+            (65_536, INGEST_CHUNK_ROWS),
+            (1 << 20, INGEST_CHUNK_ROWS),
+        ] {
+            assert_eq!(
+                ingest_chunk_rows(Some(batch_size)),
+                chunk_rows,
+                "{batch_size}"
+            );
+        }
+    }
 }
