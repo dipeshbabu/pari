@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import gc
 import tempfile
 import unittest
 from array import array
@@ -11,6 +13,7 @@ from pari import (
     ClosedIndexError,
     ConfigurationError,
     DedupeIndex,
+    DuplicateGroup,
     Index,
     InvalidRepresentativeError,
     ProgressCancelledError,
@@ -101,6 +104,43 @@ class DeduplicateFunctionTests(unittest.TestCase):
 
 
 class DedupeIndexTests(unittest.TestCase):
+    def test_bulk_group_building_matches_per_group_conversion(self) -> None:
+        records = [{"text": f"family {index // 3} member"} for index in range(300)]
+        records += [{"text": f"unique {index}"} for index in range(50)]
+        for collecting in (True, False):
+            with self.subTest(gc_enabled=collecting):
+                index = DedupeIndex(text_features, num_perm=64, seed=5)
+                was_enabled = gc.isenabled()
+                try:
+                    index.add_many(records)
+                    if not collecting:
+                        gc.disable()
+                    for method, raw in (
+                        (index.groups, index._engine.groups(verifier=None)),
+                        (
+                            index.candidate_groups,
+                            index._engine.groups(verifier=None, apply_checks=False),
+                        ),
+                    ):
+                        built = method()
+                        self.assertEqual(gc.isenabled(), collecting)
+                        expected = tuple(
+                            index._convert_group(members) for _, members in raw
+                        )
+                        self.assertGreater(len(built), 50)
+                        self.assertEqual(built, expected)
+                        for group in built:
+                            self.assertIs(type(group), DuplicateGroup)
+                            self.assertIs(type(group.members), tuple)
+                            self.assertIs(type(group.member_indices), tuple)
+                            self.assertIs(group.representative, group.members[0])
+                        with self.assertRaises(dataclasses.FrozenInstanceError):
+                            built[0].representative = None  # type: ignore[misc]
+                finally:
+                    if was_enabled:
+                        gc.enable()
+                    index.close()
+
     def test_invalid_convenience_callbacks_do_not_create_local_index(self) -> None:
         for invalid in ({"feature": None}, {"progress": False}):
             with (

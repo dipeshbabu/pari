@@ -1955,6 +1955,66 @@ impl PyDedupeEngine {
         })
         .map_err(binding_error)
     }
+
+    /// Run direct native grouping, optionally invoking a Python pair verifier.
+    ///
+    /// With `apply_checks=True`, pairs below the engine's `min_similarity` are
+    /// rejected natively before the Python verifier is consulted.
+    fn collect_groups(
+        &self,
+        py: Python<'_>,
+        verifier: Option<Py<PyAny>>,
+        apply_checks: bool,
+    ) -> PyResult<Vec<(u64, Vec<u64>)>> {
+        let minimum = if apply_checks {
+            self.min_similarity
+        } else {
+            None
+        };
+        let verifier = if apply_checks { verifier } else { None };
+        let Some(verifier) = verifier else {
+            return self.run_read(py, move |state| {
+                Ok(owned_groups(match minimum {
+                    None => state.index.duplicate_groups(),
+                    Some(minimum) => state.index.duplicate_groups_with(2, |left, right| {
+                        state.similarity(left, right) >= minimum
+                    }),
+                }))
+            });
+        };
+
+        let inner = Arc::clone(&self.inner);
+        py.detach(move || {
+            let guard = inner
+                .try_lock()
+                .map_err(BindingError::from)
+                .map_err(binding_error)?;
+            let state = guard
+                .as_ref()
+                .ok_or_else(|| binding_error(BindingError::Closed))?;
+            let mut callback_error = None;
+            let groups = state.index.duplicate_groups_with(2, |left, right| {
+                if callback_error.is_some() {
+                    return false;
+                }
+                if minimum.is_some_and(|minimum| state.similarity(left, right) < minimum) {
+                    return false;
+                }
+                match Python::attach(|py| verifier.bind(py).call1((left, right))?.extract::<bool>())
+                {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        callback_error = Some(error);
+                        false
+                    }
+                }
+            });
+            if let Some(error) = callback_error {
+                return Err(error);
+            }
+            Ok(owned_groups(groups))
+        })
+    }
 }
 
 #[pymethods]
@@ -2116,63 +2176,23 @@ impl PyDedupeEngine {
 
     /// Run direct native grouping, optionally invoking a Python pair verifier.
     ///
-    /// With `apply_checks=True`, pairs below the engine's `min_similarity` are
-    /// rejected natively before the Python verifier is consulted.
+    /// Returns `(representative, members)` per group, with members as a
+    /// tuple. With `apply_checks=True`, pairs below the engine's
+    /// `min_similarity` are rejected natively before the Python verifier is
+    /// consulted.
     #[pyo3(signature = (*, verifier = None, apply_checks = true))]
     fn groups(
         &self,
         py: Python<'_>,
         verifier: Option<Py<PyAny>>,
         apply_checks: bool,
-    ) -> PyResult<Vec<(u64, Vec<u64>)>> {
-        let minimum = if apply_checks {
-            self.min_similarity
-        } else {
-            None
-        };
-        let verifier = if apply_checks { verifier } else { None };
-        let Some(verifier) = verifier else {
-            return self.run_read(py, move |state| {
-                Ok(owned_groups(match minimum {
-                    None => state.index.duplicate_groups(),
-                    Some(minimum) => state.index.duplicate_groups_with(2, |left, right| {
-                        state.similarity(left, right) >= minimum
-                    }),
-                }))
-            });
-        };
-
-        let inner = Arc::clone(&self.inner);
-        py.detach(move || {
-            let guard = inner
-                .try_lock()
-                .map_err(BindingError::from)
-                .map_err(binding_error)?;
-            let state = guard
-                .as_ref()
-                .ok_or_else(|| binding_error(BindingError::Closed))?;
-            let mut callback_error = None;
-            let groups = state.index.duplicate_groups_with(2, |left, right| {
-                if callback_error.is_some() {
-                    return false;
-                }
-                if minimum.is_some_and(|minimum| state.similarity(left, right) < minimum) {
-                    return false;
-                }
-                match Python::attach(|py| verifier.bind(py).call1((left, right))?.extract::<bool>())
-                {
-                    Ok(accepted) => accepted,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        false
-                    }
-                }
-            });
-            if let Some(error) = callback_error {
-                return Err(error);
-            }
-            Ok(owned_groups(groups))
-        })
+    ) -> PyResult<Vec<(u64, Py<PyTuple>)>> {
+        self.collect_groups(py, verifier, apply_checks)?
+            .into_iter()
+            .map(|(representative, members)| {
+                Ok((representative, PyTuple::new(py, members)?.unbind()))
+            })
+            .collect()
     }
 
     /// Return unique normalized candidate pairs from LSH bucket collisions.
