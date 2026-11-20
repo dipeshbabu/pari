@@ -1681,21 +1681,20 @@ struct BatchIngest<'a> {
     state: &'a mut DedupeState,
     start_key: u64,
     inserted: u64,
+    /// Commit earlier batches to the local mirror before its first chunk.
+    commit_first: bool,
+    /// Insert into the index and the local mirror on two threads.
+    parallel: bool,
 }
 
 impl<'a> BatchIngest<'a> {
-    /// Commit earlier batches to the local mirror if enough are pending, then
-    /// start a batch at `start_key`.
-    fn begin(state: &'a mut DedupeState, start_key: u64) -> Result<Self, BindingError> {
-        if let Some(store) = &mut state.store {
-            if state.mirror_pending >= MIRROR_COMMIT_KEYS {
-                // Commit earlier batches before inserting this one, so a
-                // failed commit leaves the whole call without effect. Each
-                // commit appends a delta; `close` compacts the file once.
-                store.flush_delta().map_err(BindingError::from)?;
-                state.mirror_pending = 0;
-            }
-        }
+    /// Start a batch at `start_key`. If enough earlier records are pending in
+    /// the local mirror, they are committed before this batch's first chunk.
+    fn begin(
+        state: &'a mut DedupeState,
+        start_key: u64,
+        parallel: bool,
+    ) -> Result<Self, BindingError> {
         if let Some(signatures) = &state.signatures {
             if u64::try_from(signatures.len()).ok() != Some(start_key) {
                 return Err(BindingError::Store(StoreError::InvalidSnapshot {
@@ -1703,38 +1702,87 @@ impl<'a> BatchIngest<'a> {
                 }));
             }
         }
+        let commit_first = state.store.is_some() && state.mirror_pending >= MIRROR_COMMIT_KEYS;
         Ok(Self {
             state,
             start_key,
             inserted: 0,
+            commit_first,
+            parallel,
         })
     }
 
     /// Insert the next chunk; on error the chunk leaves no trace, and the
     /// caller rolls back the earlier chunks.
+    ///
+    /// The index and the local mirror are separate structures, so with
+    /// `parallel` they are updated on two threads at once.
     fn insert(&mut self, keys: &[u64], sketches: &[MinHash32]) -> Result<(), BindingError> {
-        let state = &mut *self.state;
-        state
-            .index
-            .insert_many(
-                keys.iter()
-                    .zip(sketches)
-                    .map(|(key, sketch)| (*key, sketch)),
-            )
-            .map_err(BindingError::from)?;
-        if let Some(store) = &mut state.store {
-            if let Err(error) = store.insert_many(
-                keys.iter()
-                    .zip(sketches)
-                    .map(|(key, sketch)| (*key, sketch)),
-            ) {
-                for key in keys {
-                    state.index.remove(*key);
-                }
-                return Err(BindingError::from(error));
+        let commit_first = std::mem::take(&mut self.commit_first);
+        let DedupeState {
+            index,
+            store,
+            mirror_pending,
+            signatures,
+        } = &mut *self.state;
+        let items = || {
+            keys.iter()
+                .zip(sketches)
+                .map(|(key, sketch)| (*key, sketch))
+        };
+        let insert_index =
+            |index: &mut LshIndex32| index.insert_many(items()).map_err(BindingError::from);
+        let insert_store = |store: &mut PersistentIndex32, pending: &mut usize| {
+            if commit_first {
+                // Commit earlier batches before inserting this one, so a
+                // failed commit leaves the whole call without effect. Each
+                // commit appends a delta; `close` compacts the file once.
+                store.flush_delta()?;
+                *pending = 0;
             }
+            store.insert_many(items()).map_err(BindingError::from)
+        };
+
+        let (indexed, stored) = match store {
+            None => (insert_index(index), Ok(())),
+            Some(store) if self.parallel => std::thread::scope(|scope| {
+                let mirror = scope.spawn(|| insert_store(store, mirror_pending));
+                let indexed = insert_index(index);
+                let stored = mirror
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                (indexed, stored)
+            }),
+            Some(store) => {
+                let stored = insert_store(store, mirror_pending);
+                let indexed = if stored.is_ok() {
+                    insert_index(index)
+                } else {
+                    Ok(())
+                };
+                (indexed, stored)
+            }
+        };
+        match (indexed, stored) {
+            (Ok(()), Ok(())) => {}
+            (Err(error), Ok(())) => {
+                // The index rejected the chunk; take it out of the mirror.
+                if let Some(store) = store {
+                    for key in keys {
+                        store.remove(*key);
+                    }
+                }
+                return Err(error);
+            }
+            (Ok(()), Err(error)) => {
+                for key in keys {
+                    index.remove(*key);
+                }
+                return Err(error);
+            }
+            (Err(error), Err(_)) => return Err(error),
         }
-        if let Some(signatures) = &mut state.signatures {
+        if let Some(signatures) = signatures {
             signatures.extend(
                 sketches
                     .iter()
@@ -1786,7 +1834,7 @@ fn ingest_worker(
 ) -> Result<(), BindingError> {
     let mut guard = inner.try_lock().map_err(BindingError::from)?;
     let state = guard.as_mut().ok_or(BindingError::Closed)?;
-    let mut batch = BatchIngest::begin(state, start_key)?;
+    let mut batch = BatchIngest::begin(state, start_key, true)?;
     loop {
         match chunks.recv() {
             Ok(IngestMessage::Chunk(keys, sketches)) => {
@@ -1995,7 +2043,7 @@ impl PyDedupeEngine {
                 .detach(move || build_sketches(&batch_rows, num_perm, seed, threads))
                 .map_err(binding_error)?;
             return self.run_write(py, move |state| {
-                let mut batch = BatchIngest::begin(state, start_key)?;
+                let mut batch = BatchIngest::begin(state, start_key, false)?;
                 batch.insert(&keys, &sketches)?;
                 batch.finish();
                 Ok(())
