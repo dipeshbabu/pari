@@ -12,6 +12,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   `BucketRangeCursor` type, read the buckets of one key range of a snapshot or
   delta generation, verifying each directory block and member list, so
   several threads can read disjoint ranges at once.
+- `PersistentIndex32::compact_and_close` and
+  `PersistentIndex64::compact_and_close` compact and consume the handle
+  without reopening the rewritten file.
 - `pari_format::encode_bucket_segment_parts` encodes a bucket segment from
   member lists that are already encoded and checksummed.
 
@@ -27,6 +30,11 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   1.8 s and `DedupeIndex(backend="local")` closed in 5.3 s instead of 12.1 s.
   Files from older releases whose generations do not store keys in order fall
   back to the full rebuild.
+- `DedupeIndex(backend="local")` `close()` no longer reopens the file it just
+  rewrote, and both backends free the in-memory index on a background thread
+  instead of making `close()` wait for it. At 10M records, `close()` took
+  18.1 s instead of 65.4 s with the local backend and returned at once instead
+  of after 17.8 s with the memory backend.
 
 ## [0.4.1] - 2026-11-19
 

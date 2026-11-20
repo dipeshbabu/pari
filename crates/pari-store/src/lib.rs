@@ -402,6 +402,8 @@ struct PersistentIndexCore {
     delta_keys: usize,
     /// The next commit rewrites the whole snapshot instead of appending.
     force_rewrite: bool,
+    /// The handle is being consumed: a rewrite need not reopen the result.
+    closing: bool,
     dirty: bool,
     query_metrics: Option<Mutex<QueryMetrics>>,
     signatures: Option<SignatureState>,
@@ -534,6 +536,7 @@ impl PersistentIndexCore {
             pending_tombstones: BTreeSet::new(),
             delta_keys: 0,
             force_rewrite: false,
+            closing: false,
             dirty: false,
             query_metrics: None,
             signatures: stores_signatures.then(SignatureState::default),
@@ -948,6 +951,11 @@ impl PersistentIndexCore {
         self.sync()
     }
 
+    fn compact_and_close(mut self) -> Result<(), StoreError> {
+        self.closing = true;
+        self.compact()
+    }
+
     fn stats(&self) -> Result<StoreStats, StoreError> {
         let file_bytes = match fs::metadata(&self.path) {
             Ok(metadata) => metadata.len(),
@@ -1030,6 +1038,7 @@ impl PersistentIndexCore {
             pending_tombstones: BTreeSet::new(),
             delta_keys: 0,
             force_rewrite: false,
+            closing: false,
             dirty: true,
             query_metrics: None,
             signatures: None,
@@ -1204,6 +1213,10 @@ impl PersistentIndexCore {
         } else {
             None
         };
+        if self.closing {
+            // The handle is consumed: the published file needs no reopening.
+            return parent_error.map_or(Ok(()), Err);
+        }
         self.refresh_after_commit(parent_error, recovery, signatures)
     }
 
@@ -2092,6 +2105,16 @@ macro_rules! impl_persistent_index {
             /// Sync pending state and consume the index handle.
             pub fn close(self) -> Result<(), StoreError> {
                 self.inner.close()
+            }
+
+            /// Compact like [`Self::compact`] and consume the index handle,
+            /// without reopening the rewritten file.
+            ///
+            /// This is the cheapest way to finish a bulk ingest that committed
+            /// with [`Self::flush_delta`]. If the rewrite fails, every change
+            /// committed before the call stays in the file.
+            pub fn compact_and_close(self) -> Result<(), StoreError> {
+                self.inner.compact_and_close()
             }
 
             /// Return current in-memory and committed-file statistics.
@@ -3853,6 +3876,32 @@ mod tests {
         assert_eq!(index.inner.collect_live_hashes().expect("hashes"), hashes);
         drop(index);
         cleanup(&path);
+    }
+
+    #[test]
+    fn compact_and_close_writes_the_same_snapshot_as_compact() {
+        for (name, signatures) in [("plain", false), ("signed", true)] {
+            let (reference, mut compacted) =
+                layered_store(&format!("close-reference-{name}"), signatures);
+            let (path, closing) = layered_store(&format!("close-consumed-{name}"), signatures);
+            compacted.compact().expect("compact");
+            drop(compacted);
+            closing.compact_and_close().expect("compact and close");
+
+            assert_eq!(
+                fs::read(&reference).expect("reference"),
+                fs::read(&path).expect("closed"),
+                "{name}"
+            );
+            let reopened = PersistentIndex32::open(&path).expect("reopen");
+            let stats = reopened.stats().expect("stats");
+            assert_eq!(stats.delta_generations, 0, "{name}");
+            assert!(reopened.contains(99_999), "{name}");
+            assert!(!reopened.contains(2), "{name}");
+            drop(reopened);
+            cleanup(&reference);
+            cleanup(&path);
+        }
     }
 
     #[test]

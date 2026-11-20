@@ -131,9 +131,12 @@ Bulk ingest that commits often can use `flush_delta()` (Rust) instead of
 growing index batch by batch never rewrites it, and rewrites only once 1,024
 generations exist or removed keys hide more than a quarter as many memberships
 as there are live keys. Queries look up every generation, so call `compact()`
-when the ingest finishes. `DedupeIndex(backend="local")` works this way: it
-commits each batch of about 65,536 records as a delta generation and compacts
-the file on `close()`.
+when the ingest finishes, or `compact_and_close()` when the handle is no longer
+needed: it writes the same snapshot and consumes the handle without reopening
+the rewritten file. If that rewrite fails, every change committed before the
+call stays in the file. `DedupeIndex(backend="local")` works this way: it
+commits each batch of about 65,536 records as a delta generation and calls
+`compact_and_close()` on `close()`.
 
 `compact()` rewrites on demand, folding every generation into one snapshot and
 dropping removed keys' memberships. `stats()` reports `delta_generations` and
