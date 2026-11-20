@@ -24,6 +24,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   flat arrays indexed by node instead of a hash map with one vector per
   component, and no longer sort the default groups a second time. Output is
   unchanged.
+- `duplicate_groups` (and `DedupeIndex.groups()` without a verifier) scans
+  the LSH bands on several threads for large indexes, collecting links only
+  from buckets with two or more live keys, while the calling thread joins
+  them. Output is unchanged.
 
 ## [0.4.2] - 2026-11-19
 
