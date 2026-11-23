@@ -3,6 +3,7 @@ use std::{
     error::Error,
     fmt,
     io::{Read, Seek},
+    sync::{mpsc, Mutex},
 };
 
 use crc32fast::hash as crc32;
@@ -522,6 +523,7 @@ const DIRECTORY_BLOCK_ENTRIES: usize = 64;
 /// memory and otherwise reads the one directory block that can hold the key,
 /// verifying its checksum before using it.
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub struct BucketDirectory {
     sections: Vec<SectionDescriptor>,
     blocks: Vec<DirectoryBlock>,
@@ -532,6 +534,7 @@ pub struct BucketDirectory {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 struct DirectoryBlock {
     first_key: BucketKey,
     section: u32,
@@ -540,6 +543,321 @@ struct DirectoryBlock {
     checksum: u32,
     /// Index of the block's first bucket in `prefixes`.
     first_prefix: u64,
+}
+
+/// Bucket sections below which [`BucketDirectory::read`] validates on the
+/// calling thread.
+/// Tests use a small limit so every multi-section directory they read is
+/// validated on several threads.
+const PARALLEL_DIRECTORY_MIN_BYTES: u64 = if cfg!(test) { 1 } else { 64 * 1024 * 1024 };
+
+/// Most threads [`BucketDirectory::read`] validates sections on. Each holds
+/// one section's directory, so this also bounds the directories in memory.
+const MAX_DIRECTORY_WORKERS: usize = 4;
+
+/// Threads to validate `descriptors` on: none for small indexes.
+fn directory_workers(descriptors: &[SectionDescriptor]) -> usize {
+    let bytes: u64 = descriptors
+        .iter()
+        .map(|descriptor| descriptor.payload_length())
+        .fold(0, u64::saturating_add);
+    if descriptors.len() < 2 || bytes < PARALLEL_DIRECTORY_MIN_BYTES {
+        return 0;
+    }
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(MAX_DIRECTORY_WORKERS)
+        .min(descriptors.len())
+}
+
+/// Read section directories in file order on this thread while worker
+/// threads validate and index them, appending results in section order.
+///
+/// At most one read directory waits for a worker, so at most
+/// `workers + 1` directories are held at once.
+fn read_sections_in_parallel<R: Read + Seek>(
+    layout: &FileLayout,
+    reader: &mut R,
+    descriptors: &[SectionDescriptor],
+    bands: usize,
+    workers: usize,
+    assembler: &mut DirectoryAssembler,
+) -> Result<(), BucketError> {
+    let (tasks, task_queue) = mpsc::sync_channel::<(usize, SegmentDirectory)>(1);
+    let task_queue = Mutex::new(task_queue);
+    let (results, finished) = mpsc::channel::<(usize, SectionResult)>();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let results = results.clone();
+            let task_queue = &task_queue;
+            scope.spawn(move || loop {
+                let task = match task_queue.lock() {
+                    Ok(queue) => queue.recv(),
+                    Err(_) => return,
+                };
+                let Ok((section_index, directory)) = task else {
+                    return;
+                };
+                let indexed =
+                    index_section(section_index, descriptors[section_index], &directory, bands);
+                drop(directory);
+                if results.send((section_index, indexed)).is_err() {
+                    return;
+                }
+            });
+        }
+        drop(results);
+
+        // Results arrive out of order; append them in section order.
+        let mut pending = BTreeMap::new();
+        let mut next = 0;
+        let mut outcome = Ok(());
+        let mut drain = |pending: &mut BTreeMap<usize, SectionResult>,
+                         next: &mut usize,
+                         outcome: &mut Result<(), BucketError>| {
+            while let Some(indexed) = pending.remove(next) {
+                if outcome.is_ok() {
+                    *outcome = assembler.push(indexed);
+                }
+                *next += 1;
+            }
+        };
+        let mut read_error = None;
+        for (section_index, descriptor) in descriptors.iter().copied().enumerate() {
+            match read_segment_directory(layout, reader, descriptor) {
+                Ok(directory) => {
+                    if tasks.send((section_index, directory)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    read_error = Some((section_index, error));
+                    break;
+                }
+            }
+            for (index, indexed) in finished.try_iter() {
+                pending.insert(index, indexed);
+            }
+            drain(&mut pending, &mut next, &mut outcome);
+            if outcome.is_err() {
+                break;
+            }
+        }
+        drop(tasks);
+        for (index, indexed) in &finished {
+            pending.insert(index, indexed);
+        }
+        drain(&mut pending, &mut next, &mut outcome);
+        outcome?;
+        // A read error belongs after every section before it.
+        match read_error {
+            Some((section_index, error)) if section_index == next => Err(error),
+            _ => Ok(()),
+        }
+    })
+}
+
+/// One section's share of a [`BucketDirectory`], or why it is invalid.
+type SectionResult = Result<SectionIndex, SectionFailure>;
+
+/// The blocks, hash prefixes and bucket sizes of one validated section.
+struct SectionIndex {
+    /// Blocks whose `first_prefix` counts from this section's first bucket.
+    blocks: Vec<DirectoryBlock>,
+    prefixes: Vec<u32>,
+    sizes: SizeCounts,
+    buckets: u64,
+    first: Option<BucketKey>,
+    last: Option<BucketKey>,
+}
+
+/// A section that failed validation. `first` is its first bucket key when the
+/// first directory entry itself was valid, so global ordering is checked
+/// against it first, as a sequential read would.
+struct SectionFailure {
+    first: Option<BucketKey>,
+    error: BucketError,
+}
+
+/// Validate one section's directory and index it.
+fn index_section(
+    section_index: usize,
+    descriptor: SectionDescriptor,
+    directory: &SegmentDirectory,
+    bands: usize,
+) -> SectionResult {
+    let mut sizes = SizeCounts::default();
+    let mut first = None;
+    let mut last = None;
+    let visited = visit_directory_entries(descriptor, directory, bands, |location| {
+        first.get_or_insert(location.key);
+        last = Some(location.key);
+        sizes.add(location.member_count)
+    });
+    let fail = |first, error| SectionFailure { first, error };
+    if let Err(error) = visited {
+        return Err(fail(first, error));
+    }
+    let blocks_and_prefixes = || -> Result<(Vec<DirectoryBlock>, Vec<u32>), BucketError> {
+        let section = u32::try_from(section_index).map_err(|_| BucketError::LengthOverflow)?;
+        let entries = directory.count;
+        let band_at =
+            |entry: usize| read_u32_at(&directory.bytes, entry * BUCKET_DIRECTORY_ENTRY_BYTES);
+        let mut blocks = Vec::with_capacity(entries.div_ceil(DIRECTORY_BLOCK_ENTRIES));
+        let mut prefixes = Vec::with_capacity(entries);
+        // Blocks never span a band, so the hash prefixes of one block are
+        // sorted and an absent key can be rejected without reading it.
+        let mut start = 0;
+        while start < entries {
+            let band = band_at(start)?;
+            let mut end = start + 1;
+            while end < entries && end - start < DIRECTORY_BLOCK_ENTRIES && band_at(end)? == band {
+                end += 1;
+            }
+            let bytes = &directory.bytes
+                [start * BUCKET_DIRECTORY_ENTRY_BYTES..end * BUCKET_DIRECTORY_ENTRY_BYTES];
+            blocks.push(DirectoryBlock {
+                first_key: entry_key(bytes)?,
+                section,
+                first_entry: u32::try_from(start).map_err(|_| BucketError::LengthOverflow)?,
+                entries: u32::try_from(end - start).map_err(|_| BucketError::LengthOverflow)?,
+                checksum: crc32(bytes),
+                first_prefix: u64::try_from(prefixes.len())
+                    .map_err(|_| BucketError::LengthOverflow)?,
+            });
+            for entry in bytes.chunks_exact(BUCKET_DIRECTORY_ENTRY_BYTES) {
+                prefixes.push(hash_prefix(read_u64_at(entry, 8)?));
+            }
+            start = end;
+        }
+        Ok((blocks, prefixes))
+    };
+    let (blocks, prefixes) = blocks_and_prefixes().map_err(|error| fail(first, error))?;
+    Ok(SectionIndex {
+        blocks,
+        prefixes,
+        sizes,
+        buckets: u64::try_from(directory.count)
+            .map_err(|_| fail(first, BucketError::LengthOverflow))?,
+        first,
+        last,
+    })
+}
+
+/// Joins section indexes, in section order, into one [`BucketDirectory`].
+#[derive(Default)]
+struct DirectoryAssembler {
+    blocks: Vec<DirectoryBlock>,
+    prefixes: Vec<u32>,
+    sizes: SizeCounts,
+    buckets: u64,
+    previous: Option<BucketKey>,
+}
+
+impl DirectoryAssembler {
+    /// Append the next section, or report why it, or its order after the
+    /// previous sections, is invalid.
+    fn push(&mut self, indexed: SectionResult) -> Result<(), BucketError> {
+        let first = match &indexed {
+            Ok(index) => index.first,
+            Err(failure) => failure.first,
+        };
+        if let (Some(previous), Some(first)) = (self.previous, first) {
+            if previous >= first {
+                return Err(BucketError::Invalid {
+                    reason: "bucket directory contains duplicate or unsorted bucket keys",
+                });
+            }
+        }
+        let index = indexed.map_err(|failure| failure.error)?;
+        let offset = u64::try_from(self.prefixes.len()).map_err(|_| BucketError::LengthOverflow)?;
+        self.blocks
+            .extend(index.blocks.into_iter().map(|block| DirectoryBlock {
+                first_prefix: block.first_prefix + offset,
+                ..block
+            }));
+        self.prefixes.extend_from_slice(&index.prefixes);
+        self.sizes.merge(&index.sizes)?;
+        self.buckets = self
+            .buckets
+            .checked_add(index.buckets)
+            .ok_or(BucketError::LengthOverflow)?;
+        if index.last.is_some() {
+            self.previous = index.last;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, descriptors: &[SectionDescriptor]) -> BucketDirectory {
+        self.blocks.shrink_to_fit();
+        self.prefixes.shrink_to_fit();
+        BucketDirectory {
+            sections: descriptors.to_vec(),
+            blocks: self.blocks,
+            prefixes: self.prefixes,
+            buckets: self.buckets,
+            size_counts: self.sizes.into_sorted(),
+        }
+    }
+}
+
+/// Bucket sizes counted by [`BucketDirectory::read`]: most buckets hold a few
+/// members, so small sizes are counted in an array and only larger ones in a
+/// map.
+struct SizeCounts {
+    small: [u64; SMALL_BUCKET_SIZES],
+    large: BTreeMap<u32, u64>,
+}
+
+/// Bucket sizes below this are counted in [`SizeCounts::small`].
+const SMALL_BUCKET_SIZES: usize = 64;
+
+impl Default for SizeCounts {
+    fn default() -> Self {
+        Self {
+            small: [0; SMALL_BUCKET_SIZES],
+            large: BTreeMap::new(),
+        }
+    }
+}
+
+impl SizeCounts {
+    fn add(&mut self, size: u32) -> Result<(), BucketError> {
+        self.add_many(size, 1)
+    }
+
+    fn add_many(&mut self, size: u32, buckets: u64) -> Result<(), BucketError> {
+        let count = match usize::try_from(size)
+            .ok()
+            .and_then(|index| self.small.get_mut(index))
+        {
+            Some(count) => count,
+            None => self.large.entry(size).or_insert(0),
+        };
+        *count = count
+            .checked_add(buckets)
+            .ok_or(BucketError::LengthOverflow)?;
+        Ok(())
+    }
+
+    fn merge(&mut self, other: &Self) -> Result<(), BucketError> {
+        for (size, buckets) in other.sorted() {
+            self.add_many(size, buckets)?;
+        }
+        Ok(())
+    }
+
+    /// `(size, buckets)` pairs for every size seen, in ascending size order.
+    fn sorted(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        (0_u32..)
+            .zip(self.small.iter().copied())
+            .filter(|&(_, count)| count > 0)
+            .chain(self.large.iter().map(|(&size, &count)| (size, count)))
+    }
+
+    fn into_sorted(self) -> Vec<(u32, u64)> {
+        self.sorted().collect()
+    }
 }
 
 fn hash_prefix(hash: u64) -> u32 {
@@ -557,72 +875,34 @@ impl BucketDirectory {
         descriptors: &[SectionDescriptor],
         bands: usize,
     ) -> Result<Self, BucketError> {
-        let mut blocks = Vec::new();
-        let mut prefixes = Vec::new();
-        let mut buckets = 0_u64;
-        let mut sizes = BTreeMap::<u32, u64>::new();
-        let mut previous: Option<BucketKey> = None;
-        for (section_index, descriptor) in descriptors.iter().copied().enumerate() {
-            let directory = read_segment_directory(layout, reader, descriptor)?;
-            visit_directory_entries(descriptor, &directory, bands, |location| {
-                if previous.is_some_and(|previous| previous >= location.key) {
-                    return Err(BucketError::Invalid {
-                        reason: "bucket directory contains duplicate or unsorted bucket keys",
-                    });
-                }
-                previous = Some(location.key);
-                let count = sizes.entry(location.member_count).or_insert(0);
-                *count = count.checked_add(1).ok_or(BucketError::LengthOverflow)?;
-                Ok(())
-            })?;
-            let section = u32::try_from(section_index).map_err(|_| BucketError::LengthOverflow)?;
-            // Blocks never span a band, so the hash prefixes of one block are
-            // sorted and an absent key can be rejected without reading it.
-            let entries: Vec<&[u8]> = directory
-                .bytes
-                .chunks_exact(BUCKET_DIRECTORY_ENTRY_BYTES)
-                .collect();
-            let mut start = 0;
-            while start < entries.len() {
-                let band = read_u32_at(entries[start], 0)?;
-                let mut end = start + 1;
-                while end < entries.len()
-                    && end - start < DIRECTORY_BLOCK_ENTRIES
-                    && read_u32_at(entries[end], 0)? == band
-                {
-                    end += 1;
-                }
-                let bytes = &directory.bytes
-                    [start * BUCKET_DIRECTORY_ENTRY_BYTES..end * BUCKET_DIRECTORY_ENTRY_BYTES];
-                blocks.push(DirectoryBlock {
-                    first_key: entry_key(bytes)?,
-                    section,
-                    first_entry: u32::try_from(start).map_err(|_| BucketError::LengthOverflow)?,
-                    entries: u32::try_from(end - start).map_err(|_| BucketError::LengthOverflow)?,
-                    checksum: crc32(bytes),
-                    first_prefix: u64::try_from(prefixes.len())
-                        .map_err(|_| BucketError::LengthOverflow)?,
-                });
-                for entry in &entries[start..end] {
-                    prefixes.push(hash_prefix(read_u64_at(entry, 8)?));
-                }
-                start = end;
+        Self::read_with_workers(
+            layout,
+            reader,
+            descriptors,
+            bands,
+            directory_workers(descriptors),
+        )
+    }
+
+    /// [`Self::read`] validating on `workers` threads, or on the calling
+    /// thread when fewer than two.
+    fn read_with_workers<R: Read + Seek>(
+        layout: &FileLayout,
+        reader: &mut R,
+        descriptors: &[SectionDescriptor],
+        bands: usize,
+        workers: usize,
+    ) -> Result<Self, BucketError> {
+        let mut assembler = DirectoryAssembler::default();
+        if workers < 2 {
+            for (section_index, descriptor) in descriptors.iter().copied().enumerate() {
+                let directory = read_segment_directory(layout, reader, descriptor)?;
+                assembler.push(index_section(section_index, descriptor, &directory, bands))?;
             }
-            buckets = buckets
-                .checked_add(
-                    u64::try_from(directory.count).map_err(|_| BucketError::LengthOverflow)?,
-                )
-                .ok_or(BucketError::LengthOverflow)?;
+        } else {
+            read_sections_in_parallel(layout, reader, descriptors, bands, workers, &mut assembler)?;
         }
-        blocks.shrink_to_fit();
-        prefixes.shrink_to_fit();
-        Ok(Self {
-            sections: descriptors.to_vec(),
-            blocks,
-            prefixes,
-            buckets,
-            size_counts: sizes.into_iter().collect(),
-        })
+        Ok(assembler.finish(descriptors))
     }
 
     /// Return the number of indexed buckets.
@@ -1097,6 +1377,61 @@ mod tests {
             .encode()
             .expect("container");
         (bytes, buckets)
+    }
+
+    #[test]
+    fn parallel_directory_reads_match_sequential_reads() {
+        let (bytes, _) = many_bucket_file();
+        let read = |bytes: &[u8], workers: usize| {
+            let mut reader = Cursor::new(bytes.to_vec());
+            let layout = FileLayout::read_from(&mut reader).expect("layout");
+            BucketDirectory::read_with_workers(&layout, &mut reader, layout.sections(), 32, workers)
+        };
+        let sequential = read(&bytes, 0).expect("sequential");
+        assert!(sequential.sections.len() > 4);
+        for workers in [2, 3, 4] {
+            assert_eq!(read(&bytes, workers).expect("parallel"), sequential);
+        }
+
+        // Damage that sequential and parallel reads must report alike: a
+        // directory checksum in a middle section, a reserved header byte in a
+        // later section, and two sections swapped so global order breaks at a
+        // boundary.
+        let layout = FileLayout::read_from(&mut Cursor::new(bytes.clone())).expect("layout");
+        let offset = |section: usize| {
+            usize::try_from(layout.sections()[section].payload_offset()).expect("offset")
+        };
+        let header = super::BUCKET_SEGMENT_HEADER_BYTES;
+        let mut damaged = Vec::new();
+        let mut directory = bytes.clone();
+        directory[offset(3) + header + 40] ^= 0xFF;
+        damaged.push(directory);
+        let mut later = bytes.clone();
+        later[offset(5) + 36] ^= 0x01;
+        damaged.push(later);
+        // Two sections swapped, rebuilt as a valid container, so only the
+        // global bucket order breaks, at a section boundary.
+        let file = IndexFile::decode(&bytes).expect("file");
+        let mut sections = file.sections().to_vec();
+        sections.swap(2, 4);
+        let swapped = IndexFile::new(file.metadata().clone(), sections)
+            .expect("file")
+            .encode()
+            .expect("container");
+        damaged.push(swapped);
+        let kinds = [
+            "DirectoryChecksumMismatch",
+            "bucket segment reserved bytes must be zero",
+            "bucket directory contains duplicate or unsorted bucket keys",
+        ];
+        for (case, bytes) in damaged.iter().enumerate() {
+            let expected = format!("{:?}", read(bytes, 0).expect_err("sequential error"));
+            assert!(expected.contains(kinds[case]), "case {case}: {expected}");
+            for workers in [2, 4] {
+                let actual = format!("{:?}", read(bytes, workers).expect_err("parallel error"));
+                assert_eq!(actual, expected, "case {case} with {workers} workers");
+            }
+        }
     }
 
     #[test]
