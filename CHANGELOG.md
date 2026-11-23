@@ -34,6 +34,11 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   objects in bulk when no `representative` callback is set: the native engine
   returns member tuples, fields are set directly, and cyclic garbage
   collection is paused while the groups are built. The groups are unchanged.
+- Opening a persistent index validates the bucket directories of large
+  indexes (bucket sections of at least 64 MiB in total) on up to four worker
+  threads while the calling thread reads them in file order. The directory
+  and the first error reported for a damaged file are the same as before; at
+  most five section directories are held in memory at once.
 - A persistent-index snapshot written from pending records (the first
   `sync()` of a large index) splits a band that exceeds the 128 MiB sort budget
   by scanning flat columns of keys and band hashes instead of walking the key
