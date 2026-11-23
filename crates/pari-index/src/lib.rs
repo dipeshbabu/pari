@@ -520,9 +520,13 @@ impl IndexData {
                 }
             }
         };
-        let threads = std::thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get)
-            .min(self.buckets.len());
+        // Asking for the CPU count reads the cgroup limits on Linux, which
+        // costs more than a small insert: ask only for batches worth splitting.
+        let threads = if items.len() < PARALLEL_INSERT_MIN_ITEMS {
+            1
+        } else {
+            available_threads().min(self.buckets.len())
+        };
 
         let Self {
             buckets,
@@ -538,7 +542,7 @@ impl IndexData {
                 id_to_key.push(Some(*key));
             }
         };
-        if threads < 2 || items.len() < PARALLEL_INSERT_MIN_ITEMS {
+        if threads < 2 {
             for (band, table) in buckets.iter_mut().enumerate() {
                 fill(band, table);
             }
@@ -995,6 +999,11 @@ const _: () = assert!(std::mem::size_of::<Bucket>() == std::mem::size_of::<Vec<u
 
 /// A validated item to insert: key, band hashes and optional stored signature.
 type ValidatedItem = (u64, Vec<u64>, Option<Box<[u64]>>);
+
+/// Threads the system makes available to this process.
+fn available_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+}
 
 /// Items per insert below which band tables are filled on the calling thread.
 const PARALLEL_INSERT_MIN_ITEMS: usize = 1_024;

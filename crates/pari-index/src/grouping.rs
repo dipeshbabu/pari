@@ -341,10 +341,15 @@ const LINK_BATCH: usize = 1 << 16;
 
 fn union_index_buckets_unverified(index: &IndexData, union_find: &mut UnionFind) {
     let bucket_count: usize = index.buckets.iter().map(HashMap::len).sum();
-    let threads = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get)
-        .min(index.buckets.len());
-    if threads < 2 || bucket_count < PARALLEL_SCAN_MIN_BUCKETS {
+    // Ask for the CPU count only for indexes worth scanning in parallel.
+    let threads = if bucket_count < PARALLEL_SCAN_MIN_BUCKETS {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(index.buckets.len())
+    };
+    if threads < 2 {
         for table in &index.buckets {
             scan_band(table, &index.id_to_key, |anchor, node| {
                 union_find.union(anchor, node);
