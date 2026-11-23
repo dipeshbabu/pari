@@ -621,16 +621,63 @@ impl PersistentIndexCore {
             }
         }
 
-        for item in prepared {
-            if let Some(state) = &mut self.signatures {
-                state.overlay.insert(item.key, item.signature);
+        if prepared.len() < PARALLEL_OVERLAY_MIN_ITEMS || self.params.bands < 2 {
+            for item in prepared {
+                if let Some(state) = &mut self.signatures {
+                    state.overlay.insert(item.key, item.signature);
+                }
+                self.insert_overlay(item.key, item.hashes);
             }
-            self.insert_overlay(item.key, item.hashes);
+        } else {
+            self.insert_overlay_parallel(prepared);
         }
         if !batch_keys.is_empty() {
             self.dirty = true;
         }
         Ok(())
+    }
+
+    /// Insert a large validated batch: the band tables are independent, so
+    /// scoped threads fill them, a group of bands each, while this thread
+    /// records the live keys. Every table receives its keys in the same order
+    /// as one at a time, so the overlay is the same.
+    fn insert_overlay_parallel(&mut self, prepared: Vec<PreparedItem>) {
+        if self.overlay_buckets.is_empty() {
+            self.overlay_buckets = empty_bucket_tables(self.params.bands);
+        }
+        let threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(self.overlay_buckets.len())
+            .max(1);
+        let bands_per_thread = self.overlay_buckets.len().div_ceil(threads);
+        let items = &prepared;
+        let live_keys = &mut self.live_keys;
+        std::thread::scope(|scope| {
+            for (group, tables) in self
+                .overlay_buckets
+                .chunks_mut(bands_per_thread)
+                .enumerate()
+            {
+                scope.spawn(move || {
+                    for (offset, table) in tables.iter_mut().enumerate() {
+                        let band = group * bands_per_thread + offset;
+                        for item in items {
+                            table.insert(item.hashes[band], item.key);
+                        }
+                    }
+                });
+            }
+            live_keys.reserve(items.len());
+            for item in items {
+                live_keys.insert(item.key);
+            }
+        });
+        for item in prepared {
+            if let Some(state) = &mut self.signatures {
+                state.overlay.insert(item.key, item.signature);
+            }
+            self.overlay_hashes.insert(item.key, item.hashes);
+        }
     }
 
     fn remove(&mut self, key: u64) -> bool {
@@ -3201,7 +3248,7 @@ const fn missing_section_reason(kind: SectionKind) -> &'static str {
 /// stored inline and only buckets with more members allocate a list. This
 /// keeps a singleton bucket at one map entry instead of a map entry plus a
 /// separately allocated vector.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct OverlayTable {
     /// The first member of every bucket.
     first: HashMap<u64, u64>,
@@ -3267,6 +3314,10 @@ impl OverlayTable {
             .map(|hash| 1 + self.rest.get(hash).map_or(0, Vec::len))
     }
 }
+
+/// Items per insert below which the overlay's band tables are filled on the
+/// calling thread.
+const PARALLEL_OVERLAY_MIN_ITEMS: usize = 1_024;
 
 fn empty_bucket_tables(bands: usize) -> Vec<OverlayTable> {
     std::iter::repeat_with(OverlayTable::default)
@@ -3996,6 +4047,67 @@ mod tests {
         // 40,008 bytes at one request per 4 KiB.
         assert!(flushes >= 8, "{flushes} flush requests");
         cleanup(&path);
+    }
+
+    #[test]
+    fn parallel_overlay_insert_matches_single_inserts() {
+        for signatures in [false, true] {
+            let items: Vec<_> = (0..5_000_u64)
+                .map(|key| {
+                    // Families of four keys share most values, so buckets fill.
+                    let base = (key / 4) * 100;
+                    (
+                        key * 7 + 3,
+                        sketch((base..base + 30).chain([base + 90 + key % 4])),
+                    )
+                })
+                .collect();
+            let options = super::PersistentIndexOptions::new().store_signatures(signatures);
+            let create = |name: &str| {
+                let path = test_path(name);
+                cleanup(&path);
+                let index = PersistentIndex32::create_with_options(&path, 0.8, 128, 7, options)
+                    .expect("create");
+                (path, index)
+            };
+            let (batch_path, mut batch) = create(&format!("overlay-batch-{signatures}"));
+            let (single_path, mut single) = create(&format!("overlay-single-{signatures}"));
+            batch
+                .insert_many(items.iter().map(|(key, sketch)| (*key, sketch)))
+                .expect("batch insert");
+            for (key, sketch) in &items {
+                single.insert(*key, sketch).expect("single insert");
+            }
+
+            assert_eq!(batch.inner.overlay_buckets, single.inner.overlay_buckets);
+            assert_eq!(batch.inner.live_keys, single.inner.live_keys);
+            assert_eq!(batch.inner.overlay_hashes, single.inner.overlay_hashes);
+            assert_eq!(
+                batch.inner.signatures.as_ref().map(|state| &state.overlay),
+                single.inner.signatures.as_ref().map(|state| &state.overlay)
+            );
+            assert!(batch
+                .inner
+                .overlay_buckets
+                .iter()
+                .any(|table| !table.rest.is_empty()));
+            for (_, sketch) in items.iter().step_by(97) {
+                assert_eq!(
+                    batch.query(sketch).expect("query"),
+                    single.query(sketch).expect("query")
+                );
+            }
+            batch.sync().expect("batch sync");
+            single.sync().expect("single sync");
+            drop(batch);
+            drop(single);
+            assert_eq!(
+                fs::read(&batch_path).expect("batch file"),
+                fs::read(&single_path).expect("single file")
+            );
+            cleanup(&batch_path);
+            cleanup(&single_path);
+        }
     }
 
     #[test]
