@@ -34,6 +34,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   objects in bulk when no `representative` callback is set: the native engine
   returns member tuples, fields are set directly, and cyclic garbage
   collection is paused while the groups are built. The groups are unchanged.
+- Persistent indexes keep their set of live keys in a hash set with a fast
+  integer hasher seeded randomly once per process, instead of `SipHash`, which
+  speeds up opening, inserting and committing large indexes.
 - Opening a persistent index validates the bucket directories of large
   indexes (bucket sections of at least 64 MiB in total) on up to four worker
   threads while the calling thread reads them in file order. The directory

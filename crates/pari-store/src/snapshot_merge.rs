@@ -31,8 +31,8 @@ const MERGE_WINDOW_BYTES: usize = 1024 * 1024;
 /// Total read-window budget across all generations, in bytes.
 const MERGE_WINDOW_BUDGET: usize = 64 * 1024 * 1024;
 
-/// Hasher for `u64` keys: a `splitmix64` finalizer, much cheaper than the
-/// default `SipHash` for the per-membership liveness checks of a merge.
+/// Hasher for `u64` keys: a `splitmix64` finalizer of the key mixed with the
+/// hasher's starting state, much cheaper than the default `SipHash`.
 #[derive(Default)]
 pub(crate) struct KeyHasher(u64);
 
@@ -44,7 +44,7 @@ impl Hasher for KeyHasher {
     }
 
     fn write_u64(&mut self, value: u64) {
-        let mut mixed = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut mixed = (value ^ self.0).wrapping_add(0x9E37_79B9_7F4A_7C15);
         mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         self.0 = mixed ^ (mixed >> 31);
@@ -57,6 +57,32 @@ impl Hasher for KeyHasher {
 
 /// A set of keys hashed with [`KeyHasher`].
 pub(crate) type KeySet = HashSet<u64, BuildHasherDefault<KeyHasher>>;
+
+/// Builds [`KeyHasher`]s seeded with a random value chosen once per process,
+/// so keys an application stores cannot be chosen to collide on purpose.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SeededKeys(u64);
+
+impl Default for SeededKeys {
+    fn default() -> Self {
+        static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        Self(*SEED.get_or_init(|| {
+            use std::hash::BuildHasher;
+            std::collections::hash_map::RandomState::new().hash_one(0x5EED_u64)
+        }))
+    }
+}
+
+impl std::hash::BuildHasher for SeededKeys {
+    type Hasher = KeyHasher;
+
+    fn build_hasher(&self) -> KeyHasher {
+        KeyHasher(self.0)
+    }
+}
+
+/// A set of application keys hashed with a seeded [`KeyHasher`].
+pub(crate) type LiveKeys = HashSet<u64, SeededKeys>;
 
 /// One committed generation as a merge input.
 pub(crate) struct MergeGeneration<'a> {
@@ -714,5 +740,32 @@ impl SectionStream {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::hash::{BuildHasher, BuildHasherDefault};
+
+    use super::{KeyHasher, LiveKeys, SeededKeys};
+
+    #[test]
+    fn seeded_keys_hash_consistently_and_differ_from_unseeded() {
+        let seeded = SeededKeys::default();
+        let unseeded = BuildHasherDefault::<KeyHasher>::default();
+        assert_eq!(
+            seeded.hash_one(42_u64),
+            SeededKeys::default().hash_one(42_u64)
+        );
+        let differing = (0..64_u64)
+            .filter(|key| seeded.hash_one(key) != unseeded.hash_one(key))
+            .count();
+        assert!(differing > 60, "{differing} of 64 keys hash differently");
+
+        let mut keys = LiveKeys::default();
+        assert!((0..10_000_u64).all(|key| keys.insert(key * 3)));
+        assert!(!keys.insert(3));
+        assert!(keys.contains(&29_997) && !keys.contains(&29_998));
+        assert_eq!(keys.len(), 10_000);
     }
 }

@@ -389,7 +389,7 @@ struct PersistentIndexCore {
     /// back from their generations, so memory holds them only for the overlay.
     overlay_hashes: BTreeMap<u64, Vec<u64>>,
     /// Every live key, committed or not.
-    live_keys: HashSet<u64>,
+    live_keys: snapshot_merge::LiveKeys,
     /// Base-snapshot keys whose base memberships are not live: removed, or
     /// reinserted into a later generation or the overlay.
     suppressed_base_keys: HashSet<u64>,
@@ -1079,7 +1079,7 @@ impl PersistentIndexCore {
             committed: None,
             overlay_buckets: Vec::new(),
             overlay_hashes: BTreeMap::new(),
-            live_keys: HashSet::new(),
+            live_keys: snapshot_merge::LiveKeys::default(),
             suppressed_base_keys: HashSet::new(),
             homes: HashMap::new(),
             pending_tombstones: BTreeSet::new(),
@@ -1183,7 +1183,10 @@ impl PersistentIndexCore {
         } else {
             empty_bucket_tables(self.params.bands)
         };
-        let mut live_keys = HashSet::with_capacity(key_hashes.len());
+        let mut live_keys = snapshot_merge::LiveKeys::with_capacity_and_hasher(
+            key_hashes.len(),
+            snapshot_merge::SeededKeys::default(),
+        );
         for (key, hashes) in &key_hashes {
             if hashes.len() != self.params.bands {
                 return Err(StoreError::InvalidSnapshot {
@@ -1613,7 +1616,7 @@ impl PersistentIndexCore {
         // the recovery data and collected signatures suffice to rebuild it on error.
         self.overlay_buckets = Vec::new();
         self.overlay_hashes = BTreeMap::new();
-        self.live_keys = HashSet::new();
+        self.live_keys = snapshot_merge::LiveKeys::default();
         self.suppressed_base_keys = HashSet::new();
         if let Some(state) = &mut self.signatures {
             *state = SignatureState::default();
@@ -2786,9 +2789,9 @@ fn read_key_catalog(
     sections: &[SectionDescriptor],
     file: &mut File,
     bands: usize,
-) -> Result<(Vec<u64>, HashSet<u64>), StoreError> {
+) -> Result<(Vec<u64>, snapshot_merge::LiveKeys), StoreError> {
     let mut keys = Vec::new();
-    let mut catalog = HashSet::new();
+    let mut catalog = snapshot_merge::LiveKeys::default();
     for (keys_descriptor, hashes_descriptor) in key_metadata_pairs(sections)? {
         let chunk_keys = decode_keys(&layout.read_section(file, keys_descriptor)?)?;
         // The section checksum covers the rows; only their shape needs checking.
