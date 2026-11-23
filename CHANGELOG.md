@@ -34,6 +34,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   objects in bulk when no `representative` callback is set: the native engine
   returns member tuples, fields are set directly, and cyclic garbage
   collection is paused while the groups are built. The groups are unchanged.
+- A persistent-index snapshot written from pending records (the first
+  `sync()` of a large index) splits a band that exceeds the 128 MiB sort budget
+  by scanning flat columns of keys and band hashes instead of walking the key
+  map for every split. The file is the same as before.
 - `PersistentIndex32::insert_many` and `PersistentIndex64::insert_many` fill
   the pending band tables of a batch of at least 1,024 items on several
   threads, a group of bands each, while the calling thread records the keys.

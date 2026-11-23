@@ -40,9 +40,17 @@ pub(super) fn write_bucket_sections<W: Write>(
             output.sort_and_write(&mut scratch)?;
         }
     } else {
+        // Each band is split by hash range below, and each split scans the
+        // band again. Scanning flat columns is far cheaper than walking the
+        // key map, so walk the map once per band into a column of its hashes.
+        let keys: Vec<u64> = key_hashes.keys().copied().collect();
+        let mut hashes = Vec::with_capacity(rows);
         for band in 0..bands {
+            hashes.clear();
+            hashes.extend(key_hashes.values().map(|row| row[band]));
             let partition = BandPartition {
-                key_hashes,
+                keys: &keys,
+                hashes: &hashes,
                 band,
                 sort_limit,
             };
@@ -72,8 +80,10 @@ fn bucket_key(band: usize, hash: u64) -> Result<BucketKey, StoreError> {
     Ok(BucketKey::new(band, hash))
 }
 
+/// One band's live keys, in ascending order, and their hashes in that band.
 struct BandPartition<'a> {
-    key_hashes: &'a BTreeMap<u64, Vec<u64>>,
+    keys: &'a [u64],
+    hashes: &'a [u64],
     band: usize,
     sort_limit: usize,
 }
@@ -91,8 +101,7 @@ impl BandPartition<'_> {
         let mut count = 0;
         let mut min = u64::MAX;
         let mut max = 0;
-        for (&key, hashes) in self.key_hashes {
-            let hash = hashes[self.band];
+        for (&key, &hash) in self.keys.iter().zip(self.hashes) {
             if range.contains(&hash) {
                 if count < self.sort_limit {
                     scratch.push((bucket_key(self.band, hash)?, key));
@@ -108,9 +117,10 @@ impl BandPartition<'_> {
         if min == max {
             // Keys from the ordered catalog are already sorted for this bucket.
             let keys = self
-                .key_hashes
+                .keys
                 .iter()
-                .filter_map(|(&key, hashes)| (hashes[self.band] == min).then_some(key));
+                .zip(self.hashes)
+                .filter_map(|(&key, &hash)| (hash == min).then_some(key));
             return output.push(bucket_key(self.band, min)?, count, keys);
         }
 
