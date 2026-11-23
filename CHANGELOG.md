@@ -34,6 +34,10 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   objects in bulk when no `representative` callback is set: the native engine
   returns member tuples, fields are set directly, and cyclic garbage
   collection is paused while the groups are built. The groups are unchanged.
+- `PersistentIndex32::insert_many` and `PersistentIndex64::insert_many` fill
+  the pending band tables of a batch of at least 1,024 items on several
+  threads, a group of bands each, while the calling thread records the keys.
+  The index and the committed file are the same as before.
 - `LshIndex32::insert_many` and `LshIndex64::insert_many` fill the band
   tables of a batch of at least 1,024 items on several threads, a group of
   bands each, while the calling thread records the keys. The index built is
