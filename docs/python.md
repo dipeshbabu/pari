@@ -28,7 +28,7 @@ with Index.open("documents.pari") as index:
 ## Install the published package
 
 ```bash
-python -m pip install "pari-similarity==0.4.2"
+python -m pip install "pari-similarity==0.4.3"
 ```
 
 The PyPI distribution is named `pari-similarity`; the import namespace is `pari`.

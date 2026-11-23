@@ -2,11 +2,11 @@
 
 Pari's runtime code uses safe, portable Rust and does not enable architecture-specific `target-cpu=native`, unsafe SIMD, or host-only CPU features in release artifacts.
 
-## 0.4.2 alpha release targets
+## 0.4.3 alpha release targets
 
-The tagged 0.4.2 workflow builds and install-tests Python abi3 wheels and CLI
+The tagged 0.4.3 workflow builds and install-tests Python abi3 wheels and CLI
 archives for Linux x86_64, Linux arm64, macOS arm64, and Windows x86_64. Artifacts
-are available after publication succeeds. See [0.4.2 release notes](releases/0.4.2.md).
+are available after publication succeeds. See [0.4.3 release notes](releases/0.4.3.md).
 
 | Interface | Operating system | Architecture | Artifact policy |
 | --- | --- | --- | --- |
