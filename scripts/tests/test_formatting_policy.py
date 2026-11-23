@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RUFF_VERSION = "0.17.5"
+RUFF_VERSION = "0.17.6"
 RUFF_TARGETS = "python scripts benchmarks examples"
 
 

@@ -27,8 +27,8 @@ The required formatting job installs Ruff from PyPI at the exact version declare
 Contributor fast checks use `pre-commit` 4.6.2 and the official
 `pre-commit/pre-commit-hooks` v6.0.0 source pinned to immutable commit
 `3e8a8703264a2f4a69428a0aa4dcb512790b2c8c`. Python formatting and linting use
-the official `astral-sh/ruff-pre-commit` v0.17.5 source pinned to immutable
-commit `ef6cf06c079dd6b299dfc720b0f14400c9d168e1`, matching the PyPI and
+the official `astral-sh/ruff-pre-commit` v0.17.6 source pinned to immutable
+commit `9026c9127e153371d7a78dfcb0c45ae2046a3d10`, matching the PyPI and
 `pyproject.toml` policy. Rust formatting and workflow-pin validation are
 repository-owned `language: system` hooks, so no third party wraps Cargo or the
 policy script. Review upstream release notes and exact source diffs before
