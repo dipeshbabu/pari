@@ -6,6 +6,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-23
+
 ### Changed
 
 - `DedupeIndex.add_many` and `deduplicate` handle each batch in chunks of
@@ -73,6 +75,12 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   one, and raises. The input may be read up to a few chunks past the failing
   batch. With a `progress` callback, batches are still ingested one call at a
   time so the callback runs between them.
+
+### Security
+
+- The locked dependency `url` is updated to 2.5.9 for RUSTSEC-2026-0592, a
+  stack overflow in `Url::origin()` on nested `blob:` URLs. It reaches the
+  workspace through `pari-backend` and its `redis` dependency.
 
 ## [0.4.2] - 2026-11-19
 
