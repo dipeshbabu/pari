@@ -237,6 +237,14 @@ impl FeatureRows {
 
     fn end_row(&mut self) {
         self.row_ends.push(self.feature_ends.len());
+        if self.row_ends.len() == 1 {
+            // Size the buffers for the rest of the chunk from its first row,
+            // so they do not grow by repeated doubling.
+            let rows = self.row_ends.capacity().saturating_sub(1);
+            self.bytes.reserve(self.bytes.len().saturating_mul(rows));
+            self.feature_ends
+                .reserve(self.feature_ends.len().saturating_mul(rows));
+        }
     }
 
     /// The features of row `index`, in input order.
