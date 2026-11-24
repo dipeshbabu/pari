@@ -80,6 +80,32 @@ count raises `CompatibilityError`. Open a new reader to see a later commit.
 For an older snapshot that lacks bucket sections, open and sync it with
 `Index` or `Index64` once to upgrade it.
 
+### Build a read-only copy
+
+`build_read_only_index(source, destination)` writes a verified, query-ready
+copy of a committed index in bounded memory. Use it to publish a snapshot for
+query-only processes while a writer keeps committing to the source, or to add
+bucket sections to a snapshot from an older Pari without opening it in memory.
+The source must have no appended commits; call `compact()` on its `Index`
+first if it does.
+
+```python
+from pari import ReadOnlyIndex, build_read_only_index
+
+stats = build_read_only_index("products.pari", "products-ro.pari")
+print(stats.records, stats.buckets, stats.output_bytes, stats.reused_source_buckets)
+
+with ReadOnlyIndex.open("products-ro.pari") as index:
+    ...
+```
+
+A compacted source's bucket sections are checked and copied instead of
+re-sorted, and are rebuilt if any check fails, so the output is the same
+either way. Pass `reuse_buckets=False` to always rebuild them, and
+`max_buffer_records` to change how many records are sorted in memory at once
+(default 262,144). An existing destination raises `StorageError` and is left
+unchanged; `max_buffer_records=0` raises `ConfigurationError`.
+
 ## Deduplicate records
 
 > **Availability:** `DedupeIndex` and `deduplicate` are included in Pari 0.3.0 and newer releases.

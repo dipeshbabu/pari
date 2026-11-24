@@ -5,6 +5,7 @@ build :class:`MinHash` signatures and query a persistent :class:`Index`.
 """
 
 from ._native import (
+    BuildStats,
     ClosedIndexError,
     CompatibilityError,
     ConfigurationError,
@@ -19,6 +20,7 @@ from ._native import (
     ReadOnlyIndex,
     StorageError,
     __version__,
+    build_read_only_index,
     plan_lsh,
 )
 from .dedupe import (
@@ -34,6 +36,7 @@ from .dedupe import (
 from .features import shingles
 
 __all__ = [
+    "BuildStats",
     "ClosedIndexError",
     "CompatibilityError",
     "ConfigurationError",
@@ -55,6 +58,7 @@ __all__ = [
     "ReadOnlyIndex",
     "StorageError",
     "__version__",
+    "build_read_only_index",
     "deduplicate",
     "plan_lsh",
     "shingles",
