@@ -6,6 +6,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-24
+
 ### Added
 
 - `pari dedup --spill-dir DIR` groups duplicates in bounded memory: band
@@ -15,7 +17,6 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   124 MB (2,390 MB to 124 MB with `--min-similarity`). Groups output only.
 - `LshIndex32::band_hashes` and `LshIndex64::band_hashes` return the band
   hashes the index would bucket a sketch under, without inserting it.
-
 - `pari build-read-only` and `pari.build_read_only_index` write a verified,
   query-ready copy of a committed index in bounded memory, reusing a compacted
   source's bucket sections after checking them. Appended commits are folded
@@ -26,6 +27,16 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
   checking in bounded memory that they are exactly what the rebuild would
   write. If any check fails, the builder rebuilds them as before. On by
   default, as in the CLI and Python; set it to `false` to always rebuild.
+
+### Changed
+
+- MinHash signatures take each permutation's minimum without a branch, so
+  the update loop vectorizes for both signature widths. Signatures are
+  unchanged. Signature construction is about 27% faster at 10M items
+  (130,700 to 166,300 items per second).
+- The external builder reads keys and band hashes sequentially when it
+  spills records instead of seeking for every item, making a full rebuild
+  about 25% faster at 10M items (69.3 s to 51.7 s). Output is unchanged.
 
 ## [0.4.3] - 2026-11-23
 
