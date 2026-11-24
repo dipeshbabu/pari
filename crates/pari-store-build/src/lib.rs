@@ -40,6 +40,7 @@ const U64_BYTES: usize = 8;
 const U64_BYTES_U64: u64 = 8;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const COPY_BUFFER_BYTES_U64: u64 = 64 * 1024;
+const SPILL_READ_BUFFER_BYTES: usize = 1 << 20;
 
 /// Configuration for the bounded external builder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,7 +330,7 @@ fn build_external_with_hook(
     }
 
     let run_paths = spill_runs(
-        &mut source_file,
+        source,
         &chunks,
         bands,
         destination,
@@ -591,7 +592,7 @@ fn source_keys_are_ordered(
 
 #[allow(clippy::too_many_arguments)]
 fn spill_runs(
-    source: &mut File,
+    source: &Path,
     chunks: &[MetadataChunk],
     bands: usize,
     destination: &Path,
@@ -614,6 +615,10 @@ fn spill_runs(
         .min(usize::try_from(spill_records).unwrap_or(usize::MAX));
     let mut buffer = Vec::with_capacity(capacity);
     let mut runs = Vec::new();
+    // Keys and band-hash rows are row-aligned, so two buffered readers walk
+    // them in step instead of seeking for every item.
+    let mut key_reader = BufReader::with_capacity(SPILL_READ_BUFFER_BYTES, File::open(source)?);
+    let mut row_reader = BufReader::with_capacity(SPILL_READ_BUFFER_BYTES, File::open(source)?);
 
     for MetadataChunk {
         keys,
@@ -621,32 +626,21 @@ fn spill_runs(
         count,
     } in chunks.iter().copied()
     {
-        for item in 0..count {
-            let item_offset = item
-                .checked_mul(U64_BYTES)
-                .and_then(|value| value.checked_add(U64_BYTES))
-                .ok_or(BuildError::LengthOverflow)?;
-            source.seek(SeekFrom::Start(
-                keys.payload_offset()
-                    .checked_add(
-                        u64::try_from(item_offset).map_err(|_| BuildError::LengthOverflow)?,
-                    )
-                    .ok_or(BuildError::LengthOverflow)?,
-            ))?;
-            source.read_exact(&mut key_raw)?;
+        key_reader.seek(SeekFrom::Start(
+            keys.payload_offset()
+                .checked_add(U64_BYTES_U64)
+                .ok_or(BuildError::LengthOverflow)?,
+        ))?;
+        row_reader.seek(SeekFrom::Start(
+            hashes
+                .payload_offset()
+                .checked_add(U64_BYTES_U64)
+                .ok_or(BuildError::LengthOverflow)?,
+        ))?;
+        for _ in 0..count {
+            key_reader.read_exact(&mut key_raw)?;
             let key = u64::from_le_bytes(key_raw);
-
-            let row_offset = item
-                .checked_mul(row_bytes)
-                .and_then(|value| value.checked_add(U64_BYTES))
-                .ok_or(BuildError::LengthOverflow)?;
-            source.seek(SeekFrom::Start(
-                hashes
-                    .payload_offset()
-                    .checked_add(u64::try_from(row_offset).map_err(|_| BuildError::LengthOverflow)?)
-                    .ok_or(BuildError::LengthOverflow)?,
-            ))?;
-            source.read_exact(&mut hash_row)?;
+            row_reader.read_exact(&mut hash_row)?;
             for (band, chunk) in hash_row.chunks_exact(U64_BYTES).enumerate() {
                 let raw: [u8; U64_BYTES] =
                     chunk.try_into().map_err(|_| BuildError::InvalidSource {
