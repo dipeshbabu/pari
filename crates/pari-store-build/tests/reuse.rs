@@ -75,7 +75,7 @@ fn build_both(fixture: &Fixture, source: &Path, name: &str) -> BuildStats {
         &rebuilt,
         BuildOptions {
             max_buffer_records: 97,
-            ..BuildOptions::default()
+            reuse_source_buckets: false,
         },
     )
     .expect("full rebuild");
@@ -251,4 +251,14 @@ fn a_source_without_buckets_falls_back_to_the_rebuild() {
         Vec::new()
     });
     assert!(!build_both(&fixture, &bare, "bare").reused_source_buckets);
+}
+
+#[test]
+fn default_options_reuse_a_compacted_snapshot() {
+    let fixture = Fixture::new();
+    let source = fixture.path("source");
+    persistent_source(&source, 120);
+    let stats = build_external(&source, fixture.path("default"), BuildOptions::default())
+        .expect("default build");
+    assert!(stats.reused_source_buckets);
 }

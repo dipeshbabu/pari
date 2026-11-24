@@ -146,7 +146,15 @@ pub fn run_storage_benchmark(config: &BenchmarkConfig) -> Result<BenchmarkReport
 
     let builder_rss = RssSampler::start();
     let builder_started = Instant::now();
-    let builder_stats = build_external(&persistent_path, &lazy_path, BuildOptions::default())?;
+    // The full rebuild: reuse would copy the compacted snapshot's buckets.
+    let builder_stats = build_external(
+        &persistent_path,
+        &lazy_path,
+        BuildOptions {
+            reuse_source_buckets: false,
+            ..BuildOptions::default()
+        },
+    )?;
     let builder_elapsed = builder_started.elapsed();
     let builder_rss = builder_rss.finish();
     insert_throughput(
