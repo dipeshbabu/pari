@@ -290,10 +290,8 @@ impl MinHash32 {
             .zip(self.multipliers.iter())
             .zip(self.offsets.iter())
         {
-            let permuted = multiplier.wrapping_mul(mixed).wrapping_add(*offset);
-            if permuted < *current {
-                *current = permuted;
-            }
+            // A branchless minimum lets the compiler vectorize the loop.
+            *current = (*current).min(multiplier.wrapping_mul(mixed).wrapping_add(*offset));
         }
     }
 
@@ -525,10 +523,8 @@ impl MinHash64 {
             .zip(self.multipliers.iter())
             .zip(self.offsets.iter())
         {
-            let permuted = multiplier.wrapping_mul(mixed).wrapping_add(*offset);
-            if permuted < *current {
-                *current = permuted;
-            }
+            // A branchless minimum lets the compiler vectorize the loop.
+            *current = (*current).min(multiplier.wrapping_mul(mixed).wrapping_add(*offset));
         }
     }
 
