@@ -92,6 +92,28 @@ cargo run --release -p pari-bench -- compare \
 
 Only shared metrics with identical units and optimization direction are compared. Positive `improvement_percent` always means better, so lower latency or memory is normalized to the same sign convention as higher throughput or recall.
 
+## Pull request performance check
+
+Every pull request runs the `Performance regression` CI job. It builds
+`pari-bench` for the change and for the pull request's base commit, then runs
+the `run` and `storage` profiles at 20,000 items three times, alternating
+between the two builds so runner noise affects both alike. Then
+`scripts/check_performance.py` compares the median of each watched metric and
+fails if the change makes any of them more than 50% worse: half the
+throughput, or twice the latency. The watched metrics cover index build and
+mutation, signatures, grouping, queries, and the persistent and lazy stores.
+Latencies under 5 ms are not compared.
+
+Run the same comparison locally against `main`:
+
+```bash
+scripts/ci_performance.sh origin/main
+```
+
+The check catches large regressions, such as the 5.7x slowdown of single-item
+persistent updates that #263 introduced and #273 fixed. Smaller changes still
+need the dedicated-host benchmarks.
+
 ## Criterion microbenchmarks
 
 Criterion is isolated from the main workspace so normal `cargo test --all-targets` does not execute timing benchmarks.
