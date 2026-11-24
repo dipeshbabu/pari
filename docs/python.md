@@ -86,14 +86,15 @@ For an older snapshot that lacks bucket sections, open and sync it with
 copy of a committed index in bounded memory. Use it to publish a snapshot for
 query-only processes while a writer keeps committing to the source, or to add
 bucket sections to a snapshot from an older Pari without opening it in memory.
-The source must have no appended commits; call `compact()` on its `Index`
-first if it does.
+Appended commits in the source are folded in, giving the same bytes as
+`compact()` followed by a build, without changing the source or loading it
+into memory.
 
 ```python
 from pari import ReadOnlyIndex, build_read_only_index
 
 stats = build_read_only_index("products.pari", "products-ro.pari")
-print(stats.records, stats.buckets, stats.output_bytes, stats.reused_source_buckets)
+print(stats.records, stats.buckets, stats.output_bytes, stats.folded_generations)
 
 with ReadOnlyIndex.open("products-ro.pari") as index:
     ...

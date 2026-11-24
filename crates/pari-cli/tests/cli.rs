@@ -1275,6 +1275,8 @@ fn build_read_only_writes_a_query_ready_copy_of_a_compacted_index() {
     let queries = temp_path("build-queries", "jsonl");
     let reused = temp_path("build-reused", "pari");
     let rebuilt = temp_path("build-rebuilt", "pari");
+    let folded = temp_path("build-folded", "pari");
+    let folded_text = temp_path("build-folded-text", "pari");
     let mut text = String::new();
     let mut query_text = String::new();
     for key in 0..1_500_u64 {
@@ -1324,11 +1326,14 @@ fn build_read_only_writes_a_query_ready_copy_of_a_compacted_index() {
     let verify: serde_json::Value = serde_json::from_slice(&verify.stdout).expect("verify JSON");
     assert!(verify["delta_generations"].as_u64() > Some(0));
 
-    // Appended commits must be folded in first, never silently dropped.
-    let blocked = build(&reused, &["--json"]);
-    assert!(!blocked.status.success());
-    assert!(String::from_utf8_lossy(&blocked.stderr).contains("compact the index first"));
-    assert!(!reused.exists());
+    // Appended commits are folded in, giving what compact-then-build gives.
+    let output = build(&folded, &["--json"]);
+    assert_success(&output);
+    let summary: serde_json::Value = serde_json::from_slice(&output.stdout).expect("summary JSON");
+    assert_eq!(summary["folded_generations"], verify["delta_generations"]);
+    assert_eq!(summary["reused_source_buckets"], false);
+    let line = String::from_utf8_lossy(&build(&folded_text, &[]).stdout).into_owned();
+    assert!(line.contains("appended commits)"), "{line}");
 
     assert_success(
         &pari()
@@ -1341,6 +1346,11 @@ fn build_read_only_writes_a_query_ready_copy_of_a_compacted_index() {
     let summary: serde_json::Value = serde_json::from_slice(&output.stdout).expect("summary JSON");
     assert_eq!(summary["reused_source_buckets"], true);
     assert_eq!(summary["spill_runs"], 0);
+    assert_eq!(summary["folded_generations"], 0);
+    assert_eq!(
+        fs::read(&folded).expect("folded"),
+        fs::read(&reused).expect("reused")
+    );
     assert_eq!(
         summary["output_bytes"].as_u64(),
         Some(fs::metadata(&reused).expect("output").len())
@@ -1378,7 +1388,15 @@ fn build_read_only_writes_a_query_ready_copy_of_a_compacted_index() {
     assert!(!build(&reused, &[]).status.success());
     assert_eq!(fs::read(&reused).expect("reused"), before);
 
-    for file in [records, queries, index, reused, rebuilt] {
+    for file in [
+        records,
+        queries,
+        index,
+        reused,
+        rebuilt,
+        folded,
+        folded_text,
+    ] {
         let _ = fs::remove_file(file);
     }
 }

@@ -29,6 +29,9 @@ pub(crate) struct PyBuildStats {
     /// Whether the source's bucket sections were copied instead of rebuilt.
     #[pyo3(get)]
     reused_source_buckets: bool,
+    /// Appended commit generations folded into the output.
+    #[pyo3(get)]
+    folded_generations: usize,
 }
 
 #[pymethods]
@@ -36,7 +39,7 @@ impl PyBuildStats {
     fn __repr__(&self) -> String {
         format!(
             "BuildStats(records={}, buckets={}, output_bytes={}, spill_runs={}, \
-             reused_source_buckets={})",
+             reused_source_buckets={}, folded_generations={})",
             self.records,
             self.buckets,
             self.output_bytes,
@@ -45,7 +48,8 @@ impl PyBuildStats {
                 "True"
             } else {
                 "False"
-            }
+            },
+            self.folded_generations
         )
     }
 }
@@ -73,5 +77,6 @@ pub(crate) fn py_build_read_only_index(
         output_bytes: stats.output_bytes,
         spill_runs: stats.spill_runs,
         reused_source_buckets: stats.reused_source_buckets,
+        folded_generations: stats.folded_generations,
     })
 }
