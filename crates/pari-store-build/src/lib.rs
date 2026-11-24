@@ -55,8 +55,9 @@ pub struct BuildOptions {
     /// builder checks their layout and checksums, and compares a randomly
     /// keyed hash of every `(band, hash, key)` entry against the source band
     /// hashes, all in bounded memory. If any check fails it rebuilds the
-    /// buckets, so the output is the same either way. The contents check is
-    /// probabilistic, so leave this off when the full rebuild's exact
+    /// buckets, so the output is the same either way. On by default, as in
+    /// `pari build-read-only` and `pari.build_read_only_index`. The contents
+    /// check is probabilistic, so turn this off when the full rebuild's exact
     /// re-derivation is required.
     pub reuse_source_buckets: bool,
 }
@@ -65,7 +66,7 @@ impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             max_buffer_records: 262_144,
-            reuse_source_buckets: false,
+            reuse_source_buckets: true,
         }
     }
 }
@@ -1507,7 +1508,7 @@ mod tests {
             &external,
             BuildOptions {
                 max_buffer_records: 7,
-                ..BuildOptions::default()
+                reuse_source_buckets: false,
             },
         )
         .expect("external build");
@@ -1533,7 +1534,7 @@ mod tests {
             &external,
             BuildOptions {
                 max_buffer_records: 11,
-                ..BuildOptions::default()
+                reuse_source_buckets: false,
             },
         )
         .expect("external build");
@@ -1560,7 +1561,7 @@ mod tests {
                 &destination,
                 BuildOptions {
                     max_buffer_records: 0,
-                    ..BuildOptions::default()
+                    reuse_source_buckets: false,
                 },
             ),
             Err(BuildError::InvalidOptions { .. })
@@ -1582,7 +1583,7 @@ mod tests {
             &destination,
             BuildOptions {
                 max_buffer_records: 7,
-                ..BuildOptions::default()
+                reuse_source_buckets: false,
             },
         )
         .expect_err("existing destination must be rejected");
@@ -1612,7 +1613,7 @@ mod tests {
             &destination,
             BuildOptions {
                 max_buffer_records: 7,
-                ..BuildOptions::default()
+                reuse_source_buckets: false,
             },
             || {
                 fs::write(&destination, competing)?;
@@ -1732,7 +1733,7 @@ mod tests {
             &external_small,
             BuildOptions {
                 max_buffer_records: 7,
-                ..BuildOptions::default()
+                reuse_source_buckets: false,
             },
         )
         .expect("build small affine64 spills");
@@ -1741,7 +1742,7 @@ mod tests {
             &external_large,
             BuildOptions {
                 max_buffer_records: 23,
-                ..BuildOptions::default()
+                reuse_source_buckets: false,
             },
         )
         .expect("build large affine64 spills");

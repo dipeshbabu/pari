@@ -12,6 +12,8 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod bounded_dedup;
+
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use pari_core::{MinHash32, MinHash64, AFFINE32_SCHEME, AFFINE64_SCHEME};
@@ -195,6 +197,14 @@ struct DedupArgs {
     /// Records indexed per atomic in-memory batch.
     #[arg(long, default_value_t = 10_000)]
     batch_size: usize,
+    /// Group in bounded memory, spilling sorted bucket records to this
+    /// directory instead of building an in-memory index. Groups only; the
+    /// output is identical to the in-memory path.
+    #[arg(long)]
+    spill_dir: Option<PathBuf>,
+    /// With `--spill-dir`: bucket records sorted in memory before each spill.
+    #[arg(long, default_value_t = 4_194_304)]
+    max_buffer_records: usize,
     #[command(flatten)]
     progress: ProgressArgs,
 }
@@ -1243,10 +1253,103 @@ fn dedup(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
         }
     }
     ensure_distinct_input_output(&args.input, &args.output)?;
+    if let Some(spill_dir) = &args.spill_dir {
+        if matches!(args.emit, DedupOutput::Pairs) {
+            return Err("--spill-dir supports --emit groups only".into());
+        }
+        return dedup_bounded(args, spill_dir);
+    }
     match args.signature_scheme {
         CliSignatureScheme::PariAffine32V1 => dedup32(args),
         CliSignatureScheme::PariAffine64V1 => dedup64(args),
     }
+}
+
+/// Group records in bounded memory: see [`bounded_dedup`].
+fn dedup_bounded(args: &DedupArgs, spill_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let reporter = ProgressReporter::new(&args.progress)?;
+    let value_bytes = match args.signature_scheme {
+        CliSignatureScheme::PariAffine32V1 => 4,
+        CliSignatureScheme::PariAffine64V1 => 8,
+    };
+    let mut grouper = bounded_dedup::BoundedDedup::new(
+        spill_dir,
+        args.max_buffer_records,
+        args.min_similarity,
+        args.num_perm,
+        value_bytes,
+    )?;
+    let mut completed = 0_usize;
+    let mut signature = Vec::new();
+    let mut add = |key: u64, hashes: &[u64], signature: &[u8]| -> Result<(), Box<dyn Error>> {
+        grouper.push(key, hashes, signature)?;
+        completed = completed.saturating_add(1);
+        if completed % args.batch_size == 0 {
+            if let Some(reporter) = &reporter {
+                reporter.emit("dedup_index", completed, None, false, None, None)?;
+            }
+        }
+        Ok(())
+    };
+    let reader = open_reader(&args.input)?;
+    match args.signature_scheme {
+        CliSignatureScheme::PariAffine32V1 => {
+            let index = LshIndex32::new(args.threshold, args.num_perm, args.seed)?;
+            for_json_lines(reader, |_line, record: Record| {
+                let sketch = make_sketch32(
+                    record.values.as_deref(),
+                    record.signature.as_deref(),
+                    record.scheme.as_deref(),
+                    record.seed,
+                    args.num_perm,
+                    args.seed,
+                )?;
+                let hashes = index.band_hashes(&sketch)?;
+                signature.clear();
+                if args.min_similarity.is_some() {
+                    for value in sketch.signature() {
+                        signature.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+                add(record.key, &hashes, &signature)
+            })?;
+        }
+        CliSignatureScheme::PariAffine64V1 => {
+            let index = LshIndex64::new(args.threshold, args.num_perm, args.seed)?;
+            for_json_lines(reader, |_line, record: Record| {
+                let sketch = make_sketch64(
+                    record.values.as_deref(),
+                    record.signature.as_deref(),
+                    record.scheme.as_deref(),
+                    record.seed,
+                    args.num_perm,
+                    args.seed,
+                )?;
+                let hashes = index.band_hashes(&sketch)?;
+                signature.clear();
+                if args.min_similarity.is_some() {
+                    for value in sketch.signature() {
+                        signature.extend_from_slice(&value.to_le_bytes());
+                    }
+                }
+                add(record.key, &hashes, &signature)
+            })?;
+        }
+    }
+    if let Some(reporter) = &reporter {
+        reporter.emit("dedup_index", completed, None, true, None, None)?;
+    }
+    let groups = grouper.finish(args.min_size)?;
+    write_group_members(
+        args,
+        groups
+            .iter()
+            .map(|members| (members[0], members.as_slice())),
+    )?;
+    if let Some(reporter) = &reporter {
+        reporter.emit("dedup_output", completed, Some(completed), true, None, None)?;
+    }
+    Ok(())
 }
 
 fn dedup32(args: &DedupArgs) -> Result<(), Box<dyn Error>> {
@@ -1378,24 +1481,31 @@ fn write_pairs(
 }
 
 fn write_groups(args: &DedupArgs, groups: &[DuplicateGroup]) -> Result<(), Box<dyn Error>> {
+    write_group_members(
+        args,
+        groups
+            .iter()
+            .map(|group| (group.representative(), group.members())),
+    )
+}
+
+fn write_group_members<'a>(
+    args: &DedupArgs,
+    groups: impl IntoIterator<Item = (u64, &'a [u64])>,
+) -> Result<(), Box<dyn Error>> {
     let mut writer = open_writer(&args.output, &args.input)?;
-    for group in groups {
+    for (representative, members) in groups {
         if args.json {
             serde_json::to_writer(
                 &mut writer,
                 &GroupResult {
-                    representative: group.representative(),
-                    members: group.members(),
+                    representative,
+                    members,
                 },
             )?;
             writeln!(writer)?;
         } else {
-            writeln!(
-                writer,
-                "{}\t{}",
-                group.representative(),
-                join_u64(group.members())
-            )?;
+            writeln!(writer, "{representative}\t{}", join_u64(members))?;
         }
     }
     writer.flush()?;
