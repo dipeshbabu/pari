@@ -60,7 +60,9 @@ class BuildReadOnlyIndexTests(unittest.TestCase):
                 )
                 self.assertFalse(full.reused_source_buckets)
                 self.assertGreater(full.spill_runs, 1)
-                self.assertEqual((full.records, full.buckets), (stats.records, stats.buckets))
+                self.assertEqual(
+                    (full.records, full.buckets), (stats.records, stats.buckets)
+                )
                 self.assertEqual(reused.read_bytes(), rebuilt.read_bytes())
 
                 with ReadOnlyIndex.open(reused) as reader:
