@@ -207,6 +207,38 @@ pub fn run_storage_benchmark(config: &BenchmarkConfig) -> Result<BenchmarkReport
         ),
     );
 
+    // The opt-in reuse path copies the snapshot's buckets after verifying
+    // them. It must write exactly what the full rebuild wrote.
+    let reused_path = artifacts.path("lazy-reused.pari");
+    let reuse_started = Instant::now();
+    let reuse_stats = build_external(
+        &persistent_path,
+        &reused_path,
+        BuildOptions {
+            reuse_source_buckets: true,
+            ..BuildOptions::default()
+        },
+    )?;
+    let reuse_elapsed = reuse_started.elapsed();
+    if !reuse_stats.reused_source_buckets {
+        return Err("the builder did not reuse the compacted snapshot's buckets".into());
+    }
+    if !files_identical(&lazy_path, &reused_path)? {
+        return Err("bucket reuse wrote a different file than the full rebuild".into());
+    }
+    fs::remove_file(&reused_path)?;
+    insert_throughput(
+        &mut report,
+        "storage.builder.reuse_build_items_per_second",
+        signatures.len(),
+        reuse_elapsed,
+    );
+    insert_elapsed(
+        &mut report,
+        "storage.builder.reuse_build_elapsed_ms",
+        reuse_elapsed,
+    );
+
     let lazy_reopen_rss = RssSampler::start();
     let lazy_reopen_started = Instant::now();
     let mut lazy = LazyIndex32::open(&lazy_path)?;
@@ -568,6 +600,29 @@ fn load_set_dataset(path: &Path, limit: usize) -> Result<Vec<Vec<u64>>, Box<dyn 
         rows.push(row);
     }
     Ok(rows)
+}
+
+/// Whether two files hold the same bytes, compared in bounded memory.
+fn files_identical(left: &Path, right: &Path) -> std::io::Result<bool> {
+    use std::io::Read;
+
+    if fs::metadata(left)?.len() != fs::metadata(right)?.len() {
+        return Ok(false);
+    }
+    let mut left = std::io::BufReader::new(fs::File::open(left)?);
+    let mut right = std::io::BufReader::new(fs::File::open(right)?);
+    let mut left_chunk = vec![0_u8; 1 << 20];
+    let mut right_chunk = vec![0_u8; 1 << 20];
+    loop {
+        let read = left.read(&mut left_chunk)?;
+        if read == 0 {
+            return Ok(true);
+        }
+        right.read_exact(&mut right_chunk[..read])?;
+        if left_chunk[..read] != right_chunk[..read] {
+            return Ok(false);
+        }
+    }
 }
 
 fn insert_throughput(report: &mut BenchmarkReport, name: &str, count: usize, elapsed: Duration) {

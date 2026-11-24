@@ -26,6 +26,8 @@ use pari_format::{
 };
 use same_file::Handle;
 
+mod reuse;
+
 const FILE_MAGIC: [u8; 8] = *b"PARIIDX\0";
 const FORMAT_VERSION: u16 = 1;
 const HEADER_BYTES: usize = 72;
@@ -44,12 +46,24 @@ const COPY_BUFFER_BYTES_U64: u64 = 64 * 1024;
 pub struct BuildOptions {
     /// Maximum number of `(band, hash, key)` records held before a sorted spill.
     pub max_buffer_records: usize,
+    /// Copy the source's bucket sections instead of re-sorting every record
+    /// when they are exactly what the rebuild would write.
+    ///
+    /// A compacted `pari-store` snapshot already holds those sections. The
+    /// builder checks their layout and checksums, and compares a randomly
+    /// keyed hash of every `(band, hash, key)` entry against the source band
+    /// hashes, all in bounded memory. If any check fails it rebuilds the
+    /// buckets, so the output is the same either way. The contents check is
+    /// probabilistic, so leave this off when the full rebuild's exact
+    /// re-derivation is required.
+    pub reuse_source_buckets: bool,
 }
 
 impl Default for BuildOptions {
     fn default() -> Self {
         Self {
             max_buffer_records: 262_144,
+            reuse_source_buckets: false,
         }
     }
 }
@@ -67,6 +81,8 @@ pub struct BuildStats {
     pub buckets: u64,
     /// Final committed file size.
     pub output_bytes: u64,
+    /// Whether the source's bucket sections were copied instead of rebuilt.
+    pub reused_source_buckets: bool,
 }
 
 /// Errors returned by bounded lazy-index construction.
@@ -283,6 +299,35 @@ fn build_external_with_hook(
 
     let nonce = build_nonce()?;
     let mut temporary = TemporaryFiles::new();
+    // Reuse needs strictly increasing keys, which also proves them unique.
+    let reusable = if options.reuse_source_buckets && ordered {
+        reuse::reusable_source_buckets(source, &layout, &chunks, bands, records)?
+    } else {
+        None
+    };
+    if let Some(reusable) = reusable {
+        let destination_temp = temporary.track(temp_path(destination, nonce, "commit"));
+        write_final_container(
+            &mut source_file,
+            &layout,
+            &chunks,
+            &signature_sections,
+            &BucketSections::Source(&reusable.sections),
+            &destination_temp,
+        )?;
+        let output_bytes = fs::metadata(&destination_temp)?.len();
+        before_publish()?;
+        publish_no_replace(&destination_temp, destination)?;
+        return Ok(BuildStats {
+            records,
+            spill_runs: 0,
+            peak_buffered_records: 0,
+            buckets: reusable.buckets,
+            output_bytes,
+            reused_source_buckets: true,
+        });
+    }
+
     let run_paths = spill_runs(
         &mut source_file,
         &chunks,
@@ -315,7 +360,7 @@ fn build_external_with_hook(
         &layout,
         &chunks,
         &signature_sections,
-        &segments,
+        &BucketSections::Built(&segments),
         &destination_temp,
     )?;
     let output_bytes = fs::metadata(&destination_temp)?.len();
@@ -328,6 +373,7 @@ fn build_external_with_hook(
         peak_buffered_records,
         buckets,
         output_bytes,
+        reused_source_buckets: false,
     })
 }
 
@@ -883,19 +929,36 @@ fn write_one_segment(
     })
 }
 
+/// Where the output's bucket sections come from.
+enum BucketSections<'a> {
+    /// Segments the external sort wrote to temporary files.
+    Built(&'a [SegmentFile]),
+    /// Verified source sections, copied unchanged.
+    Source(&'a [SectionDescriptor]),
+}
+
+impl BucketSections<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Built(segments) => segments.len(),
+            Self::Source(sections) => sections.len(),
+        }
+    }
+}
+
 fn write_final_container(
     source: &mut File,
     layout: &FileLayout,
     chunks: &[MetadataChunk],
     signatures: &[SectionDescriptor],
-    segments: &[SegmentFile],
+    buckets: &BucketSections<'_>,
     destination_temp: &Path,
 ) -> Result<(), BuildError> {
     let section_count = chunks
         .len()
         .checked_mul(2)
         .and_then(|count| count.checked_add(signatures.len()))
-        .and_then(|count| count.checked_add(segments.len()))
+        .and_then(|count| count.checked_add(buckets.len()))
         .ok_or(BuildError::LengthOverflow)?;
     let section_count = u32::try_from(section_count).map_err(|_| BuildError::LengthOverflow)?;
     let file = OpenOptions::new()
@@ -916,15 +979,24 @@ fn write_final_container(
     for descriptor in signatures {
         copy_framed_source_section(source, &mut output, SectionKind::Signatures, *descriptor)?;
     }
-    for segment in segments {
-        output.write_all(&encode_section_header(
-            SectionKind::Buckets,
-            true,
-            segment.bytes,
-            segment.checksum,
-        ))?;
-        let mut payload = BufReader::new(File::open(&segment.path)?);
-        io::copy(&mut payload, &mut output)?;
+    match buckets {
+        BucketSections::Built(segments) => {
+            for segment in *segments {
+                output.write_all(&encode_section_header(
+                    SectionKind::Buckets,
+                    true,
+                    segment.bytes,
+                    segment.checksum,
+                ))?;
+                let mut payload = BufReader::new(File::open(&segment.path)?);
+                io::copy(&mut payload, &mut output)?;
+            }
+        }
+        BucketSections::Source(sections) => {
+            for descriptor in *sections {
+                copy_framed_source_section(source, &mut output, SectionKind::Buckets, *descriptor)?;
+            }
+        }
     }
     output.flush()?;
     output.get_ref().sync_all()?;
@@ -1419,6 +1491,7 @@ mod tests {
             &external,
             BuildOptions {
                 max_buffer_records: 7,
+                ..BuildOptions::default()
             },
         )
         .expect("external build");
@@ -1444,6 +1517,7 @@ mod tests {
             &external,
             BuildOptions {
                 max_buffer_records: 11,
+                ..BuildOptions::default()
             },
         )
         .expect("external build");
@@ -1470,6 +1544,7 @@ mod tests {
                 &destination,
                 BuildOptions {
                     max_buffer_records: 0,
+                    ..BuildOptions::default()
                 },
             ),
             Err(BuildError::InvalidOptions { .. })
@@ -1491,6 +1566,7 @@ mod tests {
             &destination,
             BuildOptions {
                 max_buffer_records: 7,
+                ..BuildOptions::default()
             },
         )
         .expect_err("existing destination must be rejected");
@@ -1520,6 +1596,7 @@ mod tests {
             &destination,
             BuildOptions {
                 max_buffer_records: 7,
+                ..BuildOptions::default()
             },
             || {
                 fs::write(&destination, competing)?;
@@ -1639,6 +1716,7 @@ mod tests {
             &external_small,
             BuildOptions {
                 max_buffer_records: 7,
+                ..BuildOptions::default()
             },
         )
         .expect("build small affine64 spills");
@@ -1647,6 +1725,7 @@ mod tests {
             &external_large,
             BuildOptions {
                 max_buffer_records: 23,
+                ..BuildOptions::default()
             },
         )
         .expect("build large affine64 spills");
