@@ -10,8 +10,9 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 - `pari build-read-only` and `pari.build_read_only_index` write a verified,
   query-ready copy of a committed index in bounded memory, reusing a compacted
-  source's bucket sections after checking them. The source must have no
-  appended commits, and an existing destination is never replaced.
+  source's bucket sections after checking them. Appended commits are folded
+  in while reading, giving the same bytes as compacting first, without
+  changing or loading the source. An existing destination is never replaced.
 - `pari-store-build`: `BuildOptions::reuse_source_buckets` copies a compacted
   snapshot's bucket sections instead of re-sorting every record, after
   checking in bounded memory that they are exactly what the rebuild would

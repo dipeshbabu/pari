@@ -26,6 +26,7 @@ use pari_format::{
 };
 use same_file::Handle;
 
+mod fold;
 mod reuse;
 
 const FILE_MAGIC: [u8; 8] = *b"PARIIDX\0";
@@ -84,6 +85,8 @@ pub struct BuildStats {
     pub output_bytes: u64,
     /// Whether the source's bucket sections were copied instead of rebuilt.
     pub reused_source_buckets: bool,
+    /// Appended commit generations folded into the output.
+    pub folded_generations: usize,
 }
 
 /// Errors returned by bounded lazy-index construction.
@@ -247,13 +250,31 @@ fn build_external_with_hook(
     }
 
     let mut source_file = File::open(source)?;
-    let layout = FileLayout::read_from(&mut source_file)?;
+    let layout = FileLayout::read_with_generations(&mut source_file)?;
     validate_source_metadata(&layout)?;
+    if !layout.deltas().is_empty() {
+        // Apply the appended commits into a temporary base-only snapshot laid
+        // out as a compaction would, then build from it.
+        if let Some(parent) = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
+        let nonce = build_nonce()?;
+        let mut temporary = TemporaryFiles::new();
+        let folded = temporary.track(temp_path(destination, nonce, "folded"));
+        fold::write_folded_snapshot(source, &layout, &folded, nonce, &mut temporary)?;
+        drop(source_file);
+        let mut stats = build_external_with_hook(&folded, destination, options, before_publish)?;
+        stats.folded_generations = layout.deltas().len();
+        return Ok(stats);
+    }
     let bands =
         usize::try_from(layout.metadata().bands()).map_err(|_| BuildError::LengthOverflow)?;
     let mut chunks = Vec::new();
     let mut item_count = 0_usize;
-    for (keys, band_hashes) in key_metadata_pairs(&layout)? {
+    for (keys, band_hashes) in key_metadata_pairs(layout.sections())? {
         verify_section_streaming(&mut source_file, keys)?;
         verify_section_streaming(&mut source_file, band_hashes)?;
         let count = read_record_count(&mut source_file, keys)?;
@@ -326,6 +347,7 @@ fn build_external_with_hook(
             buckets: reusable.buckets,
             output_bytes,
             reused_source_buckets: true,
+            folded_generations: 0,
         });
     }
 
@@ -375,6 +397,7 @@ fn build_external_with_hook(
         buckets,
         output_bytes,
         reused_source_buckets: false,
+        folded_generations: 0,
     })
 }
 
@@ -456,11 +479,10 @@ struct MetadataChunk {
 /// Large catalogs are split into several pairs whose `n`-th `Keys` and `n`-th
 /// `BandHashes` sections hold the same rows; small ones use a single pair.
 fn key_metadata_pairs(
-    layout: &FileLayout,
+    sections: &[SectionDescriptor],
 ) -> Result<Vec<(SectionDescriptor, SectionDescriptor)>, BuildError> {
     let of_kind = |kind, missing_reason| -> Result<Vec<SectionDescriptor>, BuildError> {
-        let sections: Vec<_> = layout
-            .sections()
+        let sections: Vec<_> = sections
             .iter()
             .copied()
             .filter(|descriptor| descriptor.kind() == kind)

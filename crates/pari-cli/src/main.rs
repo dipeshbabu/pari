@@ -245,8 +245,7 @@ struct CompactArgs {
 
 #[derive(Debug, clap::Args)]
 struct BuildReadOnlyArgs {
-    /// Committed source index. Run `pari compact` first if it has appended
-    /// commits.
+    /// Committed source index. Appended commits are folded in.
     #[arg(short, long)]
     index: PathBuf,
     /// Destination file. It must not exist yet.
@@ -1516,6 +1515,7 @@ struct BuildSummary {
     output_bytes: u64,
     spill_runs: usize,
     reused_source_buckets: bool,
+    folded_generations: usize,
 }
 
 fn build_read_only(args: &BuildReadOnlyArgs) -> Result<(), Box<dyn Error>> {
@@ -1533,12 +1533,18 @@ fn build_read_only(args: &BuildReadOnlyArgs) -> Result<(), Box<dyn Error>> {
         output_bytes: stats.output_bytes,
         spill_runs: stats.spill_runs,
         reused_source_buckets: stats.reused_source_buckets,
+        folded_generations: stats.folded_generations,
     };
     if args.json {
         outln!("{}", serde_json::to_string(&summary)?);
     } else {
+        let folded = match summary.folded_generations {
+            0 => String::new(),
+            1 => ", folded 1 appended commit".to_owned(),
+            count => format!(", folded {count} appended commits"),
+        };
         outln!(
-            "built {} ({} bytes, {} buckets, {} records, {})",
+            "built {} ({} bytes, {} buckets, {} records, {}{folded})",
             args.output.display(),
             summary.output_bytes,
             summary.buckets,
