@@ -24,8 +24,8 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 - `pari-store-build`: `BuildOptions::reuse_source_buckets` copies a compacted
   snapshot's bucket sections instead of re-sorting every record, after
   checking in bounded memory that they are exactly what the rebuild would
-  write. If any check fails, the builder rebuilds them as before. Off by
-  default.
+  write. If any check fails, the builder rebuilds them as before. On by
+  default, as in the CLI and Python; set it to `false` to always rebuild.
 
 ## [0.4.3] - 2026-11-23
 
