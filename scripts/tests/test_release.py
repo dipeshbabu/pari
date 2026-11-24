@@ -21,11 +21,11 @@ SPEC.loader.exec_module(release)
 
 class ReleaseMetadataTests(unittest.TestCase):
     def test_release_contract_is_self_consistent(self) -> None:
-        self.assertEqual(release.workspace_version(), "0.4.3")
+        self.assertEqual(release.workspace_version(), "0.4.4")
         release.validate()
 
     def test_tag_must_match_workspace_version(self) -> None:
-        release.validate("v0.4.3")
+        release.validate("v0.4.4")
         with self.assertRaises(SystemExit):
             release.validate("v9.9.9")
 
