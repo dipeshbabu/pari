@@ -19,6 +19,7 @@ use pari_store::{
     PersistentIndex32, PersistentIndex64, PersistentIndexOptions, ScoreFilter, ScoredCandidate,
     StoreError, StoreStats,
 };
+use pari_store_build::BuildError;
 use pari_store_lazy::LazyStoreError;
 use pyo3::{
     create_exception,
@@ -27,6 +28,7 @@ use pyo3::{
     types::{PyAny, PyByteArray, PyBytes, PyIterator, PyList, PyMemoryView, PyModule, PyTuple},
 };
 
+mod build;
 mod read_only;
 
 create_exception!(_native, PariError, PyException);
@@ -55,6 +57,7 @@ enum BindingError {
     MinHash(MinHashError),
     Store(StoreError),
     LazyStore(LazyStoreError),
+    Build(BuildError),
 }
 
 impl BindingError {
@@ -103,13 +106,15 @@ impl BindingError {
             | Self::LazyStore(
                 LazyStoreError::SignaturesUnavailable | LazyStoreError::InvalidScoreFilter { .. },
             )
+            | Self::Build(BuildError::InvalidOptions { .. })
             | Self::Plan(_) => BindingErrorKind::Configuration,
             Self::Busy
             | Self::Poisoned
             | Self::MinHash(MinHashError::BatchPoolUnavailable { .. })
             | Self::Index(_)
             | Self::Store(_)
-            | Self::LazyStore(_) => BindingErrorKind::Storage,
+            | Self::LazyStore(_)
+            | Self::Build(_) => BindingErrorKind::Storage,
         }
     }
 
@@ -123,6 +128,7 @@ impl BindingError {
             Self::MinHash(error) => error.to_string(),
             Self::Store(error) => error.to_string(),
             Self::LazyStore(error) => error.to_string(),
+            Self::Build(error) => error.to_string(),
         }
     }
 }
@@ -2563,6 +2569,8 @@ fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<read_only::PyReadOnlyIndex>()?;
     module.add_class::<PyIndexStats>()?;
     module.add_class::<PyLshPlan>()?;
+    module.add_class::<build::PyBuildStats>()?;
+    module.add_function(wrap_pyfunction!(build::py_build_read_only_index, module)?)?;
     module.add_class::<PyDedupeEngine>()?;
     module.add_function(wrap_pyfunction!(py_plan_lsh, module)?)?;
     module.add("PariError", py.get_type::<PariError>())?;

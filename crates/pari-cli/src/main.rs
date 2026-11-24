@@ -27,6 +27,7 @@ use pari_store::{
     PersistentIndex32, PersistentIndex64, PersistentIndexOptions, ScoreFilter, ScoredCandidate,
     StoreStats,
 };
+use pari_store_build::{build_external, BuildOptions};
 use pari_store_lazy::LazyIndex;
 use same_file::{is_same_file, Handle};
 use serde::{Deserialize, Serialize};
@@ -68,6 +69,8 @@ enum Commands {
     Verify(VerifyArgs),
     /// Rewrite an index as one snapshot, folding in appended commits.
     Compact(CompactArgs),
+    /// Write a query-ready copy of a compacted index in bounded memory.
+    BuildReadOnly(BuildReadOnlyArgs),
     /// Generate shell completion from this command definition.
     Completion(CompletionArgs),
 }
@@ -238,6 +241,27 @@ struct StatsArgs {
 struct CompactArgs {
     #[arg(short, long)]
     index: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+struct BuildReadOnlyArgs {
+    /// Committed source index. Run `pari compact` first if it has appended
+    /// commits.
+    #[arg(short, long)]
+    index: PathBuf,
+    /// Destination file. It must not exist yet.
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Always re-sort every bucket record instead of reusing the source's
+    /// verified bucket sections.
+    #[arg(long)]
+    no_reuse_buckets: bool,
+    /// Records sorted in memory before spilling a run to disk.
+    #[arg(long, default_value_t = 262_144)]
+    max_buffer_records: usize,
+    /// Print the summary as JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -789,6 +813,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Commands::Stats(args) => stats(args),
         Commands::Verify(args) => verify(args),
         Commands::Compact(args) => compact(args),
+        Commands::BuildReadOnly(args) => build_read_only(args),
         Commands::Completion(args) => {
             let mut command = Cli::command();
             let name = command.get_name().to_owned();
@@ -1480,6 +1505,50 @@ fn compact(args: &CompactArgs) -> Result<(), Box<dyn Error>> {
     match index_signature_scheme(&args.index)? {
         SignatureScheme::PariAffine32V1 => PersistentIndex32::open(&args.index)?.compact()?,
         SignatureScheme::PariAffine64V1 => PersistentIndex64::open(&args.index)?.compact()?,
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct BuildSummary {
+    records: u64,
+    buckets: u64,
+    output_bytes: u64,
+    spill_runs: usize,
+    reused_source_buckets: bool,
+}
+
+fn build_read_only(args: &BuildReadOnlyArgs) -> Result<(), Box<dyn Error>> {
+    let stats = build_external(
+        &args.index,
+        &args.output,
+        BuildOptions {
+            max_buffer_records: args.max_buffer_records,
+            reuse_source_buckets: !args.no_reuse_buckets,
+        },
+    )?;
+    let summary = BuildSummary {
+        records: stats.records,
+        buckets: stats.buckets,
+        output_bytes: stats.output_bytes,
+        spill_runs: stats.spill_runs,
+        reused_source_buckets: stats.reused_source_buckets,
+    };
+    if args.json {
+        outln!("{}", serde_json::to_string(&summary)?);
+    } else {
+        outln!(
+            "built {} ({} bytes, {} buckets, {} records, {})",
+            args.output.display(),
+            summary.output_bytes,
+            summary.buckets,
+            summary.records,
+            if summary.reused_source_buckets {
+                "reused source buckets".to_owned()
+            } else {
+                format!("rebuilt buckets from {} sorted runs", summary.spill_runs)
+            }
+        );
     }
     Ok(())
 }

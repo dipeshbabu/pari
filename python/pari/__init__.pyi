@@ -386,6 +386,26 @@ class ReadOnlyIndex:
         self, exc_type: object, exc_value: object, traceback: object
     ) -> bool: ...
 
+class BuildStats:
+    @property
+    def records(self) -> int: ...
+    @property
+    def buckets(self) -> int: ...
+    @property
+    def output_bytes(self) -> int: ...
+    @property
+    def spill_runs(self) -> int: ...
+    @property
+    def reused_source_buckets(self) -> bool: ...
+
+def build_read_only_index(
+    source: PathInput,
+    destination: PathInput,
+    *,
+    reuse_buckets: bool = True,
+    max_buffer_records: int = 262_144,
+) -> BuildStats: ...
+
 class DedupeIndex(Generic[_T]):
     threshold: float
     num_perm: int

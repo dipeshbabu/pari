@@ -1266,3 +1266,119 @@ fn batched_index_builds_append_generations_that_verify_and_compact() {
     let _ = fs::remove_file(queries);
     let _ = fs::remove_file(index);
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // One end-to-end CLI workflow.
+fn build_read_only_writes_a_query_ready_copy_of_a_compacted_index() {
+    let records = temp_path("build-records", "jsonl");
+    let index = temp_path("build-index", "pari");
+    let queries = temp_path("build-queries", "jsonl");
+    let reused = temp_path("build-reused", "pari");
+    let rebuilt = temp_path("build-rebuilt", "pari");
+    let mut text = String::new();
+    let mut query_text = String::new();
+    for key in 0..1_500_u64 {
+        let values: Vec<String> = (0..12)
+            .map(|token| format!("g{}-t{token}", key / 3))
+            .chain([format!("item-{key}")])
+            .collect();
+        text.push_str(&serde_json::json!({"key": key, "values": values}).to_string());
+        text.push('\n');
+        if key % 11 == 0 {
+            query_text.push_str(
+                &serde_json::json!({"id": format!("q{key}"), "values": values}).to_string(),
+            );
+            query_text.push('\n');
+        }
+    }
+    fs::write(&records, text).expect("records");
+    fs::write(&queries, query_text).expect("queries");
+    let path = |path: &Path| path.to_str().expect("path").to_owned();
+    assert_success(
+        &pari()
+            .args([
+                "index",
+                "--input",
+                &path(&records),
+                "--output",
+                &path(&index),
+            ])
+            .args(["--batch-size", "100", "--threshold", "0.5"])
+            .output()
+            .expect("index command"),
+    );
+    let build = |output: &Path, extra: &[&str]| -> Output {
+        pari()
+            .args(["build-read-only", "--index", &path(&index), "--output"])
+            .arg(output)
+            .args(extra)
+            .output()
+            .expect("build-read-only command")
+    };
+
+    let verify = pari()
+        .args(["verify", "--index", &path(&index), "--json"])
+        .output()
+        .expect("verify command");
+    assert_success(&verify);
+    let verify: serde_json::Value = serde_json::from_slice(&verify.stdout).expect("verify JSON");
+    assert!(verify["delta_generations"].as_u64() > Some(0));
+
+    // Appended commits must be folded in first, never silently dropped.
+    let blocked = build(&reused, &["--json"]);
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("compact the index first"));
+    assert!(!reused.exists());
+
+    assert_success(
+        &pari()
+            .args(["compact", "--index", &path(&index)])
+            .output()
+            .expect("compact command"),
+    );
+    let output = build(&reused, &["--json"]);
+    assert_success(&output);
+    let summary: serde_json::Value = serde_json::from_slice(&output.stdout).expect("summary JSON");
+    assert_eq!(summary["reused_source_buckets"], true);
+    assert_eq!(summary["spill_runs"], 0);
+    assert_eq!(
+        summary["output_bytes"].as_u64(),
+        Some(fs::metadata(&reused).expect("output").len())
+    );
+
+    let output = build(
+        &rebuilt,
+        &["--no-reuse-buckets", "--max-buffer-records", "500"],
+    );
+    assert_success(&output);
+    let line = String::from_utf8_lossy(&output.stdout);
+    assert!(line.starts_with("built "), "{line}");
+    assert!(line.contains("rebuilt buckets from"), "{line}");
+    assert_eq!(
+        fs::read(&reused).expect("reused"),
+        fs::read(&rebuilt).expect("rebuilt")
+    );
+
+    // The copy answers queries exactly like its source.
+    let search = |index: &Path| -> Vec<u8> {
+        let output = pari()
+            .args(["search", "--index", &path(index), "--read-only", "--input"])
+            .arg(&queries)
+            .output()
+            .expect("search command");
+        assert_success(&output);
+        output.stdout
+    };
+    let expected = search(&index);
+    assert!(!expected.is_empty());
+    assert_eq!(search(&reused), expected);
+
+    // An existing destination is never replaced.
+    let before = fs::read(&reused).expect("reused");
+    assert!(!build(&reused, &[]).status.success());
+    assert_eq!(fs::read(&reused).expect("reused"), before);
+
+    for file in [records, queries, index, reused, rebuilt] {
+        let _ = fs::remove_file(file);
+    }
+}

@@ -6,6 +6,7 @@ from importlib.resources import files
 import pari
 
 PUBLIC_EXPORTS = {
+    "BuildStats",
     "ClosedIndexError",
     "CompatibilityError",
     "ConfigurationError",
@@ -27,6 +28,7 @@ PUBLIC_EXPORTS = {
     "ReadOnlyIndex",
     "StorageError",
     "__version__",
+    "build_read_only_index",
     "deduplicate",
     "plan_lsh",
     "shingles",

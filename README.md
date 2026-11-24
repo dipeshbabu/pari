@@ -108,6 +108,8 @@ similarity threshold.
 For query-only processes, open a committed snapshot with
 `ReadOnlyIndex.open(path)` in Python or pass `--read-only` to `pari search`.
 Both support scored queries when the snapshot stores signatures.
+`pari build-read-only` and `build_read_only_index` write a verified copy for
+such readers in bounded memory.
 [Python guide](https://github.com/dipeshbabu/pari/blob/v0.4.3/docs/python.md#search-a-read-only-snapshot)
 
 ## Deduplicate a Dataset

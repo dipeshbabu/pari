@@ -526,6 +526,7 @@ dependencies = [
  "pari-format",
  "pari-index",
  "pari-store",
+ "pari-store-build",
  "pari-store-lazy",
  "same-file",
  "serde",
@@ -564,6 +565,7 @@ dependencies = [
  "pari-core",
  "pari-index",
  "pari-store",
+ "pari-store-build",
  "pari-store-lazy",
  "pyo3",
 ]
