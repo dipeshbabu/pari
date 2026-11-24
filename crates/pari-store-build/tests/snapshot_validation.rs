@@ -192,6 +192,7 @@ fn converters_reject_duplicate_keys_and_required_unknown_semantics() {
                         &output,
                         BuildOptions {
                             max_buffer_records: 1,
+                            ..BuildOptions::default()
                         },
                     )
                     .is_err()
@@ -228,6 +229,7 @@ fn unordered_unique_legacy_keys_remain_supported_with_canonical_members() {
                 &output,
                 BuildOptions {
                     max_buffer_records: size,
+                    ..BuildOptions::default()
                 },
             )
             .expect("external");
@@ -268,6 +270,7 @@ fn maximum_buffer_limit_does_not_preallocate_beyond_small_input() {
                 &output,
                 BuildOptions {
                     max_buffer_records: usize::MAX,
+                    ..BuildOptions::default()
                 },
             )
         });
@@ -299,6 +302,7 @@ fn external_builder_creates_a_missing_destination_parent() {
         &output,
         BuildOptions {
             max_buffer_records: 1,
+            ..BuildOptions::default()
         },
     )
     .expect("create parent");
@@ -379,6 +383,7 @@ fn empty_advanced_parameter_indexes_round_trip_without_runtime_band_tables() {
             &output,
             BuildOptions {
                 max_buffer_records: usize::MAX,
+                ..BuildOptions::default()
             },
         )
         .expect("empty build");
@@ -550,6 +555,7 @@ fn external_builder_carries_stored_signatures() {
         &output,
         BuildOptions {
             max_buffer_records: 7,
+            ..BuildOptions::default()
         },
     )
     .expect("build");
@@ -713,6 +719,7 @@ fn split_key_metadata_builds_and_opens_in_every_reader() {
         &built,
         BuildOptions {
             max_buffer_records: 13,
+            ..BuildOptions::default()
         },
     )
     .expect("build split");
