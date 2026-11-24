@@ -233,6 +233,37 @@ The CLI streams JSONL records into the selected concrete `LshIndex32` or
 64-bit family. Group construction uses Pari's native union-find path from
 `pari-index`.
 
+### Deduplicate inputs larger than memory
+
+The in-memory index needs memory for every band of every record, and
+`--min-similarity` adds every signature. For larger inputs, pass
+`--spill-dir DIR` to group in bounded memory instead:
+
+```bash
+pari dedup --input documents.jsonl --spill-dir /scratch/pari --json
+```
+
+Each record's band hashes are sorted in runs of `--max-buffer-records`
+(default 4,194,304, about 64 MiB) and spilled to `DIR`. The runs are then
+merged so each bucket's members arrive together and are unioned, after the
+`--min-similarity` check when it is set. Signatures for that check stay in a
+file in `DIR` and are read only for buckets whose members are not yet
+connected. Memory holds the keys and a union-find, about 16 bytes per record,
+plus one sort buffer. The groups are identical to the in-memory path, and
+every temporary file is removed when the command ends.
+
+`--spill-dir` supports `--emit groups` only: removing duplicate pairs across
+bands needs either every pair in memory or more passes over the disk.
+
+Measured locally on 1 million records with `--threshold 0.5`:
+
+| | time | peak memory |
+|---|---|---|
+| in memory | 13.6 s | 1,325 MB |
+| `--spill-dir` | 13.5 s | 124 MB |
+| in memory, `--min-similarity 0.7` | 13.7 s | 2,390 MB |
+| `--spill-dir`, `--min-similarity 0.7` | 21.8 s | 124 MB |
+
 ## Inspect and verify
 
 Plan settings before a build, or explain the configuration of an existing index:

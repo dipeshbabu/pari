@@ -8,6 +8,14 @@ The project follows Semantic Versioning. During the 0.x series, compatibility gu
 
 ### Added
 
+- `pari dedup --spill-dir DIR` groups duplicates in bounded memory: band
+  hashes are sorted in runs spilled to `DIR` and merged, and the
+  `--min-similarity` signatures stay on disk. Output is identical to the
+  in-memory path. At 1 million records peak memory fell from 1,325 MB to
+  124 MB (2,390 MB to 124 MB with `--min-similarity`). Groups output only.
+- `LshIndex32::band_hashes` and `LshIndex64::band_hashes` return the band
+  hashes the index would bucket a sketch under, without inserting it.
+
 - `pari build-read-only` and `pari.build_read_only_index` write a verified,
   query-ready copy of a committed index in bounded memory, reusing a compacted
   source's bucket sections after checking them. Appended commits are folded

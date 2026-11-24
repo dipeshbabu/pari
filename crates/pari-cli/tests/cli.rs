@@ -1400,3 +1400,91 @@ fn build_read_only_writes_a_query_ready_copy_of_a_compacted_index() {
         let _ = fs::remove_file(file);
     }
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // One matrix of equivalence checks.
+fn bounded_dedup_groups_match_the_in_memory_path() {
+    let records = temp_path("bounded-records", "jsonl");
+    let spill = temp_path("bounded-spill", "dir");
+    let mut text = String::new();
+    for key in 0..1_200_u64 {
+        // Groups of three near-duplicates plus some shared tokens across
+        // neighbouring groups, so components merge and verification matters.
+        let group = key / 3;
+        let values: Vec<String> = (0..14)
+            .map(|token| format!("g{group}-t{token}"))
+            .chain([format!("g{}-bridge", group / 4), format!("item-{key}")])
+            .collect();
+        // Keys out of order, as real inputs are.
+        let shuffled = (key * 7_919) % 1_201;
+        text.push_str(&serde_json::json!({"key": shuffled, "values": values}).to_string());
+        text.push('\n');
+    }
+    fs::write(&records, text).expect("records");
+    let run = |extra: &[&str]| -> Output {
+        pari()
+            .args(["dedup", "--input"])
+            .arg(&records)
+            .args(["--threshold", "0.5"])
+            .args(extra)
+            .output()
+            .expect("dedup command")
+    };
+    let spill_arg = spill.to_str().expect("path").to_owned();
+    let cases: [&[&str]; 7] = [
+        &[],
+        &["--json"],
+        &["--min-size", "3"],
+        &["--min-size", "1", "--json"],
+        &["--min-similarity", "0.6"],
+        &["--min-similarity", "0.9", "--json"],
+        &[
+            "--signature-scheme",
+            "pari-affine64-v1",
+            "--min-similarity",
+            "0.6",
+        ],
+    ];
+    for case in cases {
+        let expected = run(case);
+        assert_success(&expected);
+        assert!(!expected.stdout.is_empty(), "{case:?}");
+        for buffer in ["500", "1000000"] {
+            let mut args = case.to_vec();
+            args.extend(["--spill-dir", &spill_arg, "--max-buffer-records", buffer]);
+            let bounded = run(&args);
+            assert_success(&bounded);
+            assert_eq!(
+                String::from_utf8_lossy(&bounded.stdout),
+                String::from_utf8_lossy(&expected.stdout),
+                "case {case:?} with buffer {buffer}"
+            );
+        }
+    }
+    // Every temporary file is removed.
+    assert_eq!(fs::read_dir(&spill).expect("spill dir").count(), 0);
+
+    let pairs = run(&["--emit", "pairs", "--spill-dir", &spill_arg]);
+    assert!(!pairs.status.success());
+    assert!(String::from_utf8_lossy(&pairs.stderr).contains("--emit groups only"));
+
+    // A repeated key fails like the in-memory path, naming the same key.
+    let mut duplicated = fs::read_to_string(&records).expect("records");
+    duplicated.push_str(&serde_json::json!({"key": 5, "values": ["x"]}).to_string());
+    duplicated.push('\n');
+    duplicated.push_str(&serde_json::json!({"key": 9, "values": ["y"]}).to_string());
+    duplicated.push('\n');
+    fs::write(&records, duplicated).expect("records");
+    let in_memory = run(&[]);
+    let bounded = run(&["--spill-dir", &spill_arg, "--max-buffer-records", "500"]);
+    assert!(!in_memory.status.success());
+    assert!(!bounded.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&bounded.stderr),
+        String::from_utf8_lossy(&in_memory.stderr)
+    );
+    assert_eq!(fs::read_dir(&spill).expect("spill dir").count(), 0);
+
+    let _ = fs::remove_file(records);
+    let _ = fs::remove_dir_all(spill);
+}

@@ -754,6 +754,18 @@ macro_rules! impl_lsh_index {
                 self.data.signatures.is_some()
             }
 
+            /// Return the band hashes this index would bucket `sketch` under,
+            /// one per band, without inserting it.
+            ///
+            /// Two sketches are candidates of each other exactly when they
+            /// share a hash in the same band. This lets external tools, such
+            /// as bounded-memory deduplication, bucket items the way the index
+            /// does.
+            pub fn band_hashes(&self, sketch: &$sketch) -> Result<Vec<u64>, LshError> {
+                self.ensure_compatible(sketch)?;
+                Ok(self.compute_band_hashes(sketch.signature()))
+            }
+
             /// Query candidates with their estimated Jaccard similarity.
             ///
             /// Results are sorted by similarity, highest first, then by key.
@@ -1141,6 +1153,39 @@ mod tests {
         hash_band64, Bucket, BucketDistribution, LshError, LshIndex32, LshIndex64, LshParams,
         StorageMode,
     };
+
+    #[test]
+    fn band_hashes_decide_candidates_like_the_index() {
+        let sketch = |values: std::ops::Range<u32>| {
+            let mut sketch = MinHash32::new(64, 3).expect("sketch");
+            for value in values {
+                sketch.update(&value.to_le_bytes());
+            }
+            sketch
+        };
+        let mut index = LshIndex32::new(0.5, 64, 3).expect("index");
+        let items: Vec<_> = (0..40_u32)
+            .map(|item| sketch(item * 7..item * 7 + 30))
+            .collect();
+        for (key, item) in (0_u64..).zip(&items) {
+            index.insert(key, item).expect("insert");
+        }
+        let hashes: Vec<_> = items
+            .iter()
+            .map(|item| index.band_hashes(item).expect("band hashes"))
+            .collect();
+        assert!(hashes.iter().all(|row| row.len() == index.params().bands));
+        for (left, query) in items.iter().enumerate() {
+            let candidates = index.query(query).expect("query");
+            for right in 0..items.len() {
+                let shares = hashes[left].iter().zip(&hashes[right]).any(|(a, b)| a == b);
+                let key = u64::try_from(right).expect("key");
+                assert_eq!(candidates.contains(&key), shares, "{left} {right}");
+            }
+        }
+        let other = MinHash32::new(64, 4).expect("sketch");
+        assert!(index.band_hashes(&other).is_err());
+    }
 
     #[test]
     fn buckets_store_one_id_inline_and_keep_insertion_order() {
